@@ -2,7 +2,7 @@ name: iOS-CI-Private
 
 on:
   repository_dispatch:
-    types: [private-repo-pr, private-repo-push]
+    types: [private-repo-ios-ci]
   workflow_dispatch:
     inputs:
       pr_number:
