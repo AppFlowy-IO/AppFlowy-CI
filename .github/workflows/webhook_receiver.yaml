@@ -35,6 +35,14 @@ concurrency:
 jobs:
   dispatch-workflows:
     runs-on: ubuntu-latest
+    outputs:
+      flutter_run_url: ${{ steps.get_run_urls.outputs.flutter_run_url }}
+      rust_run_url: ${{ steps.get_run_urls.outputs.rust_run_url }}
+      mobile_run_url: ${{ steps.get_run_urls.outputs.mobile_run_url }}
+      ios_run_url: ${{ steps.get_run_urls.outputs.ios_run_url }}
+      rust_coverage_run_url: ${{ steps.get_run_urls.outputs.rust_coverage_run_url }}
+      docker_run_url: ${{ steps.get_run_urls.outputs.docker_run_url }}
+      commit_lint_run_url: ${{ steps.get_run_urls.outputs.commit_lint_run_url }}
     steps:
       - name: Parse event data
         id: parse
@@ -168,8 +176,110 @@ jobs:
               "workflow_type": "commit_lint"
             }
 
+      - name: Wait for workflows to start and get run URLs
+        id: get_run_urls
+        env:
+          ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          WORKFLOWS: ${{ steps.parse.outputs.workflows }}
+        run: |
+          echo "⏳ Waiting for workflows to start and fetching run URLs..."
+
+          # Define workflow file names
+          declare -A workflow_files=(
+            ["flutter"]="flutter_ci.yaml"
+            ["rust"]="rust_ci.yaml"
+            ["mobile"]="mobile_ci.yml"
+            ["ios"]="ios_ci.yaml"
+            ["rust_coverage"]="rust_coverage.yml"
+            ["docker"]="docker_ci.yml"
+            ["commit_lint"]="commit_lint.yml"
+          )
+
+          # Get list of workflows to monitor
+          IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
+
+          # Wait a bit for workflows to start
+          sleep 10
+
+          # Fetch run URLs for each triggered workflow
+          flutter_run_url=""
+          rust_run_url=""
+          mobile_run_url=""
+          ios_run_url=""
+          rust_coverage_run_url=""
+          docker_run_url=""
+          commit_lint_run_url=""
+
+          for workflow in "${WORKFLOW_ARRAY[@]}"; do
+            workflow_file="${workflow_files[$workflow]}"
+            if [ -n "$workflow_file" ]; then
+              echo "Fetching latest run for workflow: $workflow_file"
+
+              # Get the latest workflow runs
+              response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
+                "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=5")
+
+              # Find the most recent repository_dispatch run (should be ours)
+              for i in {0..4}; do
+                run_event=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].event // "null"')
+                run_created=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].created_at // "null"')
+                run_url=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].html_url // "null"')
+
+                if [ "$run_event" = "null" ]; then
+                  break
+                fi
+
+                # Check if this run is from repository_dispatch and recent (within last 5 minutes)
+                if [ "$run_event" = "repository_dispatch" ]; then
+                  run_created_timestamp=$(date -d "$run_created" +%s 2>/dev/null || echo "0")
+                  current_timestamp=$(date +%s)
+                  time_diff=$((current_timestamp - run_created_timestamp))
+
+                  # If the run was created within the last 5 minutes, assume it's ours
+                  if [ $time_diff -le 300 ]; then
+                    case $workflow in
+                      "flutter")
+                        flutter_run_url="$run_url"
+                        ;;
+                      "rust")
+                        rust_run_url="$run_url"
+                        ;;
+                      "mobile")
+                        mobile_run_url="$run_url"
+                        ;;
+                      "ios")
+                        ios_run_url="$run_url"
+                        ;;
+                      "rust_coverage")
+                        rust_coverage_run_url="$run_url"
+                        ;;
+                      "docker")
+                        docker_run_url="$run_url"
+                        ;;
+                      "commit_lint")
+                        commit_lint_run_url="$run_url"
+                        ;;
+                    esac
+                    echo "Found run URL for $workflow: $run_url"
+                    break
+                  fi
+                fi
+              done
+            fi
+          done
+
+          # Store the run URLs
+          echo "flutter_run_url=$flutter_run_url" >> $GITHUB_OUTPUT
+          echo "rust_run_url=$rust_run_url" >> $GITHUB_OUTPUT
+          echo "mobile_run_url=$mobile_run_url" >> $GITHUB_OUTPUT
+          echo "ios_run_url=$ios_run_url" >> $GITHUB_OUTPUT
+          echo "rust_coverage_run_url=$rust_coverage_run_url" >> $GITHUB_OUTPUT
+          echo "docker_run_url=$docker_run_url" >> $GITHUB_OUTPUT
+          echo "commit_lint_run_url=$commit_lint_run_url" >> $GITHUB_OUTPUT
+
   create-pr-comment:
     runs-on: ubuntu-latest
+    needs: [dispatch-workflows]
     if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
       - name: Parse event data
@@ -193,10 +303,18 @@ jobs:
         id: links
         run: |
           workflows="${{ steps.parse.outputs.workflows }}"
-          base_url="https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows"
           pr_number="${{ steps.parse.outputs.pr_number }}"
 
-          # Generate workflow links based on requested workflows
+          # Get run URLs from the dispatch-workflows job
+          flutter_run_url="${{ needs.dispatch-workflows.outputs.flutter_run_url }}"
+          rust_run_url="${{ needs.dispatch-workflows.outputs.rust_run_url }}"
+          mobile_run_url="${{ needs.dispatch-workflows.outputs.mobile_run_url }}"
+          ios_run_url="${{ needs.dispatch-workflows.outputs.ios_run_url }}"
+          rust_coverage_run_url="${{ needs.dispatch-workflows.outputs.rust_coverage_run_url }}"
+          docker_run_url="${{ needs.dispatch-workflows.outputs.docker_run_url }}"
+          commit_lint_run_url="${{ needs.dispatch-workflows.outputs.commit_lint_run_url }}"
+
+          # Generate workflow links based on requested workflows with actual run URLs
           flutter_link=""
           rust_link=""
           mobile_link=""
@@ -206,31 +324,59 @@ jobs:
           commit_lint_link=""
 
           if [[ "$workflows" == *"flutter"* ]]; then
-            flutter_link="- **Flutter CI/CD**: ${base_url}/flutter_ci.yaml (PR #${pr_number})"
+            if [ -n "$flutter_run_url" ]; then
+              flutter_link="- **Flutter CI/CD**: [$flutter_run_url]($flutter_run_url) (PR #${pr_number})"
+            else
+              flutter_link="- **Flutter CI/CD**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/flutter_ci.yaml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"rust"* ]]; then
-            rust_link="- **Rust Testing**: ${base_url}/rust_ci.yaml (PR #${pr_number})"
+            if [ -n "$rust_run_url" ]; then
+              rust_link="- **Rust Testing**: [$rust_run_url]($rust_run_url) (PR #${pr_number})"
+            else
+              rust_link="- **Rust Testing**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_ci.yaml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"mobile"* ]]; then
-            mobile_link="- **Mobile CI (iOS/Android)**: ${base_url}/mobile_ci.yml (PR #${pr_number})"
+            if [ -n "$mobile_run_url" ]; then
+              mobile_link="- **Mobile CI (iOS/Android)**: [$mobile_run_url]($mobile_run_url) (PR #${pr_number})"
+            else
+              mobile_link="- **Mobile CI (iOS/Android)**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/mobile_ci.yml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"ios"* ]]; then
-            ios_link="- **iOS CI**: ${base_url}/ios_ci.yaml (PR #${pr_number})"
+            if [ -n "$ios_run_url" ]; then
+              ios_link="- **iOS CI**: [$ios_run_url]($ios_run_url) (PR #${pr_number})"
+            else
+              ios_link="- **iOS CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/ios_ci.yaml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"rust_coverage"* ]]; then
-            rust_coverage_link="- **Rust Coverage**: ${base_url}/rust_coverage.yml (PR #${pr_number})"
+            if [ -n "$rust_coverage_run_url" ]; then
+              rust_coverage_link="- **Rust Coverage**: [$rust_coverage_run_url]($rust_coverage_run_url) (PR #${pr_number})"
+            else
+              rust_coverage_link="- **Rust Coverage**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_coverage.yml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"docker"* ]]; then
-            docker_link="- **Docker CI**: ${base_url}/docker_ci.yml (PR #${pr_number})"
+            if [ -n "$docker_run_url" ]; then
+              docker_link="- **Docker CI**: [$docker_run_url]($docker_run_url) (PR #${pr_number})"
+            else
+              docker_link="- **Docker CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/docker_ci.yml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           if [[ "$workflows" == *"commit_lint"* ]]; then
-            commit_lint_link="- **Commit Lint**: ${base_url}/commit_lint.yml (PR #${pr_number})"
+            if [ -n "$commit_lint_run_url" ]; then
+              commit_lint_link="- **Commit Lint**: [$commit_lint_run_url]($commit_lint_run_url) (PR #${pr_number})"
+            else
+              commit_lint_link="- **Commit Lint**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/commit_lint.yml) (PR #${pr_number}) - Starting up..."
+            fi
           fi
 
           # Store the links
@@ -255,8 +401,6 @@ jobs:
           **Branch**: `${{ steps.parse.outputs.pr_ref }}`
           **Run ID**: `${{ github.run_id }}`
 
-          Hi! Thanks for your contribution to PR #${{ steps.parse.outputs.pr_number }}.
-
           Your PR has triggered our CI/CD pipeline in the public repository. You can monitor the test results and build status here:
 
           ### 📊 CI Dashboard
@@ -272,30 +416,6 @@ jobs:
           ${{ steps.links.outputs.docker_link }}
           ${{ steps.links.outputs.commit_lint_link }}
 
-          ---
-
-          ### 💡 How to Find Your Specific Run
-
-          1. Click on any of the workflow links above
-          2. Look for runs with **PR #${{ steps.parse.outputs.pr_number }}** in the title or commit message
-          3. Filter by branch `${{ steps.parse.outputs.pr_ref }}` if needed
-          4. The runs will show as triggered by `repository_dispatch` events
-
-          ### ✅ What Gets Tested
-
-          - **Flutter**: Build verification, code analysis, and integration tests
-          - **Rust**: Unit tests, integration tests, and code coverage
-          - **Mobile**: iOS and Android build verification
-          - **Docker**: Container build and validation
-          - **Code Quality**: Commit message linting and formatting
-
-          ### 🔄 Re-running Failed Tests
-
-          If any tests fail and you push new commits to PR #${{ steps.parse.outputs.pr_number }}, the CI will automatically re-trigger. Previous CI runs for this PR will be cancelled automatically.
-
-          ---
-
-          *CI powered by cross-repository GitHub Actions | Run ID: ${{ github.run_id }} | Any questions? Feel free to ask!*
           EOF
 
           # Remove empty lines from workflow links
@@ -313,7 +433,7 @@ jobs:
 
   auto-approve-pr:
     runs-on: ubuntu-latest
-    needs: [dispatch-workflows, create-pr-comment]
+    needs: [create-pr-comment]
     if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
       - name: Parse event data
