@@ -193,7 +193,7 @@ jobs:
         id: links
         run: |
           workflows="${{ steps.parse.outputs.workflows }}"
-          base_url="https://github.com/AppFlowy-IO/AppFlowy-Builder/actions/workflows"
+          base_url="https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows"
           pr_number="${{ steps.parse.outputs.pr_number }}"
 
           # Generate workflow links based on requested workflows
@@ -260,7 +260,7 @@ jobs:
           Your PR has triggered our CI/CD pipeline in the public repository. You can monitor the test results and build status here:
 
           ### 📊 CI Dashboard
-          **Main CI Workflows**: https://github.com/AppFlowy-IO/AppFlowy-Builder/actions
+          **Main CI Workflows**: https://github.com/AppFlowy-IO/AppFlowy-CI/actions
 
           ### 🔗 Running Workflows for PR #${{ steps.parse.outputs.pr_number }}
 
@@ -372,7 +372,7 @@ jobs:
 
                 # Get workflow runs that might be related to our PR
                 response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-Builder/actions/workflows/$workflow_file/runs?per_page=10")
+                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=10")
 
                 # Look for the most recent run that matches our criteria
                 # We'll look for runs from the repository_dispatch event and check if they're related to our PR
@@ -495,7 +495,7 @@ jobs:
             -H "Content-Type: application/json" \
             https://api.github.com/repos/AppFlowy-IO/AppFlowy-Premium/issues/$PR_NUMBER/comments \
             -d '{
-              "body": "## ❌ CI Tests Status - PR #'$PR_NUMBER'\n\n**Status**: **FAILED** or **TIMEOUT**\n\nSome CI workflows have failed or did not complete within the expected time for PR #'$PR_NUMBER'. Please check the workflow results and fix any issues before merging.\n\n### Check Results\nView detailed results at: https://github.com/AppFlowy-IO/AppFlowy-Builder/actions\n\n**Branch**: `${{ steps.parse.outputs.pr_ref }}`  \n**Run ID**: `${{ github.run_id }}`\n\n*Automated status update by GitHub Actions*"
+              "body": "## ❌ CI Tests Status - PR #'$PR_NUMBER'\n\n**Status**: **FAILED** or **TIMEOUT**\n\nSome CI workflows have failed or did not complete within the expected time for PR #'$PR_NUMBER'. Please check the workflow results and fix any issues before merging.\n\n### Check Results\nView detailed results at: https://github.com/AppFlowy-IO/AppFlowy-CI/actions\n\n**Branch**: `${{ steps.parse.outputs.pr_ref }}`  \n**Run ID**: `${{ github.run_id }}`\n\n*Automated status update by GitHub Actions*"
             }'
 
           echo "ℹ️  Failure notification posted to PR #$PR_NUMBER"
