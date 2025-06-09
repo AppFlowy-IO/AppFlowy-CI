@@ -67,6 +67,8 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           path: AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: 'main'
 
       - name: Prepare appflowy cloud env
         working-directory: AppFlowy-Cloud-Premium
