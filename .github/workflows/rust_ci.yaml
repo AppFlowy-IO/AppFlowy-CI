@@ -17,7 +17,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLOUD_VERSION: 0.9.49-amd64
+  CLOUD_VERSION: 0.9.59-amd64
   RUST_TOOLCHAIN: "1.85.0"
 
 concurrency:
