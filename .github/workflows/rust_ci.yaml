@@ -1,6 +1,8 @@
 name: Rust-CI-Private
 
 on:
+  pull_request:
+    branches: [main]
   repository_dispatch:
     types: [private-repo-rust-ci]
   workflow_dispatch:
@@ -17,7 +19,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLOUD_VERSION: 0.9.58-premium-amd64
+  CLOUD_VERSION: 0.9.56-premium-amd64
   RUST_TOOLCHAIN: "1.85.0"
 
 concurrency:
@@ -78,6 +80,12 @@ jobs:
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: appflowyinc
+          password: ${{ secrets.DOCKER_TOKEN }}
+
       - name: Ensure AppFlowy-Cloud is Running with Correct Version
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -99,7 +107,6 @@ jobs:
             echo "No volumes to remove."
           fi
 
-          docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
           docker compose pull
           docker compose up -d
           echo "Waiting for the container to be ready..."
