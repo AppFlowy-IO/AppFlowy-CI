@@ -19,7 +19,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLOUD_VERSION: 0.9.61-amd64
+  APPFLOWY_ADMIN_FRONTEND_VERSION: 0.9.61-amd64
+  APPFLOWY_CLOUD_VERSION: 0.9.61-amd64
+  APPFLOWY_WORKER_VERSION: 0.9.61-amd64
+  APPFLOWY_AI_VERSION: 0.9.38-amd64
+  GOTRUE_VERSION: 0.9.61
   RUST_TOOLCHAIN: "1.85.0"
 
 concurrency:
@@ -89,9 +93,11 @@ jobs:
       - name: Ensure AppFlowy-Cloud is Running with Correct Version
         working-directory: AppFlowy-Cloud-Premium
         env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_CLOUD_VERSION: ${{ env.APPFLOWY_CLOUD_VERSION }}
+          APPFLOWY_WORKER_VERSION: ${{ env.APPFLOWY_WORKER_VERSION }}
+          APPFLOWY_AI_VERSION: ${{ env.APPFLOWY_AI_VERSION }}
+          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.APPFLOWY_ADMIN_FRONTEND_VERSION }}
+          GOTRUE_VERSION: ${{ env.GOTRUE_VERSION }}
         run: |
           # Remove all containers if any exist
           if [ "$(docker ps -aq)" ]; then
