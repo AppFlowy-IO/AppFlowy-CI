@@ -445,6 +445,7 @@ jobs:
           APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
           container_id=$(docker ps --filter name=appflowy-cloud-appflowy_cloud-1 -q)
           if [ -z "$container_id" ]; then
