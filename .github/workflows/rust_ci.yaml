@@ -84,6 +84,8 @@ jobs:
           APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+          
         run: |
           # Remove all containers if any exist
           if [ "$(docker ps -aq)" ]; then
