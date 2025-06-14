@@ -120,15 +120,20 @@ jobs:
           af_cloud_test_base_url: http://localhost
           af_cloud_test_ws_url: ws://localhost/ws/v1
           af_cloud_test_gotrue_url: http://localhost/gotrue
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
           DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip local_ollama_test --test-threads=4
 
       - name: rustfmt rust-lib
         run: cargo fmt --all -- --check
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         working-directory: frontend/rust-lib/
 
       - name: clippy rust-lib
         run: cargo clippy --all-targets -- -D warnings
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         working-directory: frontend/rust-lib
 
       - name: "Debug: show Appflowy-Cloud container logs"
