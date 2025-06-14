@@ -105,6 +105,8 @@ jobs:
 
       - name: Build AppFlowy
         working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
         shell: bash
 
