@@ -69,10 +69,13 @@ jobs:
           cargo make appflowy-flutter-deps-tools
         shell: bash
 
+      - name: Configure Git credentials for Cargo
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
       - name: Build AppFlowy
         working-directory: frontend
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
           cargo make --profile development-ios-arm64-sim appflowy-core-dev-ios
           cargo make --profile development-ios-arm64-sim code_generation
