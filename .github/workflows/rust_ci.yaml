@@ -74,7 +74,7 @@ jobs:
         working-directory: AppFlowy-Cloud-Premium
         run: |
           cp deploy.env .env
-          sed -i 's|RUST_LOG=.*|RUST_LOG=debug|' .env
+          sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=trace,appflowy_collaborate=trace|' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
@@ -145,7 +145,7 @@ jobs:
         if: always()
         working-directory: AppFlowy-Cloud-Premium
         run: |
-          docker compose logs appflowy_cloud
+          docker compose logs appflowy-cloud-premium-appflowy_cloud-1
 
       - name: Clean up Docker images
         run: |
