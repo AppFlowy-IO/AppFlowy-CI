@@ -70,7 +70,7 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: 'main'
 
-      - name: Prepare AppFlowy-Cloud-Premium env
+      - name: Run Server
         working-directory: AppFlowy-Cloud-Premium
         run: |
           cp deploy.env .env
@@ -81,10 +81,8 @@ jobs:
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_ENVIRONMENT=.*|APPFLOWY_ENVIRONMENT=local|' .env
 
-      - name: Run Server
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          source .env
+          cat .env
+
           echo "APPFLOWY_ENVIRONMENT is $APPFLOWY_ENVIRONMENT"
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
