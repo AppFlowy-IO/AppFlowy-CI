@@ -81,7 +81,7 @@ jobs:
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_ENVIRONMENT=.*|APPFLOWY_ENVIRONMENT=local|' .env
 
-      - name: Run AppFlowy-Cloud
+      - name: Run Server
         working-directory: AppFlowy-Cloud-Premium
         run: |
           source .env
@@ -104,7 +104,7 @@ jobs:
 
       - name: AppFlowy-AI Logs
         run: |
-          docker logs appflowy-cloud-premium-appflowy_ai-1
+          docker logs appflowy-cloud-premium-ai-1
 
       - name: Configure Git credentials for Cargo
         run: |
