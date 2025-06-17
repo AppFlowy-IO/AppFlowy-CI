@@ -62,7 +62,7 @@ jobs:
           workspaces: |
             frontend/rust-lib
 
-      - name: Checkout appflowy cloud code
+      - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
@@ -70,7 +70,7 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: 'main'
 
-      - name: Prepare appflowy cloud env
+      - name: Prepare AppFlowy-Cloud-Premium env
         working-directory: AppFlowy-Cloud-Premium
         run: |
           cp deploy.env .env
@@ -108,7 +108,7 @@ jobs:
 
           docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
           docker compose pull
-          docker compose up -d
+          docker compose --env-file .env up -d
           echo "Waiting for the container to be ready..."
           sleep 10
           docker ps -a
