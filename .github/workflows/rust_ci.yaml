@@ -145,7 +145,7 @@ jobs:
         if: always()
         working-directory: AppFlowy-Cloud-Premium
         run: |
-          docker compose logs appflowy-cloud-premium-appflowy_cloud-1
+          docker logs appflowy-cloud-premium-appflowy_cloud-1
 
       - name: Clean up Docker images
         run: |
