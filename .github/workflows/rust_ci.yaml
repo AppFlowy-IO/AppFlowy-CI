@@ -78,7 +78,7 @@ jobs:
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
-          
+          sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
 
       - name: Ensure AppFlowy-Cloud is Running with Correct Version
         working-directory: AppFlowy-Cloud-Premium
@@ -141,8 +141,8 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         working-directory: frontend/rust-lib
 
-      - name: "Debug: show Appflowy-Cloud container logs"
-        if: failure()
+      - name: "Final: show Appflowy-Cloud container logs"
+        if: always()
         working-directory: AppFlowy-Cloud-Premium
         run: |
           docker compose logs appflowy_cloud

@@ -437,14 +437,15 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout appflowy cloud code
+      - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
         with:
-          repository: AppFlowy-IO/AppFlowy-Cloud
-          path: AppFlowy-Cloud
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          path: AppFlowy-Cloud-Premium
 
       - name: Prepare appflowy cloud env
-        working-directory: AppFlowy-Cloud
+        working-directory: AppFlowy-Cloud-Premium
         run: |
           # log level
           cp deploy.env .env
@@ -452,17 +453,17 @@ jobs:
           sed -i 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
-          sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
+          sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
 
       - name: Run Docker-Compose
-        working-directory: AppFlowy-Cloud
+        working-directory: AppFlowy-Cloud-Premium
         env:
           APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
-          container_id=$(docker ps --filter name=appflowy-cloud-appflowy_cloud-1 -q)
+          container_id=$(docker ps --filter name=appflowy-cloud-premium-appflowy_cloud-1 -q)
           if [ -z "$container_id" ]; then
             echo "AppFlowy-Cloud container is not running. Pulling and starting the container..."
             docker compose pull
@@ -471,7 +472,7 @@ jobs:
             sleep 10
           else
             running_image=$(docker inspect --format='{{index .Config.Image}}' "$container_id")
-            if [ "$running_image" != "appflowy-cloud:$APPFLOWY_CLOUD_VERSION" ]; then
+            if [ "$running_image" != "appflowy-cloud-premium:$APPFLOWY_CLOUD_VERSION" ]; then
               echo "AppFlowy-Cloud is running with an incorrect version. Restarting with the correct version..."
               if [ "$(docker ps -aq)" ]; then
                 docker rm -f $(docker ps -aq)
