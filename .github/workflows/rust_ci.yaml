@@ -141,11 +141,17 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         working-directory: frontend/rust-lib
 
-      - name: "Final: show Appflowy-Cloud container logs"
+      - name: "Appflowy-Cloud container logs"
         if: always()
         working-directory: AppFlowy-Cloud-Premium
         run: |
           docker logs appflowy-cloud-premium-appflowy_cloud-1
+
+      - name: "Redis logs"
+        if: always()
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          docker logs appflowy-cloud-premium-redis-1
 
       - name: Clean up Docker images
         run: |
