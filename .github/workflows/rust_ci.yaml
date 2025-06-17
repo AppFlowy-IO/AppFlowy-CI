@@ -80,35 +80,19 @@ jobs:
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_ENVIRONMENT=.*|APPFLOWY_ENVIRONMENT=local|' .env
-          
 
       - name: Ensure AppFlowy-Cloud is Running with Correct Version
         working-directory: AppFlowy-Cloud-Premium
-        env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
-          
         run: |
-          # Remove all containers if any exist
-          echo ${APPFLOWY_ADMIN_FRONTEND_VERSION} version
-          if [ "$(docker ps -aq)" ]; then
-            docker rm -f $(docker ps -aq)
-          else
-            echo "No containers to remove."
-          fi
-
-          # Remove all volumes if any exist
-          if [ "$(docker volume ls -q)" ]; then
-            docker volume rm $(docker volume ls -q)
-          else
-            echo "No volumes to remove."
-          fi
+          echo ${APPFLOWY_ENVIRONMENT}
+          export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
 
           docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
           docker compose pull
-          docker compose --env-file .env up -d
+          docker compose up -d
           echo "Waiting for the container to be ready..."
           sleep 10
           docker ps -a
