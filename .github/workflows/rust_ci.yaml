@@ -81,22 +81,30 @@ jobs:
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_ENVIRONMENT=.*|APPFLOWY_ENVIRONMENT=local|' .env
 
-      - name: Ensure AppFlowy-Cloud is Running with Correct Version
+      - name: Run AppFlowy-Cloud
         working-directory: AppFlowy-Cloud-Premium
         run: |
-          echo ${APPFLOWY_ENVIRONMENT}
+          source .env
+          echo "APPFLOWY_ENVIRONMENT is $APPFLOWY_ENVIRONMENT"
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
-
+          
           docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
           docker compose pull
           docker compose up -d
           echo "Waiting for the container to be ready..."
           sleep 10
           docker ps -a
-          docker compose logs
+
+      - name: AppFlowy-Cloud Logs
+        run: |
+          docker logs appflowy-cloud-premium-appflowy_cloud-1
+
+      - name: AppFlowy-AI Logs
+        run: |
+          docker logs appflowy-cloud-premium-appflowy_ai-1
 
       - name: Configure Git credentials for Cargo
         run: |
