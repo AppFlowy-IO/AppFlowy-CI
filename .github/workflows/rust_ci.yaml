@@ -137,18 +137,12 @@ jobs:
         run: |
           docker logs appflowy-cloud-premium-appflowy_cloud-1
 
-      - name: "Gotrue logs"
-        if: always()
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          docker logs appflowy-cloud-premium-gotrue-1
-
-      - name: "PG and Redis logs"
-        if: always()
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          docker logs appflowy-cloud-premium-postgres-1
-          docker logs appflowy-cloud-premium-redis-1
+      # - name: "PG and Redis logs"
+      #   if: always()
+      #   working-directory: AppFlowy-Cloud-Premium
+      #   run: |
+      #     docker logs appflowy-cloud-premium-postgres-1
+      #     docker logs appflowy-cloud-premium-redis-1
 
       - name: Clean up Docker images
         run: |
