@@ -82,7 +82,7 @@ jobs:
           cat .env
 
           export APPFLOWY_ENVIRONMENT=local
-          export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_CLOUD_VERSION=0.9.65-amd64
           export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
