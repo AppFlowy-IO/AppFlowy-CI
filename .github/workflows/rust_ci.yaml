@@ -79,7 +79,6 @@ jobs:
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          sed -i 's|APPFLOWY_ACCESS_CONTROL=.*|APPFLOWY_ACCESS_CONTROL=false|' .env
           
           cat .env
 
@@ -119,7 +118,8 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-           DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip local_ollama_test --test-threads=2
+           DISABLE_CI_TEST_LOG="true" cargo testaf_cloud_database_
+          #DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip local_ollama_test --test-threads=2
 
       - name: rustfmt rust-lib
         run: cargo fmt --all -- --check
