@@ -1,4 +1,4 @@
-name: Rust-Coverage-Private
+name: Rust-Coverage
 
 on:
   repository_dispatch:

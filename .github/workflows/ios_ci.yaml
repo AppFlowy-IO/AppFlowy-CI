@@ -1,4 +1,4 @@
-name: iOS-CI-Private
+name: iOS-CI
 
 on:
   repository_dispatch:
