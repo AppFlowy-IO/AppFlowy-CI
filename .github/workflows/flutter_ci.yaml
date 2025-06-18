@@ -462,8 +462,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: appflowyinc
-          password: ${{ secrets.DOCKER_TOKEN }}
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Run Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
@@ -473,8 +473,6 @@ jobs:
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
-          docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
-
           container_id=$(docker ps --filter name=appflowy-cloud-premium-appflowy_cloud-1 -q)
           if [ -z "$container_id" ]; then
             echo "AppFlowy-Cloud container is not running. Pulling and starting the container..."
