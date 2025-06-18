@@ -1,6 +1,8 @@
 name: iOS-CI
 
 on:
+  pull_request:
+    branches: [main]
   repository_dispatch:
     types: [private-repo-ios-ci]
   workflow_dispatch:
