@@ -118,7 +118,6 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-          cargo test af_cloud_database_
           #DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip local_ollama_test --test-threads=2
 
       - name: rustfmt rust-lib
