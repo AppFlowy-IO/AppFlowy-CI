@@ -18,7 +18,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CLOUD_VERSION: latest-amd64
-  RUST_TOOLCHAIN: "1.85.0"
+  RUST_TOOLCHAIN: "1.86.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
