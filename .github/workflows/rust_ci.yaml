@@ -1,6 +1,8 @@
-name: Rust-CI-Private
+name: Rust-CI
 
 on:
+  pull_request:
+    branches: [main]
   repository_dispatch:
     types: [private-repo-rust-ci]
   workflow_dispatch:
@@ -79,7 +81,7 @@ jobs:
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          
+
           cat .env
 
           export APPFLOWY_ENVIRONMENT=local
@@ -87,7 +89,7 @@ jobs:
           export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
-          
+
           docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
           docker compose pull
           docker compose up -d

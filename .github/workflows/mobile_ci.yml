@@ -1,4 +1,4 @@
-name: Mobile-CI-Private
+name: Mobile-CI
 
 on:
   repository_dispatch:
