@@ -1,0 +1,196 @@
+name: Cloud E2E CI
+
+on:
+  repository_dispatch:
+    types: [cloud-premium-e2e-ci]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number from private repo'
+        required: false
+        type: string
+      pr_ref:
+        description: 'Git ref to checkout from private repo'
+        required: false
+        type: string
+        default: 'main'
+
+env:
+  RUST_TOOLCHAIN: "1.86.0"
+  NODE_VERSION: "20"
+  CLOUD_VERSION: latest-amd64
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set timezone for action
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "US/Pacific"
+
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            frontend/node_modules
+            admin-frontend/node_modules
+            tests/e2e/node_modules
+            ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json', 'admin-frontend/package-lock.json', 'tests/e2e/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+          profile: minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ runner.os }}
+          cache-on-failure: true
+
+      - name: Configure Git credentials
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
+      - name: Login to Docker Hub
+        run: |
+          docker login -u appflowyinc -p ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and start AppFlowy Cloud
+        run: |
+          # Create environment file
+          cp deploy.env .env
+          
+          # Configure environment for testing
+          sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=debug,appflowy_collaborate=debug|' .env
+          sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
+          sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
+          sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
+          
+          # Set Docker versions
+          export APPFLOWY_ENVIRONMENT=local
+          export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_HISTORY_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
+          
+          # Start services
+          docker compose pull
+          docker compose up -d
+          
+          echo "Waiting for services to be ready..."
+          sleep 30
+          
+          # Check service health
+          docker ps -a
+          curl -f http://localhost/health || (echo "Health check failed" && docker logs appflowy-cloud-premium-appflowy_cloud-1 && exit 1)
+
+      - name: Install E2E test dependencies
+        working-directory: tests/e2e
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No E2E tests found, creating minimal setup"
+            mkdir -p tests/e2e
+            cd tests/e2e
+            npm init -y
+            npm install --save-dev playwright @playwright/test
+          fi
+
+      - name: Install Playwright browsers
+        working-directory: tests/e2e
+        run: |
+          if [ -f package.json ] && npm list @playwright/test > /dev/null 2>&1; then
+            npx playwright install chromium
+          fi
+
+      - name: Build frontend for E2E tests
+        run: |
+          cd frontend && npm ci && npm run build
+          cd ../admin-frontend && npm ci && npm run build
+
+      - name: Run E2E tests
+        working-directory: tests/e2e
+        env:
+          BASE_URL: http://localhost
+          PLAYWRIGHT_BASE_URL: http://localhost
+        run: |
+          if [ -f package.json ] && npm run --silent | grep -q "test"; then
+            npm test
+          else
+            echo "Creating basic smoke test"
+            mkdir -p tests
+            cat > tests/smoke.spec.js << 'EOF'
+          const { test, expect } = require('@playwright/test');
+          
+          test('AppFlowy Cloud health check', async ({ page }) => {
+            await page.goto('http://localhost/health');
+            const content = await page.textContent('body');
+            expect(content).toContain('ok');
+          });
+          
+          test('Admin frontend loads', async ({ page }) => {
+            await page.goto('http://localhost');
+            await expect(page).toHaveTitle(/AppFlowy/);
+          });
+          EOF
+            npx playwright test
+          fi
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results
+          path: |
+            tests/e2e/test-results/
+            tests/e2e/playwright-report/
+          retention-days: 7
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== AppFlowy Cloud Logs ==="
+          docker logs appflowy-cloud-premium-appflowy_cloud-1 || true
+          echo "=== PostgreSQL Logs ==="
+          docker logs appflowy-cloud-premium-postgres-1 || true
+          echo "=== Redis Logs ==="
+          docker logs appflowy-cloud-premium-redis-1 || true
+
+      - name: Clean up Docker resources
+        if: always()
+        run: |
+          docker compose down -v
+          docker image prune -af
+          docker volume prune -f

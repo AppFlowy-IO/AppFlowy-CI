@@ -1,0 +1,95 @@
+name: Cloud Rustlint CI
+
+on:
+  repository_dispatch:
+    types: [cloud-premium-rustlint-ci]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number from private repo'
+        required: false
+        type: string
+      pr_ref:
+        description: 'Git ref to checkout from private repo'
+        required: false
+        type: string
+        default: 'main'
+
+env:
+  SQLX_VERSION: 0.7.1
+  SQLX_FEATURES: "rustls,postgres"
+  SQLX_OFFLINE: true
+  RUST_TOOLCHAIN: "1.86.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustlint:
+    name: fmt & clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set timezone for action
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "US/Pacific"
+
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+          components: rustfmt, clippy
+          profile: minimal
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ runner.os }}
+          cache-on-failure: true
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+
+      - name: Configure Git credentials for Cargo
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
+      - name: Copy and rename dev.env to .env
+        run: |
+          if [ -f dev.env ]; then
+            cp dev.env .env
+          elif [ -f deploy.env ]; then
+            cp deploy.env .env
+          fi
+
+      - name: Code Gen
+        run: |
+          if [ -f ./script/code_gen.sh ]; then
+            cd ./script && ./code_gen.sh
+          else
+            echo "No code_gen.sh found, skipping code generation"
+          fi
+
+      - name: Rustfmt
+        run: cargo fmt --check
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --tests -- -D warnings
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}

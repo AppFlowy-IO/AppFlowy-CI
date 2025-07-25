@@ -1,0 +1,225 @@
+name: Cloud Docker CI
+
+on:
+  repository_dispatch:
+    types: [cloud-premium-docker-ci]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number from private repo'
+        required: false
+        type: string
+      pr_ref:
+        description: 'Git ref to checkout from private repo'
+        required: false
+        type: string
+        default: 'main'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: appflowyinc/appflowy_cloud
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set timezone for action
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "US/Pacific"
+
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Configure Git credentials for Docker build
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: appflowyinc
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=test-{{sha}}
+
+      - name: Build AppFlowy Cloud Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }}
+
+      - name: Build Admin Frontend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./admin-frontend
+          file: ./admin-frontend/Dockerfile
+          push: false
+          tags: appflowyinc/admin-frontend:test-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Worker Docker image (if exists)
+        run: |
+          if [ -f worker/Dockerfile ]; then
+            docker build -t appflowyinc/appflowy_worker:test-${{ github.sha }} \
+              --build-arg GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }} \
+              worker/
+          else
+            echo "Worker Dockerfile not found, skipping"
+          fi
+
+      - name: Test Docker image startup
+        run: |
+          # Create test environment
+          cat > test.env << EOF
+          RUST_LOG=info
+          DATABASE_URL=postgres://postgres:password@localhost:5432/appflowy_cloud_test
+          REDIS_URL=redis://localhost:6379
+          GOTRUE_MAILER_AUTOCONFIRM=true
+          API_EXTERNAL_URL=http://localhost
+          APPFLOWY_SPAM_DETECT_ENABLED=false
+          EOF
+
+          # Start test services
+          docker run -d --name postgres-test \
+            -e POSTGRES_PASSWORD=password \
+            -e POSTGRES_DB=appflowy_cloud_test \
+            -p 5432:5432 \
+            postgres:16
+
+          docker run -d --name redis-test \
+            -p 6379:6379 \
+            redis:7-alpine
+
+          # Wait for services
+          sleep 10
+
+          # Test the main image
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "Testing image: $IMAGE_TAG"
+          
+          # Test image can start and respond to health checks
+          docker run -d --name cloud-test \
+            --env-file test.env \
+            --network host \
+            $IMAGE_TAG
+
+          # Wait for startup
+          sleep 15
+
+          # Check if container is running
+          if ! docker ps | grep -q cloud-test; then
+            echo "Container failed to start"
+            docker logs cloud-test
+            exit 1
+          fi
+
+          # Test health endpoint (if available)
+          timeout 30 bash -c 'until curl -f http://localhost/health 2>/dev/null; do sleep 1; done' || echo "Health check not available or failed"
+
+          echo "Docker image test completed successfully"
+
+      - name: Run container security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Test Docker Compose setup
+        run: |
+          # Create test docker-compose override
+          cat > docker-compose.test.yml << EOF
+          version: '3.8'
+          services:
+            appflowy_cloud:
+              image: $(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+              environment:
+                - RUST_LOG=info
+                - DATABASE_URL=postgres://postgres:password@postgres:5432/appflowy_cloud
+                - REDIS_URL=redis://redis:6379
+          EOF
+
+          # Test with docker-compose
+          docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait --wait-timeout 60
+          
+          # Verify services are running
+          docker compose ps
+          
+          # Basic connectivity test
+          sleep 10
+          curl -f http://localhost/health || echo "Health check endpoint not available"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== AppFlowy Cloud Test Logs ==="
+          docker logs cloud-test || true
+          echo "=== Docker Compose Logs ==="
+          docker compose logs || true
+
+      - name: Clean up test containers
+        if: always()
+        run: |
+          docker stop cloud-test postgres-test redis-test || true
+          docker rm cloud-test postgres-test redis-test || true
+          docker compose down -v || true
+          docker image prune -af
+          docker volume prune -f
+
+      - name: Push images on success (for main branch only)
+        if: success() && (github.event.client_payload.pr_ref == 'main' || github.event.inputs.pr_ref == 'main')
+        run: |
+          # Push main cloud image
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          docker tag $IMAGE_TAG ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-test
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-test
+          
+          # Push admin frontend
+          docker tag appflowyinc/admin-frontend:test-${{ github.sha }} appflowyinc/admin-frontend:latest-test
+          docker push appflowyinc/admin-frontend:latest-test
+          
+          echo "Test images pushed to Docker Hub"

@@ -1,12 +1,12 @@
-name: Webhook Receiver for Private Repo
+name: Webhook Receiver for Private Repos
 
 on:
   repository_dispatch:
-    types: [private-repo-webhook]
+    types: [private-repo-webhook, cloud-premium-webhook]
   workflow_dispatch:
     inputs:
       event_type:
-        description: 'Event type (pr_opened, pr_sync, push)'
+        description: "Event type (pr_opened, pr_sync, push)"
         required: true
         type: choice
         options:
@@ -14,21 +14,25 @@ on:
           - pr_sync
           - push
       pr_number:
-        description: 'PR number (for PR events)'
+        description: "PR number (for PR events)"
         required: false
         type: string
       pr_ref:
-        description: 'Git ref/branch to test'
+        description: "Git ref/branch to test"
         required: true
         type: string
       workflows:
-        description: 'Workflows to trigger (comma-separated: flutter,rust,mobile,ios,rust_coverage,docker,commit_lint)'
+        description: "Workflows to trigger (comma-separated: flutter,rust,mobile,ios,rust_coverage,docker,commit_lint,backend,frontend,e2e,cloud_docker,rustlint)"
         required: true
         type: string
-        default: 'flutter,rust'
+        default: "flutter,rust"
+      source_repo:
+        description: "Source repository (AppFlowy-Premium or AppFlowy-Cloud-Premium)"
+        required: false
+        type: string
+        default: "AppFlowy-Premium"
 
 concurrency:
-  # Use PR number for grouping, fallback to a unique identifier for push events
   group: webhook-pr-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || format('push-{0}', github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.run_id) }}
   cancel-in-progress: true
 
@@ -43,11 +47,26 @@ jobs:
       rust_coverage_run_url: ${{ steps.get_run_urls.outputs.rust_coverage_run_url }}
       docker_run_url: ${{ steps.get_run_urls.outputs.docker_run_url }}
       commit_lint_run_url: ${{ steps.get_run_urls.outputs.commit_lint_run_url }}
+      backend_run_url: ${{ steps.get_run_urls.outputs.backend_run_url }}
+      frontend_run_url: ${{ steps.get_run_urls.outputs.frontend_run_url }}
+      e2e_run_url: ${{ steps.get_run_urls.outputs.e2e_run_url }}
+      cloud_docker_run_url: ${{ steps.get_run_urls.outputs.cloud_docker_run_url }}
+      rustlint_run_url: ${{ steps.get_run_urls.outputs.rustlint_run_url }}
     steps:
       - name: Parse event data
         id: parse
         run: |
-          # Extract data from either repository_dispatch or workflow_dispatch
+
+          if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
+            echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
+          else
+
+            echo "source_repo=${{ github.event.inputs.source_repo || 'AppFlowy-Premium' }}" >> $GITHUB_OUTPUT
+          fi
+
+
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "event_type=${{ github.event.client_payload.event_type }}" >> $GITHUB_OUTPUT
             echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
@@ -60,11 +79,12 @@ jobs:
             echo "workflows=${{ github.event.inputs.workflows }}" >> $GITHUB_OUTPUT
           fi
 
-          # Generate unique execution ID for this webhook trigger
+
           echo "execution_id=exec-$(date +%s)-${{ github.run_id }}" >> $GITHUB_OUTPUT
 
       - name: Display event information
         run: |
+          echo "Source Repository: ${{ steps.parse.outputs.source_repo }}"
           echo "Event Type: ${{ steps.parse.outputs.event_type }}"
           echo "PR Number: ${{ steps.parse.outputs.pr_number }}"
           echo "Git Ref: ${{ steps.parse.outputs.pr_ref }}"
@@ -176,6 +196,81 @@ jobs:
               "workflow_type": "commit_lint"
             }
 
+      - name: Trigger Backend CI
+        if: contains(steps.parse.outputs.workflows, 'backend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: cloud-premium-backend-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "backend"
+            }
+
+      - name: Trigger Frontend CI
+        if: contains(steps.parse.outputs.workflows, 'frontend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: cloud-premium-frontend-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "frontend"
+            }
+
+      - name: Trigger E2E CI
+        if: contains(steps.parse.outputs.workflows, 'e2e') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: cloud-premium-e2e-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "e2e"
+            }
+
+      - name: Trigger Cloud Docker CI
+        if: contains(steps.parse.outputs.workflows, 'cloud_docker') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: cloud-premium-docker-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "cloud_docker"
+            }
+
+      - name: Trigger Rustlint CI
+        if: contains(steps.parse.outputs.workflows, 'rustlint') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: cloud-premium-rustlint-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "rustlint"
+            }
+
       - name: Wait for workflows to start and get run URLs
         id: get_run_urls
         env:
@@ -184,7 +279,7 @@ jobs:
         run: |
           echo "⏳ Waiting for workflows to start and fetching run URLs..."
 
-          # Define workflow file names
+
           declare -A workflow_files=(
             ["flutter"]="flutter_ci.yaml"
             ["rust"]="rust_ci.yaml"
@@ -193,15 +288,20 @@ jobs:
             ["rust_coverage"]="rust_coverage.yml"
             ["docker"]="docker_ci.yml"
             ["commit_lint"]="commit_lint.yml"
+            ["backend"]="cloud_backend_ci.yaml"
+            ["frontend"]="cloud_frontend_ci.yaml"
+            ["e2e"]="cloud_e2e_ci.yaml"
+            ["cloud_docker"]="cloud_docker_ci.yaml"
+            ["rustlint"]="cloud_rustlint_ci.yaml"
           )
 
-          # Get list of workflows to monitor
+
           IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
 
-          # Wait a bit for workflows to start
+
           sleep 10
 
-          # Fetch run URLs for each triggered workflow
+
           flutter_run_url=""
           rust_run_url=""
           mobile_run_url=""
@@ -209,17 +309,22 @@ jobs:
           rust_coverage_run_url=""
           docker_run_url=""
           commit_lint_run_url=""
+          backend_run_url=""
+          frontend_run_url=""
+          e2e_run_url=""
+          cloud_docker_run_url=""
+          rustlint_run_url=""
 
           for workflow in "${WORKFLOW_ARRAY[@]}"; do
             workflow_file="${workflow_files[$workflow]}"
             if [ -n "$workflow_file" ]; then
               echo "Fetching latest run for workflow: $workflow_file"
 
-              # Get the latest workflow runs
+
               response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
                 "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=5")
 
-              # Find the most recent repository_dispatch run (should be ours)
+
               for i in {0..4}; do
                 run_event=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].event // "null"')
                 run_created=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].created_at // "null"')
@@ -229,13 +334,13 @@ jobs:
                   break
                 fi
 
-                # Check if this run is from repository_dispatch and recent (within last 5 minutes)
+
                 if [ "$run_event" = "repository_dispatch" ]; then
                   run_created_timestamp=$(date -d "$run_created" +%s 2>/dev/null || echo "0")
                   current_timestamp=$(date +%s)
                   time_diff=$((current_timestamp - run_created_timestamp))
 
-                  # If the run was created within the last 5 minutes, assume it's ours
+
                   if [ $time_diff -le 300 ]; then
                     case $workflow in
                       "flutter")
@@ -259,6 +364,21 @@ jobs:
                       "commit_lint")
                         commit_lint_run_url="$run_url"
                         ;;
+                      "backend")
+                        backend_run_url="$run_url"
+                        ;;
+                      "frontend")
+                        frontend_run_url="$run_url"
+                        ;;
+                      "e2e")
+                        e2e_run_url="$run_url"
+                        ;;
+                      "cloud_docker")
+                        cloud_docker_run_url="$run_url"
+                        ;;
+                      "rustlint")
+                        rustlint_run_url="$run_url"
+                        ;;
                     esac
                     echo "Found run URL for $workflow: $run_url"
                     break
@@ -268,7 +388,7 @@ jobs:
             fi
           done
 
-          # Store the run URLs
+
           echo "flutter_run_url=$flutter_run_url" >> $GITHUB_OUTPUT
           echo "rust_run_url=$rust_run_url" >> $GITHUB_OUTPUT
           echo "mobile_run_url=$mobile_run_url" >> $GITHUB_OUTPUT
@@ -276,6 +396,11 @@ jobs:
           echo "rust_coverage_run_url=$rust_coverage_run_url" >> $GITHUB_OUTPUT
           echo "docker_run_url=$docker_run_url" >> $GITHUB_OUTPUT
           echo "commit_lint_run_url=$commit_lint_run_url" >> $GITHUB_OUTPUT
+          echo "backend_run_url=$backend_run_url" >> $GITHUB_OUTPUT
+          echo "frontend_run_url=$frontend_run_url" >> $GITHUB_OUTPUT
+          echo "e2e_run_url=$e2e_run_url" >> $GITHUB_OUTPUT
+          echo "cloud_docker_run_url=$cloud_docker_run_url" >> $GITHUB_OUTPUT
+          echo "rustlint_run_url=$rustlint_run_url" >> $GITHUB_OUTPUT
 
   create-pr-comment:
     runs-on: ubuntu-latest
@@ -285,7 +410,17 @@ jobs:
       - name: Parse event data
         id: parse
         run: |
-          # Extract data from either repository_dispatch or workflow_dispatch
+
+          if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
+            echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
+          else
+
+            echo "source_repo=${{ github.event.inputs.source_repo || 'AppFlowy-Premium' }}" >> $GITHUB_OUTPUT
+          fi
+
+
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
             echo "workflows=${{ github.event.client_payload.workflows }}" >> $GITHUB_OUTPUT
@@ -296,7 +431,7 @@ jobs:
             echo "pr_ref=${{ github.event.inputs.pr_ref }}" >> $GITHUB_OUTPUT
           fi
 
-          # Generate timestamp for this CI run
+
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
       - name: Generate workflow links
@@ -305,7 +440,7 @@ jobs:
           workflows="${{ steps.parse.outputs.workflows }}"
           pr_number="${{ steps.parse.outputs.pr_number }}"
 
-          # Get run URLs from the dispatch-workflows job
+
           flutter_run_url="${{ needs.dispatch-workflows.outputs.flutter_run_url }}"
           rust_run_url="${{ needs.dispatch-workflows.outputs.rust_run_url }}"
           mobile_run_url="${{ needs.dispatch-workflows.outputs.mobile_run_url }}"
@@ -313,8 +448,13 @@ jobs:
           rust_coverage_run_url="${{ needs.dispatch-workflows.outputs.rust_coverage_run_url }}"
           docker_run_url="${{ needs.dispatch-workflows.outputs.docker_run_url }}"
           commit_lint_run_url="${{ needs.dispatch-workflows.outputs.commit_lint_run_url }}"
+          backend_run_url="${{ needs.dispatch-workflows.outputs.backend_run_url }}"
+          frontend_run_url="${{ needs.dispatch-workflows.outputs.frontend_run_url }}"
+          e2e_run_url="${{ needs.dispatch-workflows.outputs.e2e_run_url }}"
+          cloud_docker_run_url="${{ needs.dispatch-workflows.outputs.cloud_docker_run_url }}"
+          rustlint_run_url="${{ needs.dispatch-workflows.outputs.rustlint_run_url }}"
 
-          # Generate workflow links based on requested workflows with actual run URLs
+
           flutter_link=""
           rust_link=""
           mobile_link=""
@@ -322,64 +462,109 @@ jobs:
           rust_coverage_link=""
           docker_link=""
           commit_lint_link=""
+          backend_link=""
+          frontend_link=""
+          e2e_link=""
+          cloud_docker_link=""
+          rustlint_link=""
 
           if [[ "$workflows" == *"flutter"* ]]; then
             if [ -n "$flutter_run_url" ]; then
-              flutter_link="- **Flutter CI/CD**: [$flutter_run_url]($flutter_run_url) (PR #${pr_number})"
+              flutter_link="- **Flutter CI/CD**: [$flutter_run_url]($flutter_run_url) (PR $pr_number)"
             else
-              flutter_link="- **Flutter CI/CD**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/flutter_ci.yaml) (PR #${pr_number}) - Starting up..."
+              flutter_link="- **Flutter CI/CD**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/flutter_ci.yaml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"rust"* ]]; then
             if [ -n "$rust_run_url" ]; then
-              rust_link="- **Rust Testing**: [$rust_run_url]($rust_run_url) (PR #${pr_number})"
+              rust_link="- **Rust Testing**: [$rust_run_url]($rust_run_url) (PR $pr_number)"
             else
-              rust_link="- **Rust Testing**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_ci.yaml) (PR #${pr_number}) - Starting up..."
+              rust_link="- **Rust Testing**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_ci.yaml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"mobile"* ]]; then
             if [ -n "$mobile_run_url" ]; then
-              mobile_link="- **Mobile CI (iOS/Android)**: [$mobile_run_url]($mobile_run_url) (PR #${pr_number})"
+              mobile_link="- **Mobile CI (iOS/Android)**: [$mobile_run_url]($mobile_run_url) (PR $pr_number)"
             else
-              mobile_link="- **Mobile CI (iOS/Android)**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/mobile_ci.yml) (PR #${pr_number}) - Starting up..."
+              mobile_link="- **Mobile CI (iOS/Android)**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/mobile_ci.yml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"ios"* ]]; then
             if [ -n "$ios_run_url" ]; then
-              ios_link="- **iOS CI**: [$ios_run_url]($ios_run_url) (PR #${pr_number})"
+              ios_link="- **iOS CI**: [$ios_run_url]($ios_run_url) (PR $pr_number)"
             else
-              ios_link="- **iOS CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/ios_ci.yaml) (PR #${pr_number}) - Starting up..."
+              ios_link="- **iOS CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/ios_ci.yaml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"rust_coverage"* ]]; then
             if [ -n "$rust_coverage_run_url" ]; then
-              rust_coverage_link="- **Rust Coverage**: [$rust_coverage_run_url]($rust_coverage_run_url) (PR #${pr_number})"
+              rust_coverage_link="- **Rust Coverage**: [$rust_coverage_run_url]($rust_coverage_run_url) (PR $pr_number)"
             else
-              rust_coverage_link="- **Rust Coverage**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_coverage.yml) (PR #${pr_number}) - Starting up..."
+              rust_coverage_link="- **Rust Coverage**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/rust_coverage.yml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"docker"* ]]; then
             if [ -n "$docker_run_url" ]; then
-              docker_link="- **Docker CI**: [$docker_run_url]($docker_run_url) (PR #${pr_number})"
+              docker_link="- **Docker CI**: [$docker_run_url]($docker_run_url) (PR $pr_number)"
             else
-              docker_link="- **Docker CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/docker_ci.yml) (PR #${pr_number}) - Starting up..."
+              docker_link="- **Docker CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/docker_ci.yml) (PR $pr_number)"
             fi
           fi
 
           if [[ "$workflows" == *"commit_lint"* ]]; then
             if [ -n "$commit_lint_run_url" ]; then
-              commit_lint_link="- **Commit Lint**: [$commit_lint_run_url]($commit_lint_run_url) (PR #${pr_number})"
+              commit_lint_link="- **Commit Lint**: [$commit_lint_run_url]($commit_lint_run_url) (PR $pr_number)"
             else
-              commit_lint_link="- **Commit Lint**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/commit_lint.yml) (PR #${pr_number}) - Starting up..."
+              commit_lint_link="- **Commit Lint**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/commit_lint.yml) (PR $pr_number)"
             fi
           fi
 
-          # Store the links
+          if [[ "$workflows" == *"backend"* ]]; then
+            if [ -n "$backend_run_url" ]; then
+              backend_link="- **Backend CI**: [$backend_run_url]($backend_run_url) (PR $pr_number)"
+            else
+              backend_link="- **Backend CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_backend_ci.yaml) (PR $pr_number)"
+            fi
+          fi
+
+          if [[ "$workflows" == *"frontend"* ]]; then
+            if [ -n "$frontend_run_url" ]; then
+              frontend_link="- **Frontend CI**: [$frontend_run_url]($frontend_run_url) (PR $pr_number)"
+            else
+              frontend_link="- **Frontend CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_frontend_ci.yaml) (PR $pr_number)"
+            fi
+          fi
+
+          if [[ "$workflows" == *"e2e"* ]]; then
+            if [ -n "$e2e_run_url" ]; then
+              e2e_link="- **E2E Testing**: [$e2e_run_url]($e2e_run_url) (PR $pr_number)"
+            else
+              e2e_link="- **E2E Testing**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_e2e_ci.yaml) (PR $pr_number)"
+            fi
+          fi
+
+          if [[ "$workflows" == *"cloud_docker"* ]]; then
+            if [ -n "$cloud_docker_run_url" ]; then
+              cloud_docker_link="- **Cloud Docker CI**: [$cloud_docker_run_url]($cloud_docker_run_url) (PR $pr_number)"
+            else
+              cloud_docker_link="- **Cloud Docker CI**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_docker_ci.yaml) (PR $pr_number)"
+            fi
+          fi
+
+          if [[ "$workflows" == *"rustlint"* ]]; then
+            if [ -n "$rustlint_run_url" ]; then
+              rustlint_link="- **Rust Lint (fmt & clippy)**: [$rustlint_run_url]($rustlint_run_url) (PR #${pr_number})"
+            else
+              rustlint_link="- **Rust Lint (fmt & clippy)**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_rustlint_ci.yaml) (PR #${pr_number}) - Starting up..."
+            fi
+          fi
+
+
           echo "flutter_link=$flutter_link" >> $GITHUB_OUTPUT
           echo "rust_link=$rust_link" >> $GITHUB_OUTPUT
           echo "mobile_link=$mobile_link" >> $GITHUB_OUTPUT
@@ -387,15 +572,20 @@ jobs:
           echo "rust_coverage_link=$rust_coverage_link" >> $GITHUB_OUTPUT
           echo "docker_link=$docker_link" >> $GITHUB_OUTPUT
           echo "commit_lint_link=$commit_lint_link" >> $GITHUB_OUTPUT
+          echo "backend_link=$backend_link" >> $GITHUB_OUTPUT
+          echo "frontend_link=$frontend_link" >> $GITHUB_OUTPUT
+          echo "e2e_link=$e2e_link" >> $GITHUB_OUTPUT
+          echo "cloud_docker_link=$cloud_docker_link" >> $GITHUB_OUTPUT
+          echo "rustlint_link=$rustlint_link" >> $GITHUB_OUTPUT
 
       - name: Post CI status comment to private repo PR
         env:
           ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
         run: |
-          # Create the comment body
+
           cat > comment_body.md << 'EOF'
-          ## 🚀 CI/CD Pipeline Status - PR #${{ steps.parse.outputs.pr_number }}
+
 
           **Started**: ${{ steps.parse.outputs.timestamp }}
           **Branch**: `${{ steps.parse.outputs.pr_ref }}`
@@ -403,10 +593,10 @@ jobs:
 
           Your PR has triggered our CI/CD pipeline in the public repository. You can monitor the test results and build status here:
 
-          ### 📊 CI Dashboard
+
           **Main CI Workflows**: https://github.com/AppFlowy-IO/AppFlowy-CI/actions
 
-          ### 🔗 Running Workflows for PR #${{ steps.parse.outputs.pr_number }}
+
 
           ${{ steps.links.outputs.flutter_link }}
           ${{ steps.links.outputs.rust_link }}
@@ -415,21 +605,26 @@ jobs:
           ${{ steps.links.outputs.rust_coverage_link }}
           ${{ steps.links.outputs.docker_link }}
           ${{ steps.links.outputs.commit_lint_link }}
+          ${{ steps.links.outputs.backend_link }}
+          ${{ steps.links.outputs.frontend_link }}
+          ${{ steps.links.outputs.e2e_link }}
+          ${{ steps.links.outputs.cloud_docker_link }}
+          ${{ steps.links.outputs.rustlint_link }}
 
           EOF
 
-          # Remove empty lines from workflow links
+
           sed -i '/^$/d' comment_body.md
 
-          # Post the comment to the private repository PR
+
           curl -X POST \
             -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            https://api.github.com/repos/AppFlowy-IO/AppFlowy-Premium/issues/$PR_NUMBER/comments \
+            https://api.github.com/repos/AppFlowy-IO/${{ steps.parse.outputs.source_repo }}/issues/$PR_NUMBER/comments \
             -d "{\"body\": $(jq -Rs . < comment_body.md)}"
 
-          echo "✅ Posted CI status comment to private repo PR #$PR_NUMBER"
+          echo "✅ Posted CI status comment to ${{ steps.parse.outputs.source_repo }} PR $PR_NUMBER"
 
   auto-approve-pr:
     runs-on: ubuntu-latest
@@ -439,7 +634,17 @@ jobs:
       - name: Parse event data
         id: parse
         run: |
-          # Extract data from either repository_dispatch or workflow_dispatch
+
+          if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
+            echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
+          else
+
+            echo "source_repo=${{ github.event.inputs.source_repo || 'AppFlowy-Premium' }}" >> $GITHUB_OUTPUT
+          fi
+
+
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
             echo "workflows=${{ github.event.client_payload.workflows }}" >> $GITHUB_OUTPUT
@@ -457,9 +662,9 @@ jobs:
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
           PR_REF: ${{ steps.parse.outputs.pr_ref }}
         run: |
-          echo "⏳ Waiting for CI workflows to complete for PR #$PR_NUMBER..."
+          echo "⏳ Waiting for CI workflows to complete for PR $PR_NUMBER..."
 
-          # Define workflow file names
+
           declare -A workflow_files=(
             ["flutter"]="flutter_ci.yaml"
             ["rust"]="rust_ci.yaml"
@@ -468,14 +673,19 @@ jobs:
             ["rust_coverage"]="rust_coverage.yml"
             ["docker"]="docker_ci.yml"
             ["commit_lint"]="commit_lint.yml"
+            ["backend"]="cloud_backend_ci.yaml"
+            ["frontend"]="cloud_frontend_ci.yaml"
+            ["e2e"]="cloud_e2e_ci.yaml"
+            ["cloud_docker"]="cloud_docker_ci.yaml"
+            ["rustlint"]="cloud_rustlint_ci.yaml"
           )
 
-          # Get list of workflows to monitor
+
           IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
 
-          echo "Monitoring workflows for PR #$PR_NUMBER: ${WORKFLOW_ARRAY[@]}"
+          echo "Monitoring workflows for PR $PR_NUMBER: $WORKFLOWS"
 
-          # Wait for workflows to complete (max 60 minutes)
+
           max_wait=3600
           wait_interval=30
           elapsed=0
@@ -488,19 +698,19 @@ jobs:
             for workflow in "${WORKFLOW_ARRAY[@]}"; do
               workflow_file="${workflow_files[$workflow]}"
               if [ -n "$workflow_file" ]; then
-                echo "Checking status of workflow: $workflow_file for PR #$PR_NUMBER"
+                echo "Checking status of workflow: $workflow_file for PR $PR_NUMBER"
 
-                # Get workflow runs that might be related to our PR
+
                 response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
                   "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=10")
 
-                # Look for the most recent run that matches our criteria
-                # We'll look for runs from the repository_dispatch event and check if they're related to our PR
+
+
                 run_found=false
                 status="unknown"
                 conclusion="unknown"
 
-                # Parse the JSON to find the relevant run
+
                 for i in {0..9}; do
                   run_status=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].status // "null"')
                   run_conclusion=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].conclusion // "null"')
@@ -511,13 +721,13 @@ jobs:
                     break
                   fi
 
-                  # Check if this run is from repository_dispatch and within the last hour
+
                   if [ "$run_event" = "repository_dispatch" ]; then
                     run_created_timestamp=$(date -d "$run_created" +%s 2>/dev/null || echo "0")
                     current_timestamp=$(date +%s)
                     time_diff=$((current_timestamp - run_created_timestamp))
 
-                    # If the run was created within the last hour, assume it's ours
+
                     if [ $time_diff -le 3600 ]; then
                       status="$run_status"
                       conclusion="$run_conclusion"
@@ -548,24 +758,24 @@ jobs:
 
             if [ "$all_complete" = true ]; then
               if [ "$all_success" = true ]; then
-                echo "✅ All workflows completed successfully for PR #$PR_NUMBER!"
+                echo "✅ All workflows completed successfully for PR $PR_NUMBER"
                 echo "all_workflows_passed=true" >> $GITHUB_ENV
                 break
               else
-                echo "❌ Some workflows failed for PR #$PR_NUMBER"
+                echo "❌ Some workflows failed for PR $PR_NUMBER"
                 echo "all_workflows_passed=false" >> $GITHUB_ENV
                 break
               fi
             fi
 
-            echo "⏳ Workflows still running for PR #$PR_NUMBER... waiting $wait_interval seconds"
+            echo "⏳ Workflows still running for PR $PR_NUMBER..."
             echo -e "Current status:$workflow_status_summary"
             sleep $wait_interval
             elapsed=$((elapsed + wait_interval))
           done
 
           if [ $elapsed -ge $max_wait ]; then
-            echo "⏰ Timeout reached waiting for workflows for PR #$PR_NUMBER"
+            echo "⏰ Timeout reached waiting for workflows for PR $PR_NUMBER"
             echo "all_workflows_passed=false" >> $GITHUB_ENV
           fi
 
@@ -575,30 +785,30 @@ jobs:
           ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
         run: |
-          echo "🎉 All CI tests passed! Auto-approving PR #$PR_NUMBER"
+          echo "🎉 All CI tests passed! Auto-approving PR $PR_NUMBER..."
 
-          # Submit approval review
+
           curl -X POST \
             -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            https://api.github.com/repos/AppFlowy-IO/AppFlowy-Premium/pulls/$PR_NUMBER/reviews \
+            https://api.github.com/repos/AppFlowy-IO/${{ steps.parse.outputs.source_repo }}/pulls/$PR_NUMBER/reviews \
             -d '{
               "event": "APPROVE",
-              "body": "🚀 **Auto-approved by CI for PR #'$PR_NUMBER'**\n\nAll automated tests have passed successfully:\n\n✅ Build verification completed\n✅ All tests passing\n✅ Code quality checks passed\n\nThis PR is ready for merge!\n\n*Run ID: '${{ github.run_id }}'*"
+              "body": "🚀 **Auto-approved by CI for PR '"$PR_NUMBER"'**\n\nAll CI tests have passed successfully! This PR has been automatically approved."
             }'
 
-          # Post a comment about the auto-approval
+
           curl -X POST \
             -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            https://api.github.com/repos/AppFlowy-IO/AppFlowy-Premium/issues/$PR_NUMBER/comments \
+            https://api.github.com/repos/AppFlowy-IO/${{ steps.parse.outputs.source_repo }}/issues/$PR_NUMBER/comments \
             -d '{
-              "body": "## 🤖 Auto-Approval - PR #'$PR_NUMBER'\n\n**Status**: ✅ **APPROVED**\n\nAll CI workflows have completed successfully for PR #'$PR_NUMBER'. This PR has been automatically approved and is ready for merge.\n\n### Passed Workflows\n'"$(echo "${{ steps.parse.outputs.workflows }}" | sed 's/,/\n- /g' | sed 's/^/- /')"'\n\n**Branch**: `${{ steps.parse.outputs.pr_ref }}`  \n**Run ID**: `${{ github.run_id }}`\n\n*Automated approval by GitHub Actions*"
+              "body": "✅ **All CI tests passed!** PR '"$PR_NUMBER"' has been automatically approved and is ready for merge."
             }'
 
-          echo "✅ PR #$PR_NUMBER has been auto-approved!"
+          echo "✅ PR $PR_NUMBER auto-approved successfully!"
 
       - name: Report failed tests
         if: env.all_workflows_passed == 'false'
@@ -606,16 +816,16 @@ jobs:
           ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
         run: |
-          echo "❌ Some CI tests failed or timed out for PR #$PR_NUMBER"
+          echo "❌ Some CI tests failed or timed out for PR $PR_NUMBER"
 
-          # Post a comment about the failed tests
+
           curl -X POST \
             -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            https://api.github.com/repos/AppFlowy-IO/AppFlowy-Premium/issues/$PR_NUMBER/comments \
+            https://api.github.com/repos/AppFlowy-IO/${{ steps.parse.outputs.source_repo }}/issues/$PR_NUMBER/comments \
             -d '{
-              "body": "## ❌ CI Tests Status - PR #'$PR_NUMBER'\n\n**Status**: **FAILED** or **TIMEOUT**\n\nSome CI workflows have failed or did not complete within the expected time for PR #'$PR_NUMBER'. Please check the workflow results and fix any issues before merging.\n\n### Check Results\nView detailed results at: https://github.com/AppFlowy-IO/AppFlowy-CI/actions\n\n**Branch**: `${{ steps.parse.outputs.pr_ref }}`  \n**Run ID**: `${{ github.run_id }}`\n\n*Automated status update by GitHub Actions*"
+              "body": "❌ **Some CI tests failed or timed out** for PR '"$PR_NUMBER"'. Please check the workflow results and fix any issues before requesting another review."
             }'
 
-          echo "ℹ️  Failure notification posted to PR #$PR_NUMBER"
+          echo "ℹ️  Failure notification posted to ${{ steps.parse.outputs.source_repo }} PR $PR_NUMBER"

@@ -1,0 +1,123 @@
+name: Cloud Frontend CI
+
+on:
+  repository_dispatch:
+    types: [cloud-premium-frontend-ci]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number from private repo'
+        required: false
+        type: string
+      pr_ref:
+        description: 'Git ref to checkout from private repo'
+        required: false
+        type: string
+        default: 'main'
+
+env:
+  NODE_VERSION: "20"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set timezone for action
+        uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "US/Pacific"
+
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            frontend/node_modules
+            admin-frontend/node_modules
+            ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json', 'admin-frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Configure Git credentials for npm
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install admin-frontend dependencies
+        working-directory: admin-frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Run admin-frontend tests
+        working-directory: admin-frontend
+        run: npm test
+
+      - name: Run frontend linting
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run admin-frontend linting
+        working-directory: admin-frontend
+        run: npm run lint
+
+      - name: Run frontend type checking
+        working-directory: frontend
+        run: npm run type-check
+
+      - name: Run admin-frontend type checking
+        working-directory: admin-frontend
+        run: npm run type-check
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build admin-frontend
+        working-directory: admin-frontend
+        run: npm run build
+
+      - name: Run frontend e2e tests (if exists)
+        working-directory: frontend
+        run: |
+          if [ -f package.json ] && npm run --silent | grep -q "test:e2e"; then
+            npm run test:e2e
+          else
+            echo "No e2e tests found, skipping"
+          fi
+
+      - name: Clean up Docker images
+        if: always()
+        run: |
+          docker image prune -af
+          docker volume prune -f
