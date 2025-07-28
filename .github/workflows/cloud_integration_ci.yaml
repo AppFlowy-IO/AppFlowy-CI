@@ -1,0 +1,205 @@
+name: AppFlowy-Cloud Integration Tests
+
+on:
+  repository_dispatch:
+    types: [cloud-premium-integration-ci]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  LOCALHOST_URL: http://localhost
+  LOCALHOST_WS: ws://localhost/ws/v1
+  LOCALHOST_WS_V2: ws://localhost/ws/v2
+  APPFLOWY_REDIS_URI: redis://redis:6379
+  APPFLOWY_AI_REDIS_URL: redis://redis:6379
+  LOCALHOST_GOTRUE: http://localhost/gotrue
+  POSTGRES_PASSWORD: password
+  DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
+  SQLX_OFFLINE: true
+  RUST_TOOLCHAIN: "1.86.0"
+  APPFLOWY_AI_VERSION: "0.9.38-amd64"
+
+jobs:
+  setup:
+    name: Setup Environment and Build Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref }}
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install protobuf-compiler
+          sudo update-ca-certificates
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Build Docker Images
+        run: |
+          export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          cp deploy.env .env
+          docker compose build \
+            --parallel \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --build-arg PROFILE=debug \
+            appflowy_cloud appflowy_worker admin_frontend
+
+      - name: Save Docker Images
+        run: |
+          docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
+          docker save appflowyinc/appflowy_worker_premium:latest | gzip > appflowy_worker.tar.gz
+          docker save appflowyinc/admin_frontend_premium:latest | gzip > admin_frontend.tar.gz
+
+      - name: Upload Docker Images as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: |
+            appflowy_cloud.tar.gz
+            appflowy_worker.tar.gz
+            admin_frontend.tar.gz
+          retention-days: 1
+
+  test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - test_service: "appflowy_cloud"
+            test_cmd: "--workspace --exclude appflowy-ai-client --features ai-test-enabled,sync-v2"
+          - test_service: "appflowy_worker"
+            test_cmd: "-p appflowy-worker"
+          - test_service: "admin_frontend"
+            test_cmd: "-p admin_frontend"
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          workspaces: "AppFlowy-Cloud"
+
+      - name: Download Docker Images
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+
+      - name: Load Docker Images
+        run: |
+          docker load < appflowy_cloud.tar.gz
+          docker load < appflowy_worker.tar.gz
+          docker load < admin_frontend.tar.gz
+
+      - name: Copy and rename deploy.env to .env
+        run: cp deploy.env .env
+
+      - name: Replace values in .env
+        run: |
+          # log level
+          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=trace,appflowy_worker=trace,database=trace,indexer=trace'|' .env
+          sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
+          sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
+          sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
+          sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
+          sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=false|' .env
+          sed -i 's|API_EXTERNAL_URL=http://your-host/gotrue|API_EXTERNAL_URL=http://localhost/gotrue|' .env
+          sed -i 's|GOTRUE_RATE_LIMIT_EMAIL_SENT=100|GOTRUE_RATE_LIMIT_EMAIL_SENT=1000|' .env
+          sed -i 's|APPFLOWY_MAILER_SMTP_USERNAME=.*|APPFLOWY_MAILER_SMTP_USERNAME=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
+          sed -i 's|APPFLOWY_MAILER_SMTP_PASSWORD=.*|APPFLOWY_MAILER_SMTP_PASSWORD=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
+          sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
+          sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
+          sed -i 's|APPFLOWY_EMBEDDING_CHUNK_SIZE=.*|APPFLOWY_EMBEDDING_CHUNK_SIZE=500|' .env
+          sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
+          sed -i 's|AI_ANTHROPIC_API_KEY=.*|AI_ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
+          sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
+          sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
+          sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
+          sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
+        shell: bash
+
+      - name: Update Nginx Configuration
+        # the wasm-pack headless tests will run on random ports, so we need to allow all origins
+        run: sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Run Docker-Compose
+        run: |
+          export APPFLOWY_WORKER_VERSION=latest
+          export APPFLOWY_CLOUD_VERSION=latest
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
+          export APPFLOWY_AI_VERSION=${{ env.APPFLOWY_AI_VERSION }}
+          docker compose -f docker-compose-ci.yml up -d
+          docker ps -a
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for services to be ready..."
+          for i in {1..60}; do
+            if curl -f http://localhost/health 2>/dev/null; then
+              echo "Health check passed after $((i*5)) seconds"
+              exit 0
+            fi
+            echo "Attempt $i: Health check failed, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "Health check timeout after 300 seconds - proceeding anyway"
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run Tests
+        run: |
+          echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test  ${{ matrix.test_cmd }} -- --skip stress_test --test-threads=4
+
+      - name: Server Logs
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose -f docker-compose-ci.yml logs
+
+  notify-webhook:
+    name: Notify Webhook
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always()
+    steps:
+      - name: Send webhook notification
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          event-type: ci-result
+          client-payload: |
+            {
+              "execution_id": "${{ github.event.client_payload.execution_id }}",
+              "workflow_type": "integration",
+              "status": "${{ needs.test.result }}",
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
