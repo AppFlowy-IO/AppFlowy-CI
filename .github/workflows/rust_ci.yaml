@@ -72,6 +72,24 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: 'main'
 
+      - name: Clean and Run Docker-Compose
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          echo "Stopping existing compose services..."
+          docker compose down -v --remove-orphans || true
+          
+          echo "Removing project-specific resources..."
+          docker compose rm -f -s -v || true
+          
+          echo "Cleaning up unused Docker resources..."
+          docker container prune -f || true
+          docker image prune -f || true
+          docker network prune -f || true
+          docker volume prune -f || true
+          
+          echo "Docker cleanup completed successfully"
+
+
       - name: Run Server
         working-directory: AppFlowy-Cloud-Premium
         run: |
