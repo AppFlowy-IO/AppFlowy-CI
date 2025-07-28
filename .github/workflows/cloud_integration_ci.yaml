@@ -47,10 +47,12 @@ jobs:
       - name: Build Docker Images
         run: |
           export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          export DOCKER_BUILDKIT=1
           cp deploy.env .env
           docker compose build \
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --build-arg BUILDKIT_MULTI_PLATFORM=0 \
             --build-arg PROFILE=debug \
             appflowy_cloud appflowy_worker admin_frontend
 
