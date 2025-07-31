@@ -2,7 +2,7 @@ name: Webhook Receiver for Private Repos
 
 on:
   repository_dispatch:
-    types: [private-repo-webhook, cloud-premium-webhook]
+    types: [private-repo-webhook, cloud-premium-webhook, commercial-cloud-webhook]
   workflow_dispatch:
     inputs:
       event_type:
@@ -53,12 +53,15 @@ jobs:
       cloud_docker_run_url: ${{ steps.get_run_urls.outputs.cloud_docker_run_url }}
       rustlint_run_url: ${{ steps.get_run_urls.outputs.rustlint_run_url }}
       integration_run_url: ${{ steps.get_run_urls.outputs.integration_run_url }}
+      commercial_run_url: ${{ steps.get_run_urls.outputs.commercial_run_url }}
     steps:
       - name: Parse event data
         id: parse
         run: |
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
@@ -286,6 +289,21 @@ jobs:
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "workflow_type": "integration"
             }
+      
+      - name: Trigger CommercialIntegration CI
+        if: contains(steps.parse.outputs.workflows, 'commercial') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          event-type: commercial-cloud-integration-ci
+          client-payload: |
+            {
+              "pr_number": "${{ steps.parse.outputs.pr_number }}",
+              "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
+              "event_type": "${{ steps.parse.outputs.event_type }}",
+              "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "workflow_type": "commercial"
+            }
 
       - name: Wait for workflows to start and get run URLs
         id: get_run_urls
@@ -310,6 +328,7 @@ jobs:
             ["cloud_docker"]="cloud_docker_ci.yaml"
             ["rustlint"]="cloud_rustlint_ci.yaml"
             ["integration"]="cloud_integration_ci.yaml"
+            ["commercial"]="cloud_commercial_integration_ci.yaml"
           )
 
 
@@ -332,6 +351,7 @@ jobs:
           cloud_docker_run_url=""
           rustlint_run_url=""
           integration_run_url=""
+          commercial_run_url=""
 
           for workflow in "${WORKFLOW_ARRAY[@]}"; do
             workflow_file="${workflow_files[$workflow]}"
@@ -400,6 +420,9 @@ jobs:
                       "integration")
                         integration_run_url="$run_url"
                         ;;
+                      "commercial")
+                        commercial_run_url="$run_url"
+                        ;;
                     esac
                     echo "Found run URL for $workflow: $run_url"
                     break
@@ -423,6 +446,7 @@ jobs:
           echo "cloud_docker_run_url=$cloud_docker_run_url" >> $GITHUB_OUTPUT
           echo "rustlint_run_url=$rustlint_run_url" >> $GITHUB_OUTPUT
           echo "integration_run_url=$integration_run_url" >> $GITHUB_OUTPUT
+          echo "commercial_run_url=$commercial_run_url" >> $GITHUB_OUTPUT
 
   create-pr-comment:
     runs-on: ubuntu-latest
@@ -434,6 +458,8 @@ jobs:
         run: |
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
@@ -476,6 +502,7 @@ jobs:
           cloud_docker_run_url="${{ needs.dispatch-workflows.outputs.cloud_docker_run_url }}"
           rustlint_run_url="${{ needs.dispatch-workflows.outputs.rustlint_run_url }}"
           integration_run_url="${{ needs.dispatch-workflows.outputs.integration_run_url }}"
+          commercial_run_url="${{ needs.dispatch-workflows.outputs.commercial_run_url }}"
 
 
           flutter_link=""
@@ -491,6 +518,7 @@ jobs:
           cloud_docker_link=""
           rustlint_link=""
           integration_link=""
+          commercial_link=""
 
           if [[ ",$workflows," == *",flutter,"* ]]; then
             if [ -n "$flutter_run_url" ]; then
@@ -596,6 +624,14 @@ jobs:
             fi
           fi
 
+          if [[ ",$workflows," == *",commercial,"* ]]; then
+            if [ -n "$commercial_run_url" ]; then
+              commercial_link="- **Commercial Integration Tests**: [$commercial_run_url]($commercial_run_url) (PR #${pr_number})"
+            else
+              commercial_link="- **Commercial Integration Tests**: [View Workflow](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/workflows/cloud_commercial_integration_ci.yaml) (PR #${pr_number}) - Starting up..."
+            fi
+          fi
+
 
           echo "flutter_link=$flutter_link" >> $GITHUB_OUTPUT
           echo "rust_link=$rust_link" >> $GITHUB_OUTPUT
@@ -610,6 +646,7 @@ jobs:
           echo "cloud_docker_link=$cloud_docker_link" >> $GITHUB_OUTPUT
           echo "rustlint_link=$rustlint_link" >> $GITHUB_OUTPUT
           echo "integration_link=$integration_link" >> $GITHUB_OUTPUT
+          echo "commercial_link=$commercial_link" >> $GITHUB_OUTPUT
 
       - name: Post CI status comment to private repo PR
         env:
@@ -644,6 +681,7 @@ jobs:
           ${{ steps.links.outputs.cloud_docker_link }}
           ${{ steps.links.outputs.rustlint_link }}
           ${{ steps.links.outputs.integration_link }}
+          ${{ steps.links.outputs.commercial_link }}
 
           EOF
 
@@ -670,6 +708,8 @@ jobs:
         run: |
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
+            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
@@ -713,6 +753,7 @@ jobs:
             ["cloud_docker"]="cloud_docker_ci.yaml"
             ["rustlint"]="cloud_rustlint_ci.yaml"
             ["integration"]="cloud_integration_ci.yaml"
+            ["commercial"]="cloud_commercial_integration_ci.yaml"
           )
 
 
