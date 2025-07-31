@@ -167,7 +167,7 @@ jobs:
           
           echo "Server info response: $response"
           # Extract self_hosted field and assert it's true
-          self_hosted=$(echo "$response" | jq -r '.self_hosted')
+          self_hosted=$(echo "$response" | jq -r '.data.self_hosted')
           if [ "$self_hosted" != "true" ]; then
             echo "ERROR: self_hosted field is '$self_hosted', expected 'true'"
             exit 1
