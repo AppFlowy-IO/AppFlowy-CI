@@ -154,6 +154,28 @@ jobs:
       - name: Run Tests
         run: |
           RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test
+          
+      - name: Test Server Info Endpoint
+        run: |
+          # Make request to server-info endpoint and capture response
+          response=$(curl -s http://localhost/api/server-info)
+          
+          if [ $? -ne 0 ]; then
+            echo "Failed to connect to server-info endpoint"
+            exit 1
+          fi
+          
+          echo "Server info response: $response"
+          
+          # Extract self_hosted field and assert it's true
+          self_hosted=$(echo "$response" | jq -r '.self_hosted')
+          
+          if [ "$self_hosted" != "true" ]; then
+            echo "ERROR: self_hosted field is '$self_hosted', expected 'true'"
+            exit 1
+          fi
+          
+          echo "✓ Server info test passed: self_hosted is true"
 
       - name: Server Logs
         if: failure()
