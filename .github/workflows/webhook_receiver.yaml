@@ -2,7 +2,7 @@ name: Webhook Receiver for Private Repos
 
 on:
   repository_dispatch:
-    types: [private-repo-webhook, cloud-premium-webhook, commercial-cloud-webhook]
+    types: [private-repo-webhook, cloud-premium-webhook]
   workflow_dispatch:
     inputs:
       event_type:
@@ -60,8 +60,6 @@ jobs:
         run: |
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
-            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
@@ -459,8 +457,6 @@ jobs:
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
-            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
           else
@@ -708,8 +704,6 @@ jobs:
         run: |
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
-            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "commercial-cloud-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
             echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
