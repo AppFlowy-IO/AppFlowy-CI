@@ -79,7 +79,7 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref }}
-          
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -153,7 +153,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --test-threads=2
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test
 
       - name: Server Logs
         if: failure()
