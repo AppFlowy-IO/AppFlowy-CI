@@ -95,6 +95,7 @@ jobs:
       - name: Load Docker Images
         run: |
           docker load < appflowy_cloud.tar.gz
+          docker tag appflowyinc/appflowy_cloud_premium:latest appflowyinc/appflowy_cloud_premium:${{ env.CLOUD_VERSION }}
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -138,7 +139,7 @@ jobs:
       - name: Run Docker-Compose
         run: |
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
-          export APPFLOWY_CLOUD_VERSION=latest
+           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
           docker compose -f docker-compose-ci.yml up -d
