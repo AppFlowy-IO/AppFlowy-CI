@@ -19,7 +19,7 @@ env:
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.86.0"
-  APPFLOWY_AI_VERSION: "0.9.38-amd64"
+  APPFLOWY_AI_VERSION: "0.9.44-amd64"
 
 jobs:
   setup:
@@ -111,11 +111,13 @@ jobs:
           sed -i 's|GOTRUE_RATE_LIMIT_EMAIL_SENT=100|GOTRUE_RATE_LIMIT_EMAIL_SENT=1000|' .env
           sed -i 's|APPFLOWY_MAILER_SMTP_USERNAME=.*|APPFLOWY_MAILER_SMTP_USERNAME=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
           sed -i 's|APPFLOWY_MAILER_SMTP_PASSWORD=.*|APPFLOWY_MAILER_SMTP_PASSWORD=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
+
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_SIZE=.*|APPFLOWY_EMBEDDING_CHUNK_SIZE=500|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
-          sed -i 's|AI_ANTHROPIC_API_KEY=.*|AI_ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
+          sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
+
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
