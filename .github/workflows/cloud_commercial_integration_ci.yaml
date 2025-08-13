@@ -58,7 +58,7 @@ jobs:
 
       - name: Save Docker Images
         run: |
-          docker save appflowyinc/appflowy_cloud_premium:latest-amd64 | gzip > appflowy_cloud.tar.gz
+          docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
 
       - name: Upload Docker Images as Artifacts
         uses: actions/upload-artifact@v4
@@ -138,7 +138,7 @@ jobs:
       - name: Run Docker-Compose
         run: |
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
-          export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_CLOUD_VERSION=latest
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
           docker compose -f docker-compose-ci.yml up -d
