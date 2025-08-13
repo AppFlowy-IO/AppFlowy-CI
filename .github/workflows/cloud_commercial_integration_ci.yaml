@@ -48,6 +48,7 @@ jobs:
         run: |
           export DOCKER_DEFAULT_PLATFORM=linux/amd64
           cp deploy.env .env
+          echo "building appflowy_cloud with features: ${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }}"
           docker compose build \
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
@@ -57,7 +58,7 @@ jobs:
 
       - name: Save Docker Images
         run: |
-          docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
+          docker save appflowyinc/appflowy_cloud_premium:latest-amd64 | gzip > appflowy_cloud.tar.gz
 
       - name: Upload Docker Images as Artifacts
         uses: actions/upload-artifact@v4
