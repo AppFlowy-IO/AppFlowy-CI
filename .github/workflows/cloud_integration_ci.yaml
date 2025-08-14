@@ -19,7 +19,6 @@ env:
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.86.0"
-  CLOUD_VERSION: "latest-amd64"
 
 jobs:
   setup:
@@ -152,10 +151,10 @@ jobs:
 
       - name: Run Docker-Compose
         run: |
-          export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
-          export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
-          export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
-          export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_WORKER_VERSION=latest
+          export APPFLOWY_CLOUD_VERSION=latest
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
+          export APPFLOWY_AI_VERSION=latest-amd64
           docker compose -f docker-compose-ci.yml up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
