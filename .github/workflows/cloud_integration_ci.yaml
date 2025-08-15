@@ -53,6 +53,7 @@ jobs:
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg BUILDKIT_MULTI_PLATFORM=0 \
             --build-arg PROFILE=debug \
+            --build-arg APP_VERSION=0.9.999 \
             appflowy_cloud appflowy_worker admin_frontend
 
       - name: Save Docker Images
@@ -116,7 +117,7 @@ jobs:
       - name: Replace values in .env
         run: |
           # log level
-          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=debug,appflowy_worker=debug'|' .env
+          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=debug'|' .env
           sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
           sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
