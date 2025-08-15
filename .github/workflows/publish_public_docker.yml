@@ -139,6 +139,7 @@ jobs:
             APP_VERSION=${{ env.GIT_TAG }}
 
       - name: Run Docker Compose
+        if: matrix.job.name == 'amd64'
         run: |
           # Set environment variables for docker-compose
           export APPFLOWY_CLOUD_VERSION=${{ env.GIT_TAG }}-${{ matrix.job.name }}
