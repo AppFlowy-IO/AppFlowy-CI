@@ -1,4 +1,4 @@
-name: Publish Public Docker Images
+name: Publish Public Cloud Docker Images
 
 on:
   workflow_dispatch:
@@ -67,8 +67,8 @@ jobs:
       - name: Build and Push GoTrue
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: docker/gotrue/Dockerfile
+          context: ./docker/gotrue
+          file: ./docker/gotrue/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -167,7 +167,6 @@ jobs:
           
           docker compose -f docker-compose-ci.yml up -d --no-build
           docker ps -a
-          docker logs appflowy-cloud-premium-appflowy_cloud-1
 
       - name: Test server info
         run: |
