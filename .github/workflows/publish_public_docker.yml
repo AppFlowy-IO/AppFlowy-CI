@@ -273,9 +273,9 @@ jobs:
         with:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
       
-       - name: Log dir
+      - name: Log dir
         if: always()
-        run: 
+        run: |
           ls -al
 
       - name: Build and push ${{ matrix.job.image_name }}:${{ env.GIT_TAG }}
