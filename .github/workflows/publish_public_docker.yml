@@ -65,9 +65,15 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Build and Push GoTrue
-        run: |
-          export TAG="${{ github.event.inputs.custom_tag }}"
-          docker buildx build --platform linux/amd64,linux/arm64 -t appflowyinc/gotrue:${TAG} -t appflowyinc/gotrue:latest -f docker/gotrue/Dockerfile --push docker/gotrue
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/gotrue/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            appflowyinc/gotrue:${{ github.event.inputs.custom_tag }}
+            appflowyinc/gotrue:latest
 
   appflowy_cloud_image:
     runs-on: ${{ matrix.job.os }}
@@ -281,6 +287,7 @@ jobs:
       - name: Build and push ${{ matrix.job.image_name }}:${{ env.GIT_TAG }}
         uses: docker/build-push-action@v5
         with:
+          context: .
           platforms: ${{ matrix.job.docker_platform }}
           file: ./services/appflowy-worker/Dockerfile
           push: true
