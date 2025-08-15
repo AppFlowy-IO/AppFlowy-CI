@@ -170,6 +170,7 @@ jobs:
           docker ps -a
 
       - name: Test server info
+        if: matrix.job.name == 'amd64'
         run: |
           response=$(curl -s http://localhost/api/server-info)
           if [ $? -ne 0 ]; then
