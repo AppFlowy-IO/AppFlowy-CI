@@ -45,8 +45,10 @@ jobs:
     if: ${{ github.event.inputs.build_gotrue == 'true' }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.inputs.branch }}
           fetch-depth: 1
 
@@ -81,7 +83,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -240,7 +242,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -270,6 +272,11 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
+      
+       - name: Log dir
+        if: always()
+        run: 
+          ls -al
 
       - name: Build and push ${{ matrix.job.image_name }}:${{ env.GIT_TAG }}
         uses: docker/build-push-action@v5
