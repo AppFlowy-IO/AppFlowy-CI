@@ -93,6 +93,8 @@ jobs:
           platforms: ${{ matrix.job.docker_platform }}
           push: ${{ github.event.inputs.push_gotrue == 'true' }}
           load: true
+          cache-from: type=gha,scope=gotrue-${{ matrix.job.name }}
+          cache-to: type=gha,mode=max,scope=gotrue-${{ matrix.job.name }}
           tags: |
             appflowyinc/gotrue:${{ env.GIT_TAG }}-${{ matrix.job.name }}
             appflowyinc/gotrue:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
@@ -187,23 +189,23 @@ jobs:
         with:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
 
-      - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ matrix.job.docker_platform }}
-          push: false
-          load: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
-            ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          build-args: |
-            PROFILE=release
-            FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }}
-            APP_VERSION=${{ env.GIT_TAG }}
+      - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }} 
+        run: |
+          echo "::group::build-appflowy-cloud-${{ matrix.job.name }}"
+          docker buildx build \
+            --platform ${{ matrix.job.docker_platform }} \
+            -f ./Dockerfile \
+            -t ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }} \
+            -t ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }} \
+            --cache-from type=gha,scope=appflowy_cloud-${{ matrix.job.name }} \
+            --cache-to type=gha,mode=max,scope=appflowy_cloud-${{ matrix.job.name }} \
+            --build-arg PROFILE=release \
+            --build-arg FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }} \
+            --build-arg APP_VERSION=${{ env.GIT_TAG }} \
+            --load \
+            --quiet \
+            .
+          echo "::endgroup::"
 
       - name: Save AppFlowy Cloud image locally
         run: |
@@ -305,7 +307,7 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_WORKER_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
-          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           
           # Retag all locally built images to match docker-compose-ci.yml image names
           # Tag GoTrue
@@ -490,23 +492,23 @@ jobs:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
 
       - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ matrix.job.docker_platform }}
-          push: false
-          load: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
-            ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          build-args: |
-            GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }}
-            PROFILE=release
-            FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }}
-            APP_VERSION=${{ env.GIT_TAG }}
+        run: |
+          echo "::group::build-appflowy-ai-${{ matrix.job.name }}"
+          docker buildx build \
+            --platform ${{ matrix.job.docker_platform }} \
+            -f ./Dockerfile \
+            -t ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }} \
+            -t ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }} \
+            --cache-from type=gha,scope=appflowy_ai-${{ matrix.job.name }} \
+            --cache-to type=gha,mode=max,scope=appflowy_ai-${{ matrix.job.name }} \
+            --build-arg GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }} \
+            --build-arg PROFILE=release \
+            --build-arg FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }} \
+            --build-arg APP_VERSION=${{ env.GIT_TAG }} \
+            --load \
+            --quiet \
+            .
+          echo "::endgroup::"
 
       - name: Save AppFlowy AI image locally
         run: |
@@ -584,7 +586,7 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_WORKER_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
-          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           
           # Retag all locally built images to match docker-compose-ci.yml image names
           # Tag GoTrue
@@ -774,6 +776,8 @@ jobs:
           file: ./services/appflowy-worker/Dockerfile
           push: false
           load: true
+          cache-from: type=gha,scope=appflowy_worker-${{ matrix.job.name }}
+          cache-to: type=gha,mode=max,scope=appflowy_worker-${{ matrix.job.name }}
           tags: |
             ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
             ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
