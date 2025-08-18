@@ -36,6 +36,11 @@ on:
         type: boolean
         required: false
         default: true 
+      tag_latest:
+        description: "Also tag and publish 'latest'"
+        type: boolean
+        required: false
+        default: true
       
 env:
   LATEST_TAG: latest
@@ -91,7 +96,7 @@ jobs:
           context: ./docker/gotrue
           file: ./docker/gotrue/Dockerfile
           platforms: ${{ matrix.job.docker_platform }}
-          push: ${{ github.event.inputs.push_gotrue == 'true' }}
+          push: false
           load: true
           cache-from: type=gha,scope=gotrue-${{ matrix.job.name }}
           cache-to: type=gha,mode=max,scope=gotrue-${{ matrix.job.name }}
@@ -115,13 +120,50 @@ jobs:
       - name: Logout from Docker Hub
         if: always()
         run: docker logout
+  gotrue_push:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.inputs.push_gotrue == 'true' }}
+    needs: [gotrue_image]
+    strategy:
+      fail-fast: true
+      matrix:
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"name":"amd64"},{"name":"arm64v8"}]' || '[{"name":"amd64"}]') }}
+    steps:
+      - name: Get git tag
+        id: vars
+        run: |
+          T="${{ github.event.inputs.custom_tag }}"
+          echo "GIT_TAG=$T" >> $GITHUB_ENV
 
+      - name: Download GoTrue image
+        uses: actions/download-artifact@v4
+        with:
+          name: gotrue-image-${{ matrix.job.name }}
+          path: /tmp/docker-images
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Load and Push GoTrue
+        run: |
+          docker load < /tmp/docker-images/gotrue_${{ matrix.job.name }}.tar.gz
+          docker load < /tmp/docker-images/gotrue_latest_${{ matrix.job.name }}.tar.gz || true
+          if [[ "${{ github.event.inputs.tag_latest }}" == "true" ]]; then
+            docker push appflowyinc/gotrue:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          fi
+          docker push appflowyinc/gotrue:${{ env.GIT_TAG }}-${{ matrix.job.name }}
+
+      - name: Logout from Docker Hub
+        if: always()
+        run: docker logout
 
   gotrue_manifest:
     runs-on: ubuntu-22.04
     if: ${{ github.event.inputs.push_gotrue == 'true' }}
-    needs: [gotrue_image]
+    needs: [gotrue_push]
     steps:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -143,6 +185,7 @@ jobs:
           push: true
 
       - name: Create and push manifest for gotrue:latest
+        if: ${{ github.event.inputs.tag_latest == 'true' }}
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: appflowyinc/gotrue:${{ env.LATEST_TAG }}
@@ -412,8 +455,10 @@ jobs:
       - name: Load and Push AppFlowy Cloud
         run: |
           docker load < /tmp/docker-images/appflowy_cloud_${{ matrix.job.name }}.tar.gz
-          docker load < /tmp/docker-images/appflowy_cloud_latest_${{ matrix.job.name }}.tar.gz
-          docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          docker load < /tmp/docker-images/appflowy_cloud_latest_${{ matrix.job.name }}.tar.gz || true
+          if [[ "${{ github.event.inputs.tag_latest }}" == "true" ]]; then
+            docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          fi
           docker push ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
 
       - name: Logout from Docker Hub
@@ -445,6 +490,7 @@ jobs:
           push: true
 
       - name: Create and push manifest for appflowy_cloud:latest
+        if: ${{ github.event.inputs.tag_latest == 'true' }}
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}
@@ -699,8 +745,10 @@ jobs:
       - name: Load and Push AppFlowy AI
         run: |
           docker load < /tmp/docker-images/appflowy_ai_${{ matrix.job.name }}.tar.gz
-          docker load < /tmp/docker-images/appflowy_ai_latest_${{ matrix.job.name }}.tar.gz
-          docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          docker load < /tmp/docker-images/appflowy_ai_latest_${{ matrix.job.name }}.tar.gz || true
+          if [[ "${{ github.event.inputs.tag_latest }}" == "true" ]]; then
+            docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          fi
           docker push ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
 
       - name: Logout from Docker Hub
@@ -732,6 +780,7 @@ jobs:
           push: true
 
       - name: Create and push manifest for appflowy_ai:latest
+        if: ${{ github.event.inputs.tag_latest == 'true' }}
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}
@@ -846,8 +895,10 @@ jobs:
       - name: Load and Push AppFlowy Worker
         run: |
           docker load < /tmp/docker-images/appflowy_worker_${{ matrix.job.name }}.tar.gz
-          docker load < /tmp/docker-images/appflowy_worker_latest_${{ matrix.job.name }}.tar.gz
-          docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          docker load < /tmp/docker-images/appflowy_worker_latest_${{ matrix.job.name }}.tar.gz || true
+          if [[ "${{ github.event.inputs.tag_latest }}" == "true" ]]; then
+            docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
+          fi
           docker push ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
 
       - name: Logout from Docker Hub
@@ -879,6 +930,7 @@ jobs:
           push: true
 
       - name: Create and push manifest for appflowy_worker:latest
+        if: ${{ github.event.inputs.tag_latest == 'true' }}
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}
