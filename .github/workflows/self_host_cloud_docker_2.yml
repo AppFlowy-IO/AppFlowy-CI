@@ -31,6 +31,11 @@ on:
         type: boolean
         required: false
         default: false
+      build_arm64:
+        description: "Also build ARM64 images (AMD64 always built)"
+        type: boolean
+        required: false
+        default: true 
       
 env:
   LATEST_TAG: latest
@@ -51,9 +56,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { os: "ubuntu-22.04", name: "amd64",   docker_platform: "linux/amd64" }
-          - { os: "ubuntu-22.04-arm", name: "arm64v8", docker_platform: "linux/arm64" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"},{"os":"ubuntu-22.04-arm","name":"arm64v8","docker_platform":"linux/arm64"}]' || '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"}]') }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -155,9 +158,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { os: "ubuntu-22.04", name: "amd64",   docker_platform: "linux/amd64" }
-          - { os: "ubuntu-22.04-arm", name: "arm64v8", docker_platform: "linux/arm64" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"},{"os":"ubuntu-22.04-arm","name":"arm64v8","docker_platform":"linux/arm64"}]' || '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"}]') }}
 
     steps:
       - name: Check out the repository
@@ -386,9 +387,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { name: "amd64" }
-          - { name: "arm64v8" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"name":"amd64"},{"name":"arm64v8"}]' || '[{"name":"amd64"}]') }}
     steps:
       - name: Get git tag
         id: vars
@@ -440,14 +439,14 @@ jobs:
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_cloud:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.GIT_TAG) || '' }}
           push: true
 
       - name: Create and push manifest for appflowy_cloud:latest
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_cloud:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.LATEST_TAG) || '' }}
           push: true
 
       - name: Logout from Docker Hub
@@ -461,9 +460,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { os: "ubuntu-22.04", name: "amd64",   docker_platform: "linux/amd64" }
-          - { os: "ubuntu-22.04-arm", name: "arm64v8", docker_platform: "linux/arm64" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"},{"os":"ubuntu-22.04-arm","name":"arm64v8","docker_platform":"linux/arm64"}]' || '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"}]') }}
           
     steps:
       - name: Check out the repository
@@ -667,9 +664,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { name: "amd64" }
-          - { name: "arm64v8" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"name":"amd64"},{"name":"arm64v8"}]' || '[{"name":"amd64"}]') }}
     steps:
       - name: Get git tag
         id: vars
@@ -721,14 +716,14 @@ jobs:
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_ai:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.GIT_TAG) || '' }}
           push: true
 
       - name: Create and push manifest for appflowy_ai:latest
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_ai:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.LATEST_TAG) || '' }}
           push: true
 
       - name: Logout from Docker Hub
@@ -742,9 +737,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { os: "ubuntu-22.04", name: "amd64",   docker_platform: "linux/amd64" }
-          - { os: "ubuntu-22.04-arm", name: "arm64v8", docker_platform: "linux/arm64" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"},{"os":"ubuntu-22.04-arm","name":"arm64v8","docker_platform":"linux/arm64"}]' || '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"}]') }}
 
     steps:
       - name: Check out the repository
@@ -816,9 +809,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        job:
-          - { name: "amd64" }
-          - { name: "arm64v8" }
+        job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"name":"amd64"},{"name":"arm64v8"}]' || '[{"name":"amd64"}]') }}
     steps:
       - name: Get git tag
         id: vars
@@ -870,14 +861,14 @@ jobs:
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_worker:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.GIT_TAG) || '' }}
           push: true
 
       - name: Create and push manifest for appflowy_worker:latest
         uses: Noelware/docker-manifest-action@0.4.3
         with:
           inputs: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}
-          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64,${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-arm64v8
+          images: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64${{ github.event.inputs.build_arm64 == 'true' && format(',{0}/appflowy_worker:{1}-arm64v8', secrets.DOCKER_HUB_USERNAME, env.LATEST_TAG) || '' }}
           push: true
 
       - name: Logout from Docker Hub
