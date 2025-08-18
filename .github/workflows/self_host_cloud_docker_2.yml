@@ -286,21 +286,21 @@ jobs:
             docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_CLOUD_VERSION=latest
+            export APPFLOWY_CLOUD_VERSION=latest-amd64
           fi
           
           if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_WORKER_VERSION=latest
+            export APPFLOWY_WORKER_VERSION=latest-amd64
           fi
           
           if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_AI_VERSION=latest
+            export APPFLOWY_AI_VERSION=latest-amd64
           fi
           
           cp deploy.env .env
@@ -596,21 +596,21 @@ jobs:
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_CLOUD_VERSION=latest
+            export APPFLOWY_CLOUD_VERSION=latest-amd64
           fi
           
           if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_WORKER_VERSION=latest
+            export APPFLOWY_WORKER_VERSION=latest-amd64
           fi
           
           if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
             docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
             docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
           else
-            export APPFLOWY_AI_VERSION=latest
+            export APPFLOWY_AI_VERSION=latest-amd64
           fi
           
           cp deploy.env .env
