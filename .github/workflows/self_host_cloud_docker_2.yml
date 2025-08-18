@@ -487,6 +487,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           build-args: |
+            GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }}
             PROFILE=release
             FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }}
             APP_VERSION=${{ env.GIT_TAG }}
