@@ -11,23 +11,23 @@ on:
         description: "Custom tag to use (overrides automatic tag generation). Example: 0.9.8"
         required: true
         default: ""
-      build_gotrue:
-        description: "Build GoTrue image"
+      push_gotrue:
+        description: "Push GoTrue image to registry"
         type: boolean
         required: false
         default: false
-      build_appflowy_cloud:
-        description: "Build AppFlowy Cloud image"
+      push_appflowy_cloud:
+        description: "Push AppFlowy Cloud image to registry"
         type: boolean
         required: false
         default: true
-      build_appflowy_worker:
-        description: "Build AppFlowy Worker image"
+      push_appflowy_worker:
+        description: "Push AppFlowy Worker image to registry"
         type: boolean
         required: false
         default: false
-      build_appflowy_ai:
-        description: "Build AppFlowy AI image"
+      push_appflowy_ai:
+        description: "Push AppFlowy AI image to registry"
         type: boolean
         required: false
         default: false
@@ -48,7 +48,6 @@ env:
 jobs:
   gotrue_image:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_gotrue == 'true' }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -95,6 +94,27 @@ jobs:
           path: /tmp/docker-images/gotrue.tar
           retention-days: 1
 
+      - name: Logout from Docker Hub
+        if: always()
+        run: docker logout
+
+  gotrue_push:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.inputs.push_gotrue == 'true' }}
+    needs: [appflowy_cloud_test, appflowy_ai_test]
+    steps:
+      - name: Get git tag
+        id: vars
+        run: |
+          T="${{ github.event.inputs.custom_tag }}"
+          echo "GIT_TAG=$T" >> $GITHUB_ENV
+
+      - name: Download GoTrue image
+        uses: actions/download-artifact@v4
+        with:
+          name: gotrue-image
+          path: /tmp/docker-images
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -113,7 +133,6 @@ jobs:
 
   appflowy_cloud_image:
     runs-on: ${{ matrix.job.os }}
-    if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud
     strategy:
@@ -193,10 +212,21 @@ jobs:
           echo "AppFlowy Cloud build: ${{ needs.appflowy_cloud_image.result }}"
           echo "AppFlowy Worker build: ${{ needs.appflowy_worker_image.result }}"
           echo "AppFlowy AI build: ${{ needs.appflowy_ai_image.result }}"
+          
+          # Check if any required builds failed
+          if [[ "${{ needs.gotrue_image.result }}" == "failure" ]] || \
+             [[ "${{ needs.appflowy_cloud_image.result }}" == "failure" ]] || \
+             [[ "${{ needs.appflowy_worker_image.result }}" == "failure" ]] || \
+             [[ "${{ needs.appflowy_ai_image.result }}" == "failure" ]]; then
+            echo "❌ One or more builds failed"
+            exit 1
+          else
+            echo "✅ All builds completed successfully or were skipped"
+          fi
 
   appflowy_cloud_test:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
+    if: ${{ github.event.inputs.push_appflowy_cloud == 'true' }}
     needs: [wait_for_all_builds]
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud
@@ -216,28 +246,24 @@ jobs:
           echo "GIT_TAG=$T" >> $GITHUB_ENV
 
       - name: Download GoTrue image
-        if: ${{ github.event.inputs.build_gotrue == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: gotrue-image
           path: /tmp/docker-images
 
       - name: Download AppFlowy Cloud image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-cloud-image-amd64
           path: /tmp/docker-images
 
       - name: Download AppFlowy Worker image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_worker == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-worker-image-amd64
           path: /tmp/docker-images
 
       - name: Download AppFlowy AI image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-ai-image-amd64
@@ -245,28 +271,14 @@ jobs:
 
       - name: Load all locally built images
         run: |
-          # Load GoTrue if built locally
-          if [ "${{ github.event.inputs.build_gotrue }}" == "true" ]; then
-            docker load < /tmp/docker-images/gotrue.tar
-          fi
-          
-          # Load AppFlowy Cloud if built locally
-          if [ "${{ github.event.inputs.build_appflowy_cloud }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_cloud_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_cloud_latest_amd64.tar.gz
-          fi
-          
-          # Load AppFlowy Worker if built locally
-          if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_worker_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_worker_latest_amd64.tar.gz
-          fi
-          
-          # Load AppFlowy AI if built locally
-          if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_ai_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_ai_latest_amd64.tar.gz
-          fi
+          # Load all images since they're all built now
+          docker load < /tmp/docker-images/gotrue.tar
+          docker load < /tmp/docker-images/appflowy_cloud_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_cloud_latest_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_worker_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_worker_latest_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_ai_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_ai_latest_amd64.tar.gz
 
       - name: Run Docker Compose for testing
         run: |
@@ -276,32 +288,21 @@ jobs:
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
           
-          # Retag locally built images to match docker-compose-ci.yml image names
-          if [ "${{ github.event.inputs.build_gotrue }}" == "true" ]; then
-            # GoTrue image is already tagged correctly
-            echo "Using locally built GoTrue image"
-          fi
+          # Retag all locally built images to match docker-compose-ci.yml image names
+          # GoTrue image is already tagged correctly
+          echo "Using locally built GoTrue image"
           
-          if [ "${{ github.event.inputs.build_appflowy_cloud }}" == "true" ]; then
-            docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_CLOUD_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy Cloud
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
           
-          if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_WORKER_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy Worker
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
           
-          if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_AI_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy AI
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
           
           cp deploy.env .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
@@ -359,7 +360,7 @@ jobs:
 
   appflowy_cloud_push:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
+    if: ${{ github.event.inputs.push_appflowy_cloud == 'true' }}
     needs: [appflowy_cloud_test]
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud
@@ -401,7 +402,7 @@ jobs:
 
   appflowy_cloud_manifest:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
+    if: ${{ github.event.inputs.push_appflowy_cloud == 'true' }}
     needs: [appflowy_cloud_push]
     steps:
       - name: Log in to Docker Hub
@@ -436,7 +437,6 @@ jobs:
 
   appflowy_ai_image:
     runs-on: ${{ matrix.job.os }}
-    if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai
     strategy:
@@ -507,7 +507,7 @@ jobs:
 
   appflowy_ai_test:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
+    if: ${{ github.event.inputs.push_appflowy_ai == 'true' }}
     needs: [wait_for_all_builds]
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai
@@ -527,28 +527,24 @@ jobs:
           echo "GIT_TAG=$T" >> $GITHUB_ENV
 
       - name: Download GoTrue image
-        if: ${{ github.event.inputs.build_gotrue == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: gotrue-image
           path: /tmp/docker-images
 
       - name: Download AppFlowy Cloud image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-cloud-image-amd64
           path: /tmp/docker-images
 
       - name: Download AppFlowy Worker image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_worker == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-worker-image-amd64
           path: /tmp/docker-images
 
       - name: Download AppFlowy AI image (amd64)
-        if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: appflowy-ai-image-amd64
@@ -556,28 +552,14 @@ jobs:
 
       - name: Load all locally built images
         run: |
-          # Load GoTrue if built locally
-          if [ "${{ github.event.inputs.build_gotrue }}" == "true" ]; then
-            docker load < /tmp/docker-images/gotrue.tar
-          fi
-          
-          # Load AppFlowy Cloud if built locally
-          if [ "${{ github.event.inputs.build_appflowy_cloud }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_cloud_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_cloud_latest_amd64.tar.gz
-          fi
-          
-          # Load AppFlowy Worker if built locally
-          if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_worker_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_worker_latest_amd64.tar.gz
-          fi
-          
-          # Load AppFlowy AI if built locally
-          if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
-            docker load < /tmp/docker-images/appflowy_ai_amd64.tar.gz
-            docker load < /tmp/docker-images/appflowy_ai_latest_amd64.tar.gz
-          fi
+          # Load all images since they're all built now
+          docker load < /tmp/docker-images/gotrue.tar
+          docker load < /tmp/docker-images/appflowy_cloud_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_cloud_latest_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_worker_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_worker_latest_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_ai_amd64.tar.gz
+          docker load < /tmp/docker-images/appflowy_ai_latest_amd64.tar.gz
 
       - name: Run Docker Compose for testing
         run: |
@@ -587,32 +569,21 @@ jobs:
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
           
-          # Retag locally built images to match docker-compose-ci.yml image names
-          if [ "${{ github.event.inputs.build_gotrue }}" == "true" ]; then
-            # GoTrue image is already tagged correctly
-            echo "Using locally built GoTrue image"
-          fi
+          # Retag all locally built images to match docker-compose-ci.yml image names
+          # GoTrue image is already tagged correctly
+          echo "Using locally built GoTrue image"
           
-          if [ "${{ github.event.inputs.build_appflowy_cloud }}" == "true" ]; then
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_CLOUD_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy Cloud
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
           
-          if [ "${{ github.event.inputs.build_appflowy_worker }}" == "true" ]; then
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_WORKER_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy Worker
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
           
-          if [ "${{ github.event.inputs.build_appflowy_ai }}" == "true" ]; then
-            docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
-            docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
-          else
-            export APPFLOWY_AI_VERSION=latest-amd64
-          fi
+          # Tag AppFlowy AI
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
           
           cp deploy.env .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
@@ -659,7 +630,6 @@ jobs:
             exit 1
           fi
           echo "✓ AppFlowy AI self_hosted is true"
-          exit 1
 
       - name: Stop Docker Compose
         if: always()
@@ -669,8 +639,8 @@ jobs:
 
   appflowy_ai_push:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
-    needs: [appflowy_ai_test]
+    if: ${{ github.event.inputs.push_appflowy_ai == 'true' }}
+    needs: [appflowy_cloud_test, appflowy_ai_test]
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai
     strategy:
@@ -711,7 +681,7 @@ jobs:
 
   appflowy_ai_manifest:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
+    if: ${{ github.event.inputs.push_appflowy_ai == 'true' }}
     needs: [appflowy_ai_push]
     steps:
       - name: Log in to Docker Hub
@@ -746,7 +716,6 @@ jobs:
 
   appflowy_worker_image:
     runs-on: ${{ matrix.job.os }}
-    if: ${{ github.event.inputs.build_appflowy_worker == 'true' }}
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker
     strategy:
@@ -813,14 +782,45 @@ jobs:
           path: /tmp/docker-images/appflowy_worker_*.tar.gz
           retention-days: 1
 
+      - name: Logout from Docker Hub
+        if: always()
+        run: docker logout
+
+  appflowy_worker_push:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.inputs.push_appflowy_worker == 'true' }}
+    needs: [appflowy_cloud_test, appflowy_ai_test]
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker
+    strategy:
+      fail-fast: true
+      matrix:
+        job:
+          - { name: "amd64" }
+          - { name: "arm64v8" }
+    steps:
+      - name: Get git tag
+        id: vars
+        run: |
+          T="${{ github.event.inputs.custom_tag }}"
+          echo "GIT_TAG=$T" >> $GITHUB_ENV
+
+      - name: Download AppFlowy Worker image
+        uses: actions/download-artifact@v4
+        with:
+          name: appflowy-worker-image-${{ matrix.job.name }}
+          path: /tmp/docker-images
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Push AppFlowy Worker
+      - name: Load and Push AppFlowy Worker
         run: |
+          docker load < /tmp/docker-images/appflowy_worker_${{ matrix.job.name }}.tar.gz
+          docker load < /tmp/docker-images/appflowy_worker_latest_${{ matrix.job.name }}.tar.gz
           docker push ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }}
           docker push ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }}
 
@@ -830,8 +830,8 @@ jobs:
 
   appflowy_worker_manifest:
     runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.build_appflowy_worker == 'true' }}
-    needs: [ appflowy_worker_image ]
+    if: ${{ github.event.inputs.push_appflowy_worker == 'true' }}
+    needs: [ appflowy_worker_push ]
     steps:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -866,17 +866,15 @@ jobs:
   cleanup_artifacts:
     runs-on: ubuntu-22.04
     if: always()
-    needs: [gotrue_image, appflowy_cloud_manifest, appflowy_ai_manifest, appflowy_worker_manifest]
+    needs: [gotrue_push, appflowy_cloud_manifest, appflowy_ai_manifest, appflowy_worker_manifest]
     steps:
       - name: Delete GoTrue artifacts
-        if: ${{ github.event.inputs.build_gotrue == 'true' }}
         uses: geekyeggo/delete-artifact@v5
         with:
           name: gotrue-image
           failOnError: false
 
       - name: Delete AppFlowy Cloud artifacts
-        if: ${{ github.event.inputs.build_appflowy_cloud == 'true' }}
         uses: geekyeggo/delete-artifact@v5
         with:
           name: |
@@ -885,7 +883,6 @@ jobs:
           failOnError: false
 
       - name: Delete AppFlowy AI artifacts
-        if: ${{ github.event.inputs.build_appflowy_ai == 'true' }}
         uses: geekyeggo/delete-artifact@v5
         with:
           name: |
@@ -894,7 +891,6 @@ jobs:
           failOnError: false
 
       - name: Delete AppFlowy Worker artifacts
-        if: ${{ github.event.inputs.build_appflowy_worker == 'true' }}
         uses: geekyeggo/delete-artifact@v5
         with:
           name: |
