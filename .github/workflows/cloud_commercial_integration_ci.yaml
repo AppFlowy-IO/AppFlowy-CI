@@ -48,7 +48,6 @@ jobs:
         run: |
           export DOCKER_DEFAULT_PLATFORM=linux/amd64
           cp deploy.env .env
-          echo "building appflowy_cloud with features: ${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }}"
           docker compose build \
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
@@ -160,7 +159,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --test-threads=1
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci -- --test-threads=1 
           
       - name: Test Server Info Endpoint
         run: |
