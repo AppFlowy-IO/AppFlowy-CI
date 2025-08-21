@@ -124,6 +124,9 @@ jobs:
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
+
+          echo 'APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY=${{ secrets.APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY }}' >> .env
+          echo 'APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL=${{ secrets.APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}' >> .env
         shell: bash
 
       - name: Update Nginx Configuration
@@ -157,7 +160,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --test-threads=1
           
       - name: Test Server Info Endpoint
         run: |
