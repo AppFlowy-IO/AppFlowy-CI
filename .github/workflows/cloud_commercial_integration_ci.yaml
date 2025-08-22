@@ -124,16 +124,11 @@ jobs:
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
 
+          # Ensure there's a newline at the end of .env before adding new variables
+          echo "" >> .env
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY }}' >> .env
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}' >> .env
           
-          # Debug: Check if secret is available (without exposing the actual value)
-          if [ -z "${{ secrets.APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY }}" ]; then
-            echo "ERROR: APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY secret is not set or empty"
-          else
-            echo "INFO: APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY secret is available"
-          fi
-          cat .env
         shell: bash
 
       - name: Update Nginx Configuration
@@ -147,9 +142,6 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Run Docker-Compose
-        env:
-          APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY: ${{ secrets.APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY }}
-          APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL: ${{ secrets.APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}
         run: |
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
