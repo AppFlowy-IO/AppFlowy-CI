@@ -163,7 +163,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci -- --test-threads=1 
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci
           
       - name: Test Server Info Endpoint
         run: |
