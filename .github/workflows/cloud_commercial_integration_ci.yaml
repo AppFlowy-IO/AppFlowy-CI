@@ -128,6 +128,9 @@ jobs:
           echo "" >> .env
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_API_SECRET_KEY }}' >> .env
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}' >> .env
+          echo 'APPFLOWY_BILLING_ENDPOINT_ID=${{ secrets.CI_APPFLOWY_BILLING_ENDPOINT_ID }}' >> .env
+          echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
+
           
         shell: bash
 
@@ -148,8 +151,6 @@ jobs:
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
           docker compose -f docker-compose-ci.yml up -d
-          docker ps -a
-          docker logs appflowy-ci-appflowy_billing-1
 
       - name: Wait for services to be ready
         run: |
