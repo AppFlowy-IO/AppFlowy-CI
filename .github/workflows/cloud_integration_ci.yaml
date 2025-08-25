@@ -155,7 +155,7 @@ jobs:
           export APPFLOWY_WORKER_VERSION=latest
           export APPFLOWY_CLOUD_VERSION=latest
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
-          export APPFLOWY_AI_VERSION=latest-amd64
+          export APPFLOWY_AI_VERSION=0.9.49-amd64
           docker compose -f docker-compose-ci.yml up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
