@@ -85,7 +85,7 @@ jobs:
       - uses: futureware-tech/simulator-action@v3
         id: simulator-action
         with:
-          model: "iPhone 15"
+          model: "iPhone 16 Pro"
           shutdown_after_job: false
 
       - name: Run AppFlowy on simulator
