@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   integration-tests:
-    runs-on: macos-latest
+    runs-on: macos-15
 
     steps:
       - name: Checkout private repository
