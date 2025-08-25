@@ -183,11 +183,17 @@ jobs:
           echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
           RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test  ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
 
-      - name: Server Logs
+      - name: AppFlowy Cloud Logs
         if: failure()
         run: |
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
+
+      - name: AppFlowy AI Logs
+        if: failure()
+        run: |
+          docker compose -f docker-compose-ci.yml logs ai
+
 
   notify-webhook:
     name: Notify Webhook
