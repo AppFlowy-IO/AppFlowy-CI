@@ -82,6 +82,10 @@ jobs:
           cargo make --profile development-ios-arm64-sim appflowy-core-dev-ios
           cargo make --profile development-ios-arm64-sim code_generation
 
+      - name: List simulators
+        run: |
+          xcrun simctl list --json devices available
+
       - uses: futureware-tech/simulator-action@v3
         id: simulator-action
         with:
