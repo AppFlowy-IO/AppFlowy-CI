@@ -192,7 +192,7 @@ jobs:
       - name: AppFlowy AI Logs
         if: failure()
         run: |
-          docker compose -f docker-compose-ci.yml logs ai
+          docker logs appflowy-ci-ai-1
 
 
   notify-webhook:
