@@ -37,11 +37,6 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
-      - name: Install iOS 18.0
-        run: |
-          sudo xcode-select --switch /Applications/Xcode_16.app/Contents/Developer
-          xcodebuild -downloadPlatform iOS
-
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -91,7 +86,7 @@ jobs:
         run: |
           xcrun simctl list --json devices available
 
-      - uses: futureware-tech/simulator-action@v3
+      - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
           model: "iPhone 16 Pro"
