@@ -130,6 +130,8 @@ jobs:
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}' >> .env
           echo 'APPFLOWY_BILLING_ENDPOINT_ID=${{ secrets.CI_APPFLOWY_BILLING_ENDPOINT_ID }}' >> .env
           echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
+          echo 'APPFLOWY_COMMERCIAL_FREE_MAX_USERS=5' >> .env
+          echo 'APPFLOWY_COMMERCIAL_FREE_MAX_GUESTS=2' >> .env
           cat .env
 
           
