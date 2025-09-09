@@ -52,7 +52,7 @@ jobs:
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg PROFILE=debug \
-            --build-arg FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES}} \
+            --build-arg FEATURES="self-host-af, commercial-ci" \
             appflowy_cloud 
 
       - name: Save Docker Images
