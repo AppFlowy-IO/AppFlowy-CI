@@ -132,7 +132,6 @@ jobs:
           echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
           echo 'APPFLOWY_COMMERCIAL_FREE_MAX_USERS=5' >> .env
           echo 'APPFLOWY_COMMERCIAL_FREE_MAX_GUESTS=2' >> .env
-          cat .env
 
           
         shell: bash
@@ -167,6 +166,7 @@ jobs:
 
       - name: Run Tests
         run: |
+          cat .env
           RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci
           
       - name: Test Server Info Endpoint

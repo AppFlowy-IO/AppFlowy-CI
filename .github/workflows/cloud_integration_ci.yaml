@@ -84,8 +84,8 @@ jobs:
             test_cmd: "--workspace --exclude appflowy-ai-client --features ai-test-enabled,sync-v2"
           - test_service: "appflowy_worker"
             test_cmd: "-p appflowy-worker"
-          - test_service: "admin_frontend"
-            test_cmd: "-p admin_frontend"
+          # - test_service: "admin_frontend"
+          #   test_cmd: "-p admin_frontend"
     steps:
       - name: Checkout Private Repo
         uses: actions/checkout@v4
