@@ -170,7 +170,7 @@ jobs:
       - name: Run Tests
         run: |
           cat .env
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci -- --test-threads=1
           
       - name: Test Server Info Endpoint
         run: |
@@ -192,10 +192,6 @@ jobs:
           
           echo "✓ Server info test passed: self_hosted is true"
       
-      - name: billing logs 
-        run: |
-          docker compose -f docker-compose-ci.yml logs appflowy_billing
-
       - name: appflowy cloud Logs
         if: failure()
         run: |
