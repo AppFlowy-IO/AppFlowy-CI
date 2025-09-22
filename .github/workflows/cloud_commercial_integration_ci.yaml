@@ -166,9 +166,6 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
       
-      - name: billing logs 
-        run: |
-          docker compose -f docker-compose-ci.yml logs appflowy_billing
 
       - name: Run Tests
         run: |
@@ -194,9 +191,13 @@ jobs:
           fi
           
           echo "✓ Server info test passed: self_hosted is true"
+      
+      - name: billing logs 
+        run: |
+          docker compose -f docker-compose-ci.yml logs appflowy_billing
 
-      - name: Server Logs
+      - name: appflowy cloud Logs
         if: failure()
         run: |
           docker ps -a
-          docker compose -f docker-compose-ci.yml logs
+          docker compose -f docker-compose-ci.yml logs appflowy_cloud
