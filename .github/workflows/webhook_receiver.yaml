@@ -696,7 +696,7 @@ jobs:
 
   auto-approve-pr:
     runs-on: ubuntu-latest
-    needs: [create-pr-comment]
+    needs: [dispatch-workflows, create-pr-comment]
     if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
       - name: Parse event data
@@ -728,28 +728,40 @@ jobs:
           ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           WORKFLOWS: ${{ steps.parse.outputs.workflows }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
-          PR_REF: ${{ steps.parse.outputs.pr_ref }}
+          FLUTTER_RUN_URL: ${{ needs.dispatch-workflows.outputs.flutter_run_url }}
+          RUST_RUN_URL: ${{ needs.dispatch-workflows.outputs.rust_run_url }}
+          MOBILE_RUN_URL: ${{ needs.dispatch-workflows.outputs.mobile_run_url }}
+          IOS_RUN_URL: ${{ needs.dispatch-workflows.outputs.ios_run_url }}
+          RUST_COVERAGE_RUN_URL: ${{ needs.dispatch-workflows.outputs.rust_coverage_run_url }}
+          DOCKER_RUN_URL: ${{ needs.dispatch-workflows.outputs.docker_run_url }}
+          COMMIT_LINT_RUN_URL: ${{ needs.dispatch-workflows.outputs.commit_lint_run_url }}
+          BACKEND_RUN_URL: ${{ needs.dispatch-workflows.outputs.backend_run_url }}
+          FRONTEND_RUN_URL: ${{ needs.dispatch-workflows.outputs.frontend_run_url }}
+          E2E_RUN_URL: ${{ needs.dispatch-workflows.outputs.e2e_run_url }}
+          CLOUD_DOCKER_RUN_URL: ${{ needs.dispatch-workflows.outputs.cloud_docker_run_url }}
+          RUSTLINT_RUN_URL: ${{ needs.dispatch-workflows.outputs.rustlint_run_url }}
+          INTEGRATION_RUN_URL: ${{ needs.dispatch-workflows.outputs.integration_run_url }}
+          COMMERCIAL_RUN_URL: ${{ needs.dispatch-workflows.outputs.commercial_run_url }}
         run: |
           echo "⏳ Waiting for CI workflows to complete for PR $PR_NUMBER..."
 
-
-          declare -A workflow_files=(
-            ["flutter"]="flutter_ci.yaml"
-            ["rust"]="rust_ci.yaml"
-            ["mobile"]="mobile_ci.yml"
-            ["ios"]="ios_ci.yaml"
-            ["rust_coverage"]="rust_coverage.yml"
-            ["docker"]="docker_ci.yml"
-            ["commit_lint"]="commit_lint.yml"
-            ["backend"]="cloud_backend_ci.yaml"
-            ["frontend"]="cloud_frontend_ci.yaml"
-            ["e2e"]="cloud_e2e_ci.yaml"
-            ["cloud_docker"]="cloud_docker_ci.yaml"
-            ["rustlint"]="cloud_rustlint_ci.yaml"
-            ["integration"]="cloud_integration_ci.yaml"
-            ["commercial"]="cloud_commercial_integration_ci.yaml"
+          # Map workflow names to their run URLs
+          declare -A workflow_run_urls=(
+            ["flutter"]="$FLUTTER_RUN_URL"
+            ["rust"]="$RUST_RUN_URL"
+            ["mobile"]="$MOBILE_RUN_URL"
+            ["ios"]="$IOS_RUN_URL"
+            ["rust_coverage"]="$RUST_COVERAGE_RUN_URL"
+            ["docker"]="$DOCKER_RUN_URL"
+            ["commit_lint"]="$COMMIT_LINT_RUN_URL"
+            ["backend"]="$BACKEND_RUN_URL"
+            ["frontend"]="$FRONTEND_RUN_URL"
+            ["e2e"]="$E2E_RUN_URL"
+            ["cloud_docker"]="$CLOUD_DOCKER_RUN_URL"
+            ["rustlint"]="$RUSTLINT_RUN_URL"
+            ["integration"]="$INTEGRATION_RUN_URL"
+            ["commercial"]="$COMMERCIAL_RUN_URL"
           )
-
 
           IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
 
@@ -769,63 +781,40 @@ jobs:
             workflow_status_summary=""
 
             for workflow in "${WORKFLOW_ARRAY[@]}"; do
-              workflow_file="${workflow_files[$workflow]}"
-              if [ -n "$workflow_file" ]; then
-                echo "Checking status of workflow: $workflow_file for PR $PR_NUMBER"
+              run_url="${workflow_run_urls[$workflow]}"
 
+              if [ -z "$run_url" ]; then
+                echo "  No run URL found for $workflow, skipping"
+                continue
+              fi
 
-                response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=10")
+              # Extract run ID from URL (format: https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/12345)
+              run_id=$(echo "$run_url" | grep -oE '[0-9]+$')
 
+              if [ -z "$run_id" ]; then
+                echo "  Could not extract run ID from URL: $run_url"
+                all_complete=false
+                continue
+              fi
 
+              echo "Checking status of workflow: $workflow (run ID: $run_id)"
 
-                run_found=false
-                status="unknown"
-                conclusion="unknown"
+              # Query the specific run by ID
+              response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
+                "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/runs/$run_id")
 
+              status=$(echo "$response" | jq -r '.status // "unknown"')
+              conclusion=$(echo "$response" | jq -r '.conclusion // "null"')
 
-                for i in {0..9}; do
-                  run_status=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].status // "null"')
-                  run_conclusion=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].conclusion // "null"')
-                  run_event=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].event // "null"')
-                  run_created=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].created_at // "null"')
+              echo "  Status: $status, Conclusion: $conclusion"
+              workflow_status_summary="$workflow_status_summary\n- $workflow: $status ($conclusion)"
 
-                  if [ "$run_status" = "null" ]; then
-                    break
-                  fi
+              if [ "$status" != "completed" ]; then
+                all_complete=false
+              fi
 
-
-                  if [ "$run_event" = "repository_dispatch" ]; then
-                    run_created_timestamp=$(date -d "$run_created" +%s 2>/dev/null || echo "0")
-                    current_timestamp=$(date +%s)
-                    time_diff=$((current_timestamp - run_created_timestamp))
-
-
-                    if [ $time_diff -le 3600 ]; then
-                      status="$run_status"
-                      conclusion="$run_conclusion"
-                      run_found=true
-                      break
-                    fi
-                  fi
-                done
-
-                if [ "$run_found" = false ]; then
-                  echo "  No recent workflow run found for $workflow, treating as pending"
-                  status="pending"
-                  conclusion="unknown"
-                fi
-
-                echo "  Status: $status, Conclusion: $conclusion"
-                workflow_status_summary="$workflow_status_summary\n- $workflow: $status ($conclusion)"
-
-                if [ "$status" != "completed" ]; then
-                  all_complete=false
-                fi
-
-                if [ "$conclusion" != "success" ] && [ "$conclusion" != "unknown" ] && [ "$conclusion" != "null" ]; then
-                  all_success=false
-                fi
+              if [ "$conclusion" != "success" ] && [ "$conclusion" != "unknown" ] && [ "$conclusion" != "null" ]; then
+                all_success=false
               fi
             done
 
