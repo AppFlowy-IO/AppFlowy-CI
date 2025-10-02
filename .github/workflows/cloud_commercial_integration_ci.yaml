@@ -130,8 +130,6 @@ jobs:
           echo 'APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL=${{ secrets.CI_APPFLOWY_CLOUD_BILLING_STRIPE_WEBHOOK_URL }}' >> .env
           echo 'APPFLOWY_BILLING_ENDPOINT_ID=${{ secrets.CI_APPFLOWY_BILLING_ENDPOINT_ID }}' >> .env
           echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
-          echo 'APPFLOWY_COMMERCIAL_FREE_MAX_USERS=5' >> .env
-          echo 'APPFLOWY_COMMERCIAL_FREE_MAX_GUESTS=2' >> .env
           echo 'APPFLOWY_SELF_HOST_BILLING_URL=http://appflowy_billing:4242' >> .env
 
           
@@ -153,6 +151,7 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
+          docker compose -f docker-compose-ci.yml down
           docker compose -f docker-compose-ci.yml up -d
 
       - name: Wait for services to be ready
@@ -164,8 +163,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
-
-      
 
       - name: Run Tests
         run: |
