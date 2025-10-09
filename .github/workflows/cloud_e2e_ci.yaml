@@ -112,7 +112,7 @@ jobs:
           
           # Check service health
           docker ps -a
-          curl -f http://localhost/health || (echo "Health check failed" && docker logs appflowy-cloud-premium-appflowy_cloud-1 && exit 1)
+          curl -f http://localhost/api/health || (echo "Health check failed" && docker logs appflowy-cloud-premium-appflowy_cloud-1 && exit 1)
 
       - name: Install E2E test dependencies
         working-directory: tests/e2e
@@ -154,7 +154,7 @@ jobs:
           const { test, expect } = require('@playwright/test');
           
           test('AppFlowy Cloud health check', async ({ page }) => {
-            await page.goto('http://localhost/health');
+            await page.goto('http://localhost/api/health');
             const content = await page.textContent('body');
             expect(content).toContain('ok');
           });

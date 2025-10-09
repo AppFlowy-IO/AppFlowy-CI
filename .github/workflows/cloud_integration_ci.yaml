@@ -166,7 +166,7 @@ jobs:
         run: |
           echo "Waiting for services to be ready..."
           for i in {1..60}; do
-            if curl -f http://localhost/startup 2>/dev/null; then
+            if curl -f http://localhost/api/health 2>/dev/null; then
               echo "Health check passed after $((i*5)) seconds"
               exit 0
             fi

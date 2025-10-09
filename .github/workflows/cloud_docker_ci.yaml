@@ -152,7 +152,7 @@ jobs:
           fi
 
           # Test health endpoint (if available)
-          timeout 30 bash -c 'until curl -f http://localhost/health 2>/dev/null; do sleep 1; done' || echo "Health check not available or failed"
+          timeout 30 bash -c 'until curl -f http://localhost/api/health 2>/dev/null; do sleep 1; done' || echo "Health check not available or failed"
 
           echo "Docker image test completed successfully"
 
@@ -191,7 +191,7 @@ jobs:
           
           # Basic connectivity test
           sleep 10
-          curl -f http://localhost/health || echo "Health check endpoint not available"
+          curl -f http://localhost/api/health || echo "Health check endpoint not available"
 
       - name: Show container logs on failure
         if: failure()
