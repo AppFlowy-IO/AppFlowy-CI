@@ -54,13 +54,12 @@ jobs:
             --build-arg BUILDKIT_MULTI_PLATFORM=0 \
             --build-arg PROFILE=debug \
             --build-arg APP_VERSION=0.9.999 \
-            appflowy_cloud appflowy_worker admin_frontend
+            appflowy_cloud appflowy_worker 
 
       - name: Save Docker Images
         run: |
           docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
           docker save appflowyinc/appflowy_worker_premium:latest | gzip > appflowy_worker.tar.gz
-          docker save appflowyinc/admin_frontend_premium:latest | gzip > admin_frontend.tar.gz
 
       - name: Upload Docker Images as Artifacts
         uses: actions/upload-artifact@v4
@@ -69,7 +68,6 @@ jobs:
           path: |
             appflowy_cloud.tar.gz
             appflowy_worker.tar.gz
-            admin_frontend.tar.gz
           retention-days: 1
 
   test:
@@ -84,8 +82,6 @@ jobs:
             test_cmd: "--workspace --exclude appflowy-ai-client --features ai-test-enabled,sync-v2"
           - test_service: "appflowy_worker"
             test_cmd: "-p appflowy-worker"
-          # - test_service: "admin_frontend"
-          #   test_cmd: "-p admin_frontend"
     steps:
       - name: Checkout Private Repo
         uses: actions/checkout@v4
@@ -109,7 +105,6 @@ jobs:
         run: |
           docker load < appflowy_cloud.tar.gz
           docker load < appflowy_worker.tar.gz
-          docker load < admin_frontend.tar.gz
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
