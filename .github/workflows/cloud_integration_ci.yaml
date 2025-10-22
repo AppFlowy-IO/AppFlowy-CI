@@ -186,10 +186,10 @@ jobs:
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
-      - name: AppFlowy AI Logs
+      - name: Gotrue Logs
         if: failure()
         run: |
-          docker logs appflowy-ci-ai-1
+          docker logs appflowy-ci-gotrue-1
 
 
   notify-webhook:
