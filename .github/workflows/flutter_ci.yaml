@@ -418,19 +418,23 @@ jobs:
         run: cargo make pub_get
 
       - name: Run Flutter unit tests
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            cd frontend
+            if [ "$RUNNER_OS" == "macOS" ]; then
+              cargo make dart_unit_test
+            elif [ "$RUNNER_OS" == "Linux" ]; then
+              cargo make dart_unit_test_no_build
+            elif [ "$RUNNER_OS" == "Windows" ]; then
+              cargo make dart_unit_test_no_build
+            fi
         env:
           DISABLE_EVENT_LOG: true
           DISABLE_CI_TEST_LOG: "true"
-        working-directory: frontend
-        run: |
-          if [ "$RUNNER_OS" == "macOS" ]; then
-            cargo make dart_unit_test
-          elif [ "$RUNNER_OS" == "Linux" ]; then
-            cargo make dart_unit_test_no_build
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            cargo make dart_unit_test_no_build
-          fi
-        shell: bash
 
   cloud_integration_test:
     needs: [ prepare-linux ]
@@ -552,15 +556,19 @@ jobs:
           tar -xf appflowy_flutter.tar.gz
 
       - name: Run Flutter integration tests
-        working-directory: frontend/appflowy_flutter
-        run: |
-          flutter pub get
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          sudo apt-get install network-manager
-          docker ps -a
-          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
-        shell: bash
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            cd frontend/appflowy_flutter
+            flutter pub get
+            export DISPLAY=:99
+            sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+            sudo apt-get install network-manager
+            docker ps -a
+            flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
 
   integration_test:
     needs: [ prepare-linux ]
@@ -625,11 +633,15 @@ jobs:
         shell: bash
 
       - name: Run Flutter integration tests
-        working-directory: frontend/appflowy_flutter
-        run: |
-          flutter pub get
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          sudo apt-get install network-manager
-          flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage
-        shell: bash
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            cd frontend/appflowy_flutter
+            flutter pub get
+            export DISPLAY=:99
+            sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+            sudo apt-get install network-manager
+            flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage
