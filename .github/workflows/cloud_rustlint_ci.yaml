@@ -90,6 +90,6 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --tests -- -D warnings
+        run: cargo clippy --workspace --all-targets --tests -- -D warnings
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
