@@ -152,7 +152,7 @@ jobs:
 
           echo 'APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=${APPFLOWY_BASE_URL}/minio-api' >> .env
           echo 'APPFLOWY_KEYWORD_INDEX_ENABLED=true' >> .env
-          echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=2147483648' >> .env
+          echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=5242880' >> .env
         shell: bash
 
       - name: Update Nginx Configuration
