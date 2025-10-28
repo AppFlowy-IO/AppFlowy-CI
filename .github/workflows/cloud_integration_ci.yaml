@@ -151,6 +151,8 @@ jobs:
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
 
           echo 'APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=${APPFLOWY_BASE_URL}/minio-api' >> .env
+          echo 'APPFLOWY_KEYWORD_INDEX_ENABLED=true' >> .env
+          echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=2147483648' >> .env
         shell: bash
 
       - name: Update Nginx Configuration
