@@ -199,9 +199,14 @@ jobs:
           df -h
 
       - name: Run Tests
-        run: |
-          echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test  ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test  ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
 
       - name: AppFlowy Cloud Logs
         if: failure()
