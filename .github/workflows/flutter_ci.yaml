@@ -116,6 +116,11 @@ jobs:
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
         shell: bash
 
+      - name: Clean cargo build artifacts
+        working-directory: frontend/rust-lib
+        run: cargo clean
+        shell: bash
+
       - name: Run code generation
         working-directory: frontend
         run: cargo make code_generation
@@ -219,6 +224,11 @@ jobs:
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
         shell: bash
 
+      - name: Clean cargo build artifacts
+        working-directory: frontend/rust-lib
+        run: cargo clean
+        shell: bash
+
       - name: Run code generation
         working-directory: frontend
         run: cargo make code_generation
@@ -314,6 +324,11 @@ jobs:
       - name: Build AppFlowy
         working-directory: frontend
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
+        shell: bash
+      
+      - name: Clean cargo build artifacts
+        working-directory: frontend/rust-lib
+        run: cargo clean
         shell: bash
 
       - name: Run code generation
