@@ -145,7 +145,7 @@ jobs:
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
-          sed -i 's|ASSEMBLYAI_API_KEY=.*|ASSEMBLYAI_API_KEY=${{ secrets.CI_ASSEMBLYAI_API_KEY }}|' .env
+          sed -i 's|^#* *ASSEMBLYAI_API_KEY=.*|ASSEMBLYAI_API_KEY=${{ secrets.CI_ASSEMBLYAI_API_KEY }}|' .env
 
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
