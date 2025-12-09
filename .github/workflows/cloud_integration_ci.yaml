@@ -54,7 +54,7 @@ jobs:
             --build-arg BUILDKIT_MULTI_PLATFORM=0 \
             --build-arg PROFILE=debug \
             --build-arg APP_VERSION=0.9.999 \
-            appflowy_cloud appflowy_worker 
+            appflowy_cloud appflowy_worker
 
       - name: Save Docker Images
         run: |
@@ -145,6 +145,7 @@ jobs:
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
+          sed -i 's|ASSEMBLYAI_API_KEY=.*|ASSEMBLYAI_API_KEY=${{ secrets.CI_ASSEMBLYAI_API_KEY }}|' .env
 
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
@@ -159,7 +160,7 @@ jobs:
 
       - name: Update Nginx Configuration
         # the wasm-pack headless tests will run on random ports, so we need to allow all origins
-        run: | 
+        run: |
           sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
           cat nginx/nginx.conf
 
@@ -225,7 +226,6 @@ jobs:
             docker-ps-output.txt
             appflowy_cloud_logs.txt
           retention-days: 7
-
 
   notify-webhook:
     name: Notify Webhook
