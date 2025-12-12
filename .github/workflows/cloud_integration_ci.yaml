@@ -116,8 +116,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          workspaces: "AppFlowy-Cloud"
+          workspaces: "."
           shared-key: cloud-integration
           cache-all-crates: true
 
