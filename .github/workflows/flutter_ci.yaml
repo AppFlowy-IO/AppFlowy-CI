@@ -8,14 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number from private repo'
+        description: "PR number from private repo"
         required: false
         type: string
       pr_ref:
-        description: 'Git ref to checkout from private repo'
+        description: "Git ref to checkout from private repo"
         required: false
         type: string
-        default: 'main'
+        default: "main"
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ ubuntu-latest ]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -148,7 +148,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ windows-latest ]
+        os: [windows-latest]
         include:
           - os: windows-latest
             flutter_profile: development-windows-x86
@@ -256,7 +256,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ macos-latest ]
+        os: [macos-latest]
         include:
           - os: macos-latest
             flutter_profile: development-mac-x86_64
@@ -329,7 +329,7 @@ jobs:
         working-directory: frontend
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
         shell: bash
-      
+
       - name: Clean cargo build artifacts
         working-directory: frontend/rust-lib
         run: cargo clean
@@ -355,11 +355,11 @@ jobs:
           path: appflowy_flutter.tar.gz
 
   unit_test:
-    needs: [ prepare-linux ]
+    needs: [prepare-linux]
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -460,11 +460,11 @@ jobs:
           DISABLE_CI_TEST_LOG: "true"
 
   cloud_integration_test:
-    needs: [ prepare-linux ]
+    needs: [prepare-linux]
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -598,12 +598,12 @@ jobs:
             flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
 
   integration_test:
-    needs: [ prepare-linux ]
+    needs: [prepare-linux]
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
-        test_number: [ 1, 2, 3, 4, 5, 6, 7, 8, 9 ]
+        os: [ubuntu-latest]
+        test_number: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         include:
           - os: ubuntu-latest
             target: "x86_64-unknown-linux-gnu"
