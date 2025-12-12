@@ -3,9 +3,23 @@ name: AppFlowy-Cloud Integration Tests
 on:
   repository_dispatch:
     types: [cloud-premium-integration-ci]
+  workflow_dispatch:
+    inputs:
+      pr_ref:
+        description: Branch or commit to test (e.g. refs/pull/123/head)
+        required: true
+        type: string
+      pr_number:
+        description: PR number (optional, for concurrency grouping)
+        required: false
+        type: string
+      execution_id:
+        description: Execution identifier (optional, forwarded to webhook)
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -30,7 +44,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - name: Install prerequisites
         run: |
@@ -43,18 +57,25 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Build Docker Images
-        run: |
-          export DOCKER_DEFAULT_PLATFORM=linux/amd64
-          export DOCKER_BUILDKIT=1
-          cp deploy.env .env
-          docker compose build \
-            --parallel \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            --build-arg BUILDKIT_MULTI_PLATFORM=0 \
-            --build-arg PROFILE=debug \
-            --build-arg APP_VERSION=0.9.999 \
-            appflowy_cloud appflowy_worker
+      - name: Prepare env for Docker build
+        run: cp deploy.env .env
+
+      - name: Build Docker Images (cached)
+        uses: docker/bake-action@v5
+        with:
+          files: docker-compose-ci.yml
+          targets: |
+            appflowy_cloud
+            appflowy_worker
+          load: true
+          set: |
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=cloud-integration
+            *.cache-to=type=gha,scope=cloud-integration,mode=max
+            *.args.BUILDKIT_INLINE_CACHE=1
+            *.args.BUILDKIT_MULTI_PLATFORM=0
+            *.args.PROFILE=debug
+            *.args.APP_VERSION=0.9.999
 
       - name: Save Docker Images
         run: |
@@ -88,13 +109,17 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           workspaces: "AppFlowy-Cloud"
+          shared-key: cloud-integration
+          cache-all-crates: true
 
       - name: Free disk space on runner
         run: |
@@ -209,7 +234,7 @@ jobs:
           retry_wait_seconds: 10
           command: |
             echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test  ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
 
       - name: AppFlowy Cloud Logs
         if: failure()
@@ -241,7 +266,7 @@ jobs:
           event-type: ci-result
           client-payload: |
             {
-              "execution_id": "${{ github.event.client_payload.execution_id }}",
+              "execution_id": "${{ github.event.client_payload.execution_id || inputs.execution_id || github.run_id }}",
               "workflow_type": "integration",
               "status": "${{ needs.test.result }}",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
