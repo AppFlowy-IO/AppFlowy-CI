@@ -93,11 +93,11 @@ jobs:
               sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
               sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
               sudo apt-get update
-              sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip
+              sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip liblzma-dev
               # Install GStreamer for audioplayers_linux
               # Install libunwind-dev first to resolve dependency issues
               sudo apt-get -y install libunwind-dev
-              sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+              sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
               ;;
             Windows)
               vcpkg integrate install
@@ -409,11 +409,11 @@ jobs:
             sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
             sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
             sudo apt-get update
-            sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip
+            sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip liblzma-dev
             # Install GStreamer for audioplayers_linux
             # Install libunwind-dev first to resolve dependency issues
             sudo apt-get -y install libunwind-dev
-            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
           fi
         shell: bash
 
@@ -562,11 +562,11 @@ jobs:
           sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
           sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
           sudo apt-get update
-          sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip
+          sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip liblzma-dev
           # Install GStreamer for audioplayers_linux
           # Install libunwind-dev first to resolve dependency issues
           sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
 
       - name: Enable Flutter Desktop
@@ -643,11 +643,11 @@ jobs:
           sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
           sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
           sudo apt-get update
-          sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev network-manager libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip
+          sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev network-manager libcurl4-openssl-dev libmpv-dev mpv libasound2-dev unzip liblzma-dev
           # Install GStreamer for audioplayers_linux
           # Install libunwind-dev first to resolve dependency issues
           sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
 
       - name: Enable Flutter Desktop
