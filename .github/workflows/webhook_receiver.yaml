@@ -287,7 +287,7 @@ jobs:
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "workflow_type": "integration"
             }
-      
+
       - name: Trigger CommercialIntegration CI
         if: contains(steps.parse.outputs.workflows, 'commercial') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
@@ -771,7 +771,7 @@ jobs:
           echo "⏳ Waiting 30 seconds for workflows to initialize..."
           sleep 30
 
-          max_wait=3600
+          max_wait=7200
           wait_interval=30
           elapsed=0
 
