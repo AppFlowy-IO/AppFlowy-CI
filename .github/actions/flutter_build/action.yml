@@ -89,6 +89,11 @@ runs:
       run: cargo make code_generation
       shell: bash
 
+    - name: Check Dart formatting
+      working-directory: frontend/appflowy_flutter
+      run: dart format --output=none --set-exit-if-changed .
+      shell: bash
+
     - name: Flutter Analyzer
       working-directory: frontend/appflowy_flutter
       run: flutter analyze .
