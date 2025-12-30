@@ -505,37 +505,30 @@ jobs:
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
-          container_id=$(docker ps --filter name=appflowy-cloud-premium-appflowy_cloud-1 -q)
-          if [ -z "$container_id" ]; then
-            echo "AppFlowy-Cloud container is not running. Pulling and starting the container..."
-            docker compose pull
-            docker compose up -d
-            echo "Waiting for the container to be ready..."
-            sleep 10
-          else
-            running_image=$(docker inspect --format='{{index .Config.Image}}' "$container_id")
-            if [ "$running_image" != "appflowy-cloud-premium:$APPFLOWY_CLOUD_VERSION" ]; then
-              echo "AppFlowy-Cloud is running with an incorrect version. Restarting with the correct version..."
-              if [ "$(docker ps -aq)" ]; then
-                docker rm -f $(docker ps -aq)
-              else
-                echo "No containers to remove."
-              fi
+          echo "Cleaning up any existing containers..."
+          docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
+          docker container prune -f || true
+          docker volume prune -f || true
 
-              if [ "$(docker volume ls -q)" ]; then
-                docker volume rm $(docker volume ls -q)
-              else
-                echo "No volumes to remove."
-              fi
-              docker compose pull
-              docker compose up -d
-              echo "Waiting for the container to be ready..."
-              sleep 10
-              docker ps -a
-            else
-              echo "AppFlowy-Cloud is running with the correct version."
+          echo "Pulling and starting containers..."
+          docker compose -f docker-compose-ci.yml pull
+          docker compose -f docker-compose-ci.yml up -d
+          docker ps -a
+          docker compose -f docker-compose-ci.yml logs appflowy_cloud
+
+      - name: Wait for appflowy cloud to be ready
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          echo "Waiting for services to be ready..."
+          for i in {1..60}; do
+            if curl -f http://localhost/api/health 2>/dev/null; then
+              echo "Health check passed after $((i*5)) seconds"
+              exit 0
             fi
-          fi
+            echo "Attempt $i: Health check failed, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "Health check timeout after 300 seconds - proceeding anyway"
 
       - name: Checkout private repository
         uses: actions/checkout@v4
