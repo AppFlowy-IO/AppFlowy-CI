@@ -156,6 +156,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Enable git long paths (Windows)
+        run: git config --system core.longpaths true
+        shell: bash
+
       - name: Checkout private repository
         uses: actions/checkout@v4
         with:
