@@ -978,24 +978,80 @@ jobs:
                   FAILURE_REPORT+="  - ❌ Job failed (see logs for details)\n"
                 fi
 
-                # Try to fetch logs and extract Flutter test failures (limited to first 1000 lines for performance)
+                # Try to fetch logs and extract test failures
                 echo "Attempting to fetch logs for job $JOB_ID..."
                 job_logs=$(curl -s -L -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/$JOB_ID/logs" 2>/dev/null | head -n 1000 || true)
+                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/$JOB_ID/logs" 2>/dev/null || true)
 
                 if [ -n "$job_logs" ]; then
-                  # Look for Flutter test failure patterns
-                  flutter_failures=$(echo "$job_logs" | grep -E "^❌" | head -n 10 || true)
+                  # Detect workflow type and extract failures accordingly
+                  test_failures=""
 
-                  if [ -n "$flutter_failures" ]; then
-                    echo "Found Flutter test failures, adding to report"
-                    while IFS= read -r failure_line; do
-                      if [ -n "$failure_line" ]; then
-                        # Clean and truncate the failure line
-                        cleaned_line=$(echo "$failure_line" | sed 's/^[[:space:]]*//g' | head -c 150)
-                        FAILURE_REPORT+="  $cleaned_line\n"
+                  # For Rust tests: look for "test ... FAILED" patterns
+                  if [[ "$workflow" == "rust" ]]; then
+                    echo "Extracting Rust test failures..."
+                    test_failures=$(echo "$job_logs" | grep -E "^test .* \.\.\. FAILED$" | head -n 20 || true)
+
+                    if [ -n "$test_failures" ]; then
+                      echo "Found Rust test failures"
+                      FAILURE_REPORT+="  **Failed Tests:**\n"
+                      while IFS= read -r failure_line; do
+                        if [ -n "$failure_line" ]; then
+                          # Extract test name from "test test_name ... FAILED"
+                          test_name=$(echo "$failure_line" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/')
+                          FAILURE_REPORT+="  - \`$test_name\`\n"
+                        fi
+                      done <<< "$test_failures"
+                    else
+                      # Try alternative pattern for test failures
+                      test_failures=$(echo "$job_logs" | grep -E "---- .* ----" | head -n 20 || true)
+                      if [ -n "$test_failures" ]; then
+                        echo "Found Rust test failures (alternative pattern)"
+                        FAILURE_REPORT+="  **Failed Tests:**\n"
+                        while IFS= read -r failure_line; do
+                          if [ -n "$failure_line" ]; then
+                            # Extract test name from "---- test_name ----"
+                            test_name=$(echo "$failure_line" | sed -E 's/^---- (.*) ----$/\1/')
+                            FAILURE_REPORT+="  - \`$test_name\`\n"
+                          fi
+                        done <<< "$test_failures"
                       fi
-                    done <<< "$flutter_failures"
+                    fi
+                  fi
+
+                  # For Flutter tests: look for various failure patterns
+                  if [[ "$workflow" == "flutter" ]]; then
+                    echo "Extracting Flutter test failures..."
+                    # Try multiple patterns for Flutter test failures
+                    test_failures=$(echo "$job_logs" | grep -E "(^✖|^FAILED:.*test|^Error:|test.*FAILED)" | head -n 20 || true)
+
+                    if [ -n "$test_failures" ]; then
+                      echo "Found Flutter test failures"
+                      FAILURE_REPORT+="  **Failed Tests/Errors:**\n"
+                      while IFS= read -r failure_line; do
+                        if [ -n "$failure_line" ]; then
+                          # Clean and truncate the failure line
+                          cleaned_line=$(echo "$failure_line" | sed 's/^[[:space:]]*//g' | head -c 200)
+                          FAILURE_REPORT+="  - \`$cleaned_line\`\n"
+                        fi
+                      done <<< "$test_failures"
+                    fi
+                  fi
+
+                  # Generic error extraction if no specific test failures found
+                  if [ -z "$test_failures" ]; then
+                    echo "No specific test failures found, looking for generic errors..."
+                    generic_errors=$(echo "$job_logs" | grep -iE "(error:|failed|fatal:|panic)" | grep -v "0 failed" | head -n 10 || true)
+                    if [ -n "$generic_errors" ]; then
+                      echo "Found generic errors"
+                      FAILURE_REPORT+="  **Errors Found:**\n"
+                      while IFS= read -r error_line; do
+                        if [ -n "$error_line" ]; then
+                          cleaned_line=$(echo "$error_line" | sed 's/^[[:space:]]*//g' | head -c 200)
+                          FAILURE_REPORT+="  - \`$cleaned_line\`\n"
+                        fi
+                      done <<< "$generic_errors"
+                    fi
                   fi
                 fi
 
