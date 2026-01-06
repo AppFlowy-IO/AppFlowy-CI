@@ -1001,12 +1001,7 @@ jobs:
 
                 FAILURE_REPORT+="\n"
               fi
-            done < <(echo "$jobs_response" | jq -r '.jobs[] | select(.conclusion == "failure") |
-              "JOB_NAME:\(.name)
-JOB_ID:\(.id)
-JOB_URL:\(.html_url)
-JOB_RUNNER:\(.runner_name // "unknown")
----"')
+            done < <(echo "$jobs_response" | jq -r '.jobs[] | select(.conclusion == "failure") | "JOB_NAME:\(.name)\nJOB_ID:\(.id)\nJOB_URL:\(.html_url)\nJOB_RUNNER:\(.runner_name // \"unknown\")\n---"')
 
           done
 
