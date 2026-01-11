@@ -19,7 +19,7 @@ env:
   SQLX_VERSION: 0.7.1
   SQLX_FEATURES: "rustls,postgres"
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.86.0"
+  RUST_TOOLCHAIN: "1.92.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
