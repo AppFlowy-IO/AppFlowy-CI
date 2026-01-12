@@ -120,6 +120,26 @@ jobs:
         run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
         shell: bash
 
+      - name: Check FFI library size
+        shell: bash
+        run: |
+          LIB=$(find frontend -name "libappflowy_backend.so" 2>/dev/null | head -1)
+          if [ -n "$LIB" ]; then
+            SIZE_BYTES=$(stat -c%s "$LIB")
+            SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+            echo "## FFI Library Size" >> $GITHUB_STEP_SUMMARY
+            echo "**libappflowy_backend.so: ${SIZE_MB} MB**" >> $GITHUB_STEP_SUMMARY
+            echo "FFI library size: ${SIZE_MB} MB"
+
+            MAX_SIZE_MB=150
+            if (( $(echo "$SIZE_MB > $MAX_SIZE_MB" | bc -l) )); then
+              echo "::error::FFI library size (${SIZE_MB} MB) exceeds limit (${MAX_SIZE_MB} MB)"
+              exit 1
+            fi
+          else
+            echo "::warning::Could not find libappflowy_backend.so"
+          fi
+
       - name: Clean cargo build artifacts
         working-directory: frontend/rust-lib
         run: cargo clean

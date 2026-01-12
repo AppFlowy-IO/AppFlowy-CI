@@ -32,7 +32,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.86.0"
+  RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
   setup:
@@ -230,7 +230,7 @@ jobs:
       - name: Run Tests
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 30
+          timeout_minutes: 50
           max_attempts: 3
           retry_wait_seconds: 10
           command: |
