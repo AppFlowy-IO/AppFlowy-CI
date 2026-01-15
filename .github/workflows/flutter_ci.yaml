@@ -152,7 +152,15 @@ jobs:
 
       - name: Flutter Analyzer
         working-directory: frontend/appflowy_flutter
-        run: flutter analyze .
+        run: |
+          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
+            | grep -v -e "\.g\.dart$" \
+            -e "\.freezed\.dart$" \
+            -e "/generated/" \
+            -e "\.dart_tool/" \
+            -e "build/" \
+            -e "packages/")
+          flutter analyze .
         shell: bash
 
       - name: Compress appflowy_flutter
@@ -366,7 +374,15 @@ jobs:
 
       - name: Flutter Analyzer
         working-directory: frontend/appflowy_flutter
-        run: flutter analyze .
+        run: |
+          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
+            | grep -v -e "\.g\.dart$" \
+            -e "\.freezed\.dart$" \
+            -e "/generated/" \
+            -e "\.dart_tool/" \
+            -e "build/" \
+            -e "packages/")
+          flutter analyze .
         shell: bash
 
       - name: Compress appflowy_flutter

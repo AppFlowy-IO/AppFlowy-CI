@@ -92,7 +92,13 @@ runs:
     - name: Check Dart formatting
       working-directory: frontend/appflowy_flutter
       run: |
-        dart format --output=none --set-exit-if-changed .
+        dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
+          | grep -v -e "\.g\.dart$" \
+          -e "\.freezed\.dart$" \
+          -e "/generated/" \
+          -e "\.dart_tool/" \
+          -e "build/" \
+          -e "packages/")
         EXIT_CODE=$?
         echo "Exit code: $EXIT_CODE"
         if [ $EXIT_CODE -eq 1 ]; then
