@@ -3,7 +3,6 @@ on:
   repository_dispatch:
     types: [commercial-cloud-integration-ci]
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.run_id }}
   cancel-in-progress: true
@@ -18,7 +17,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.86.0"
+  RUST_TOOLCHAIN: "1.92.0"
   CLOUD_VERSION: "latest-amd64"
 
 jobs:
@@ -53,7 +52,7 @@ jobs:
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg PROFILE=debug \
             --build-arg FEATURES="self-host-af, commercial-ci" \
-            appflowy_cloud 
+            appflowy_cloud
 
       - name: Save Docker Images
         run: |
@@ -132,7 +131,6 @@ jobs:
           echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
           echo 'APPFLOWY_SELF_HOST_BILLING_URL=http://appflowy_billing:4242' >> .env
 
-          
         shell: bash
 
       - name: Update Nginx Configuration
@@ -168,17 +166,17 @@ jobs:
         run: |
           cat .env
           RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci -- --test-threads=1
-          
+
       - name: Test Server Info Endpoint
         run: |
           # Make request to server-info endpoint and capture response
           response=$(curl -s http://localhost/api/server-info)
-          
+
           if [ $? -ne 0 ]; then
             echo "Failed to connect to server-info endpoint"
             exit 1
           fi
-          
+
           echo "Server info response: $response"
           # Extract self_hosted field and assert it's true
           self_hosted=$(echo "$response" | jq -r '.data.self_hosted')
@@ -186,9 +184,9 @@ jobs:
             echo "ERROR: self_hosted field is '$self_hosted', expected 'true'"
             exit 1
           fi
-          
+
           echo "✓ Server info test passed: self_hosted is true"
-      
+
       - name: appflowy cloud Logs
         if: failure()
         run: |

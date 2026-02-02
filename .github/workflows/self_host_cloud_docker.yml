@@ -20,7 +20,7 @@ on:
         description: "Push AppFlowy Cloud image to registry"
         type: boolean
         required: false
-        default: false 
+        default: false
       push_appflowy_worker:
         description: "Push AppFlowy Worker image to registry"
         type: boolean
@@ -35,13 +35,13 @@ on:
         description: "Also build ARM64 images (AMD64 always built)"
         type: boolean
         required: false
-        default: true 
+        default: true
       tag_latest:
         description: "Also tag and publish 'latest'"
         type: boolean
         required: false
         default: true
-      
+
 env:
   LATEST_TAG: latest
   LOCALHOST_URL: http://localhost
@@ -53,7 +53,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.86.0"
+  RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
   gotrue_image:
@@ -232,7 +232,7 @@ jobs:
         with:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
 
-      - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }} 
+      - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }}
         run: |
           echo "::group::build-appflowy-cloud-${{ matrix.job.name }}"
           docker buildx build \
@@ -265,7 +265,13 @@ jobs:
 
   wait_for_all_builds:
     runs-on: ubuntu-22.04
-    needs: [gotrue_image, appflowy_cloud_image, appflowy_worker_image, appflowy_ai_image]
+    needs:
+      [
+        gotrue_image,
+        appflowy_cloud_image,
+        appflowy_worker_image,
+        appflowy_ai_image,
+      ]
     if: always()
     steps:
       - name: Check build results
@@ -275,7 +281,7 @@ jobs:
           echo "AppFlowy Cloud build: ${{ needs.appflowy_cloud_image.result }}"
           echo "AppFlowy Worker build: ${{ needs.appflowy_worker_image.result }}"
           echo "AppFlowy AI build: ${{ needs.appflowy_ai_image.result }}"
-          
+
           # Check if any required builds failed
           if [[ "${{ needs.gotrue_image.result }}" == "failure" ]] || \
              [[ "${{ needs.appflowy_cloud_image.result }}" == "failure" ]] || \
@@ -351,24 +357,24 @@ jobs:
           export APPFLOWY_WORKER_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          
+
           # Retag all locally built images to match docker-compose-ci.yml image names
           # Tag GoTrue
           docker tag appflowyinc/gotrue:${{ env.GIT_TAG }}-amd64 appflowyinc/gotrue:${{ env.GIT_TAG }}
           docker tag appflowyinc/gotrue:${{ env.LATEST_TAG }}-amd64 appflowyinc/gotrue:${{ env.LATEST_TAG }}
-          
+
           # Tag AppFlowy Cloud
           docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           # Tag AppFlowy Worker
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           # Tag AppFlowy AI
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_ai:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           cp deploy.env .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
           sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
@@ -379,12 +385,12 @@ jobs:
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
-          
+
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
-          
+
           docker compose -f docker-compose-ci.yml up -d --no-build
           docker ps -a
 
@@ -509,7 +515,7 @@ jobs:
       fail-fast: true
       matrix:
         job: ${{ fromJson(github.event.inputs.build_arm64 == 'true' && '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"},{"os":"ubuntu-22.04-arm","name":"arm64v8","docker_platform":"linux/arm64"}]' || '[{"os":"ubuntu-22.04","name":"amd64","docker_platform":"linux/amd64"}]') }}
-          
+
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -639,24 +645,24 @@ jobs:
           export APPFLOWY_WORKER_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_AI_VERSION=${{ env.GIT_TAG }}-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          
+
           # Retag all locally built images to match docker-compose-ci.yml image names
           # Tag GoTrue
           docker tag appflowyinc/gotrue:${{ env.GIT_TAG }}-amd64 appflowyinc/gotrue:${{ env.GIT_TAG }}
           docker tag appflowyinc/gotrue:${{ env.LATEST_TAG }}-amd64 appflowyinc/gotrue:${{ env.LATEST_TAG }}
-          
+
           # Tag AppFlowy Cloud
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_cloud:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_cloud_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           # Tag AppFlowy Worker
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ secrets.DOCKER_HUB_USERNAME }}/appflowy_worker:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_worker_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           # Tag AppFlowy AI
           docker tag ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.GIT_TAG }}-amd64
           docker tag ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-amd64 appflowyinc/appflowy_ai_premium:${{ env.LATEST_TAG }}-amd64
-          
+
           cp deploy.env .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
           sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
@@ -667,12 +673,12 @@ jobs:
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
-          
+
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
-          
+
           docker compose -f docker-compose-ci.yml up -d --no-build
           docker ps -a
 
@@ -908,7 +914,7 @@ jobs:
   appflowy_worker_manifest:
     runs-on: ubuntu-22.04
     if: ${{ github.event.inputs.push_appflowy_worker == 'true' }}
-    needs: [ appflowy_worker_push ]
+    needs: [appflowy_worker_push]
     steps:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -944,7 +950,13 @@ jobs:
   cleanup_artifacts:
     runs-on: ubuntu-22.04
     if: always()
-    needs: [gotrue_manifest, appflowy_cloud_manifest, appflowy_ai_manifest, appflowy_worker_manifest]
+    needs:
+      [
+        gotrue_manifest,
+        appflowy_cloud_manifest,
+        appflowy_ai_manifest,
+        appflowy_worker_manifest,
+      ]
     steps:
       - name: Delete GoTrue artifacts
         uses: geekyeggo/delete-artifact@v5

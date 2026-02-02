@@ -19,7 +19,7 @@ on:
 
 env:
   FLUTTER_VERSION: "3.27.4"
-  RUST_TOOLCHAIN: "1.85.0"
+  RUST_TOOLCHAIN: "1.92.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
