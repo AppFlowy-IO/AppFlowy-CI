@@ -80,9 +80,11 @@ jobs:
           ref: ${{ github.event.client_payload.pr_ref }}
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
           workspaces: "AppFlowy-Cloud"
 
       - name: Download Docker Images
