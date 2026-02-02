@@ -147,7 +147,7 @@ jobs:
           git config --global credential.helper store
           echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
 
-      - name: Run rust-lib tests
+      - name: Run rust-lib tests (non-af_cloud)
         working-directory: frontend/rust-lib
         env:
           RUST_LOG: info
@@ -157,7 +157,19 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-          DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip local_ai_test --test-threads=1
+          DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip af_cloud --skip local_ai_test --test-threads=1
+
+      - name: Run rust-lib af_cloud tests (serialized)
+        working-directory: frontend/rust-lib
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: 1
+          af_cloud_test_base_url: http://localhost
+          af_cloud_test_ws_url: ws://localhost/ws/v2
+          af_cloud_test_gotrue_url: http://localhost/gotrue
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          DISABLE_CI_TEST_LOG="true" cargo test -j 1 --no-default-features --features="dart" af_cloud -- --skip local_ai_test --test-threads=1
 
       - name: rustfmt rust-lib
         run: cargo fmt --all -- --check
