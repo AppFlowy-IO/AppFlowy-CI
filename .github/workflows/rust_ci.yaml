@@ -171,7 +171,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: cargo fetch
 
-      - name: Run rust-lib cloud tests (serialized)
+      - name: Run rust-lib cloud tests
         working-directory: frontend/rust-lib
         env:
           RUST_LOG: info
@@ -181,7 +181,7 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-          DISABLE_CI_TEST_LOG="true" cargo test -j 1 --workspace --no-default-features --features="dart" af_cloud -- --skip local_ai_test --test-threads=1
+          DISABLE_CI_TEST_LOG="true" cargo test --workspace --no-default-features --features="dart" af_cloud -- --skip local_ai_test --test-threads=1
 
       - name: Run rust-lib tests (non-cloud)
         working-directory: frontend/rust-lib
