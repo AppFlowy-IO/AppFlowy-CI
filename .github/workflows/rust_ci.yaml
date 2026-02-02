@@ -21,6 +21,13 @@ env:
   CARGO_TERM_COLOR: always
   CLOUD_VERSION: latest-amd64
   RUST_TOOLCHAIN: "1.92.0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  # Speed up crate downloads with sparse registry
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  # Faster for git dependencies
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  # Disable incremental compilation in CI (faster clean builds)
+  CARGO_INCREMENTAL: "0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
@@ -57,10 +64,21 @@ jobs:
           override: true
           components: rustfmt, clippy
           profile: minimal
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ runner.os }}
+          shared-key: "rust-ci"
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             frontend/rust-lib
 
@@ -147,19 +165,13 @@ jobs:
           git config --global credential.helper store
           echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
 
-      - name: Run rust-lib tests (non-af_cloud)
+      - name: Fetch dependencies
         working-directory: frontend/rust-lib
         env:
-          RUST_LOG: info
-          RUST_BACKTRACE: 1
-          af_cloud_test_base_url: http://localhost
-          af_cloud_test_ws_url: ws://localhost/ws/v2
-          af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        run: |
-          DISABLE_CI_TEST_LOG="true" cargo test --no-default-features --features="dart" -- --skip af_cloud --skip local_ai_test --test-threads=1
+        run: cargo fetch
 
-      - name: Run rust-lib af_cloud tests (serialized)
+      - name: Run rust-lib cloud tests (serialized)
         working-directory: frontend/rust-lib
         env:
           RUST_LOG: info
@@ -169,7 +181,20 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-          DISABLE_CI_TEST_LOG="true" cargo test -j 1 --no-default-features --features="dart" af_cloud -- --skip local_ai_test --test-threads=1
+          DISABLE_CI_TEST_LOG="true" cargo test -j 1 --workspace --no-default-features --features="dart" af_cloud -- --skip local_ai_test --test-threads=1
+
+      - name: Run rust-lib tests (non-cloud)
+        working-directory: frontend/rust-lib
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: 1
+          af_cloud_test_base_url: http://localhost
+          af_cloud_test_ws_url: ws://localhost/ws/v2
+          af_cloud_test_gotrue_url: http://localhost/gotrue
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          DISABLE_CI_TEST_LOG="true" cargo test --workspace --no-default-features --features="dart" -- --skip af_cloud --skip local_ai_test --test-threads=1
+
 
       - name: rustfmt rust-lib
         run: cargo fmt --all -- --check
@@ -188,6 +213,10 @@ jobs:
         working-directory: AppFlowy-Cloud-Premium
         run: |
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
       - name: Clean up Docker images
         run: |
