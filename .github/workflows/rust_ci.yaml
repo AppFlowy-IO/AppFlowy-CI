@@ -66,12 +66,26 @@ jobs:
           profile: minimal
 
       - name: Setup sccache
+        id: sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+        continue-on-error: true
 
       - name: Configure sccache
+        id: sccache-config
+        if: steps.sccache.outcome == 'success'
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          # Test if sccache can actually connect to GitHub cache
+          export SCCACHE_GHA_ENABLED=true
+          if sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+            echo "sccache_enabled=true" >> $GITHUB_OUTPUT
+            echo "✓ sccache is available and configured"
+          else
+            sccache --stop-server 2>/dev/null || true
+            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
+            echo "⚠ sccache not available, proceeding without it"
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -215,8 +229,8 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
       - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats
+        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
+        run: sccache --show-stats || true
 
       - name: Clean up Docker images
         run: |
