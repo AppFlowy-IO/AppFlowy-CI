@@ -79,17 +79,27 @@ jobs:
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
+          # Unset RUSTC_WRAPPER first (sccache-action sets it automatically)
+          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+          # Stop any existing sccache server
+          sccache --stop-server 2>/dev/null || true
           # Test if sccache can actually connect to GitHub cache
           export SCCACHE_GHA_ENABLED=true
-          if sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
-            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-            echo "sccache_enabled=true" >> $GITHUB_OUTPUT
-            echo "✓ sccache is available and configured"
+          export RUSTC_WRAPPER=
+          if sccache --start-server 2>&1; then
+            if sccache --show-stats 2>&1; then
+              echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+              echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+              echo "sccache_enabled=true" >> $GITHUB_OUTPUT
+              echo "✓ sccache is available and configured"
+            else
+              sccache --stop-server 2>/dev/null || true
+              echo "sccache_enabled=false" >> $GITHUB_OUTPUT
+              echo "⚠ sccache stats failed, proceeding without it"
+            fi
           else
-            sccache --stop-server 2>/dev/null || true
             echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-            echo "⚠ sccache not available, proceeding without it"
+            echo "⚠ sccache server startup failed, proceeding without it"
           fi
 
       - name: Install flutter
