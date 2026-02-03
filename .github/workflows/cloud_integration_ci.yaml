@@ -229,7 +229,7 @@ jobs:
           sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
 
           echo 'APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=${APPFLOWY_BASE_URL}/minio-api' >> .env
-          echo 'APPFLOWY_KEYWORD_INDEX_ENABLED=true' >> .env
+          echo 'APPFLOWY_KEYWORD_SEARCH_ENABLED=true' >> .env
           echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=5242880' >> .env
 
           cat .env
