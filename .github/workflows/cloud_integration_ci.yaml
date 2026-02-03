@@ -33,6 +33,12 @@ env:
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.92.0"
+  # Speed up crate downloads with sparse registry
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  # Faster for git dependencies
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  # Disable incremental compilation in CI (faster clean builds)
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   setup:
@@ -127,6 +133,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Setup sccache
+        id: sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+        continue-on-error: true
+
+      - name: Configure sccache
+        id: sccache-config
+        if: steps.sccache.outcome == 'success'
+        run: |
+          # Test if sccache can actually connect to GitHub cache
+          export SCCACHE_GHA_ENABLED=true
+          if sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+            echo "sccache_enabled=true" >> $GITHUB_OUTPUT
+            echo "✓ sccache is available and configured"
+          else
+            sccache --stop-server 2>/dev/null || true
+            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
+            echo "⚠ sccache not available, proceeding without it"
+          fi
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
@@ -249,6 +278,10 @@ jobs:
           command: |
             echo "Running tests for ${{ matrix.test_service }} with flags: ${{ matrix.test_cmd }}"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked ${{ matrix.test_cmd }} -- --skip stress_test --skip commercial_test --test-threads=2
+
+      - name: Show sccache stats
+        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
+        run: sccache --show-stats || true
 
       - name: AppFlowy Cloud Logs
         if: failure()
