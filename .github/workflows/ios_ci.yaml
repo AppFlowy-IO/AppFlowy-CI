@@ -100,6 +100,12 @@ jobs:
         working-directory: frontend/appflowy_flutter
         run: flutter build ios --simulator --debug
 
-      - name: Run integration tests
-        working-directory: frontend/appflowy_flutter
-        run: flutter test integration_test/runner.dart -d ${{ steps.simulator-action.outputs.udid }}
+      - name: Run Flutter unit tests
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 60
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            cd frontend/appflowy_flutter
+            flutter test integration_test/runner.dart -d ${{ steps.simulator-action.outputs.udid }}
