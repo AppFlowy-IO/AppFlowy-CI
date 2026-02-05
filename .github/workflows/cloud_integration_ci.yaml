@@ -204,7 +204,7 @@ jobs:
       - name: Replace values in .env
         run: |
           # log level
-          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=info,appflowy_collaborate=info,indexer=info'|' .env
+          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info'|' .env
           sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
           sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
@@ -232,6 +232,7 @@ jobs:
           echo 'APPFLOWY_KEYWORD_SEARCH_ENABLED=true' >> .env
           echo 'APPFLOWY_KEYWORD_WORKER_TICK_INTERVAL=3' >> .env
           echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=5242880' >> .env
+          echo 'APPFLOWY_WORKSPACE_ACTOR_SNAPSHOT_INTERVAL_SECS=15' >> .env
 
           cat .env
         shell: bash
