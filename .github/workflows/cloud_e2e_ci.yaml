@@ -175,7 +175,7 @@ jobs:
           path: |
             tests/e2e/test-results/
             tests/e2e/playwright-report/
-          retention-days: 7
+          retention-days: 1
 
       - name: Show container logs on failure
         if: failure()

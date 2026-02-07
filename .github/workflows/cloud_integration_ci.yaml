@@ -311,7 +311,7 @@ jobs:
             docker-ps-output.txt
             appflowy_cloud_logs.txt
             appflowy_worker_logs.txt
-          retention-days: 7
+          retention-days: 1
 
   notify-webhook:
     name: Notify Webhook
