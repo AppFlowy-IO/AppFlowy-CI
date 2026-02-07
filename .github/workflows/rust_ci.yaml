@@ -34,8 +34,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ubuntu-job:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+          components: rustfmt, clippy
+          profile: minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ runner.os }}
+          shared-key: "rust-ci"
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: |
+            frontend/rust-lib
+
+      - name: Configure Git credentials for Cargo
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+
+      - name: rustfmt rust-lib
+        run: cargo fmt --all -- --check
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        working-directory: frontend/rust-lib/
+
+      - name: clippy rust-lib
+        run: cargo clippy --all-targets -- -D warnings
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        working-directory: frontend/rust-lib
+
+  test:
+    name: Tests (${{ matrix.test_group }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Integration test group 1
+          - test_group: "integration_group1"
+            test_modules: "folder user"
+          # Integration test group 2
+          - test_group: "integration_group2"
+            test_modules: "database document sql_test chat search"
+          # All other rust-lib crate tests
+          - test_group: "other_crates"
+            test_modules: ""
     steps:
       - name: Set timezone for action
         uses: szenius/set-timezone@v2.0
@@ -195,7 +253,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: cargo fetch
 
-      - name: Run rust-lib tests
+      - name: Run Tests
         working-directory: frontend/rust-lib
         env:
           RUST_LOG: info
@@ -205,19 +263,27 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
-          DISABLE_CI_TEST_LOG="true" cargo test --workspace --no-default-features --features="dart" -- --skip local_ai_test --test-threads=2
+          echo "Running tests for ${{ matrix.test_group }}"
+          if [ "${{ matrix.test_group }}" = "other_crates" ]; then
+            # Run all workspace crate tests except the integration test crate
+            DISABLE_CI_TEST_LOG="true" cargo test \
+              --workspace --exclude event-integration-test \
+              --no-default-features --features="dart" \
+              -- --skip local_ai_test --test-threads=2
+          else
+            # Run integration tests module by module
+            for module in ${{ matrix.test_modules }}; do
+              echo "==> Testing module: ${module}"
+              DISABLE_CI_TEST_LOG="true" cargo test \
+                -p event-integration-test \
+                --no-default-features --features="dart" "${module}" \
+                -- --skip local_ai_test --test-threads=2
+            done
+          fi
 
-      - name: rustfmt rust-lib
-        run: cargo fmt --all -- --check
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        working-directory: frontend/rust-lib/
-
-      - name: clippy rust-lib
-        run: cargo clippy --all-targets -- -D warnings
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        working-directory: frontend/rust-lib
+      - name: Show sccache stats
+        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
+        run: sccache --show-stats || true
 
       - name: "Appflowy-Cloud container logs"
         if: always()
@@ -229,13 +295,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: appflowy-cloud-logs
+          name: appflowy-cloud-logs-${{ matrix.test_group }}
           path: AppFlowy-Cloud-Premium/appflowy_cloud.log
           retention-days: 1
-
-      - name: Show sccache stats
-        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
-        run: sccache --show-stats || true
 
       - name: Clean up Docker images
         run: |
