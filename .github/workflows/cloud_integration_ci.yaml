@@ -292,6 +292,7 @@ jobs:
           max_attempts: 2
           retry_wait_seconds: 10
           command: |
+            set -e
             echo "Running tests for ${{ matrix.test_service }}"
             if [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \

@@ -263,6 +263,7 @@ jobs:
           af_cloud_test_gotrue_url: http://localhost/gotrue
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
+          set -e
           echo "Running tests for ${{ matrix.test_group }}"
           if [ "${{ matrix.test_group }}" = "other_crates" ]; then
             # Run all workspace crate tests except the integration test crate
