@@ -135,7 +135,7 @@ jobs:
         working-directory: AppFlowy-Cloud-Premium
         run: |
           cp deploy.env .env
-          #sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=trace,appflowy_collaborate=trace|' .env
+          #sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=debug,appflowy_collaborate=debug,appflowy_worker=debug|' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
@@ -223,7 +223,15 @@ jobs:
         if: always()
         working-directory: AppFlowy-Cloud-Premium
         run: |
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
+          docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud.log 2>&1
+
+      - name: Upload Appflowy-Cloud logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appflowy-cloud-logs
+          path: AppFlowy-Cloud-Premium/appflowy_cloud.log
+          retention-days: 5
 
       - name: Show sccache stats
         if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
