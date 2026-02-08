@@ -89,6 +89,7 @@ jobs:
     name: Tests (${{ matrix.test_group }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           # Integration test group 1
@@ -258,6 +259,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: cargo fetch
+
+      - name: Build (generate code from build.rs)
+        working-directory: frontend/rust-lib
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: cargo check --workspace --no-default-features --features="dart"
 
       - name: Run Tests
         working-directory: frontend/rust-lib
