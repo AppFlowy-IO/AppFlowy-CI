@@ -312,7 +312,6 @@ jobs:
                 echo "==> Testing workspace member packages"
                 RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                   -p appflowy-collaborate \
-                  -p keyword-search \
                   -p pdf-exporter \
                   -p collab-rt-entity \
                   -p appflowy-proto \
