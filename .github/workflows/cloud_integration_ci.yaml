@@ -137,12 +137,26 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup sccache
+        id: sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+        continue-on-error: true
 
       - name: Configure sccache
+        if: steps.sccache.outcome == 'success'
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          # Unset RUSTC_WRAPPER first (sccache-action sets it automatically)
+          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+          sccache --stop-server 2>/dev/null || true
+          export SCCACHE_GHA_ENABLED=true
+          export RUSTC_WRAPPER=
+          if timeout 10 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+            echo "sccache is available and configured"
+          else
+            sccache --stop-server 2>/dev/null || true
+            echo "sccache unavailable, proceeding without it"
+          fi
 
       - name: Install prerequisites
         run: |
@@ -189,12 +203,25 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup sccache
+        id: sccache
         uses: mozilla-actions/sccache-action@v0.0.6
+        continue-on-error: true
 
       - name: Configure sccache
+        if: steps.sccache.outcome == 'success'
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+          sccache --stop-server 2>/dev/null || true
+          export SCCACHE_GHA_ENABLED=true
+          export RUSTC_WRAPPER=
+          if timeout 10 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+            echo "sccache is available and configured"
+          else
+            sccache --stop-server 2>/dev/null || true
+            echo "sccache unavailable, proceeding without it"
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
