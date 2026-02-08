@@ -110,10 +110,59 @@ jobs:
             appflowy_worker.tar.gz
           retention-days: 1
 
+  build:
+    name: Pre-compile Test Binaries
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker builder prune -af || true
+          docker image prune -af || true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Pre-compile all test binaries
+        run: |
+          cargo test --no-run --locked --features ai-test-enabled,sync-v2
+          cargo test --no-run --locked -p appflowy-worker
+          cargo test --no-run --locked -p appflowy-collaborate -p pdf-exporter -p collab-rt-entity -p appflowy-proto
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
   test:
     name: Integration Tests (${{ matrix.test_service }})
     runs-on: ubuntu-latest
-    needs: setup
+    needs: [setup, build]
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -140,36 +189,12 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Setup sccache
-        id: sccache
         uses: mozilla-actions/sccache-action@v0.0.6
-        continue-on-error: true
 
       - name: Configure sccache
-        id: sccache-config
-        if: steps.sccache.outcome == 'success'
         run: |
-          # Unset RUSTC_WRAPPER first (sccache-action sets it automatically)
-          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-          # Stop any existing sccache server
-          sccache --stop-server 2>/dev/null || true
-          # Test if sccache can actually connect to GitHub cache
-          export SCCACHE_GHA_ENABLED=true
-          export RUSTC_WRAPPER=
-          if timeout 10 sccache --start-server 2>&1; then
-            if timeout 5 sccache --show-stats 2>&1; then
-              echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-              echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-              echo "sccache_enabled=true" >> $GITHUB_OUTPUT
-              echo "✓ sccache is available and configured"
-            else
-              sccache --stop-server 2>/dev/null || true
-              echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-              echo "⚠ sccache stats failed, proceeding without it"
-            fi
-          else
-            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-            echo "⚠ sccache server startup failed, proceeding without it"
-          fi
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -320,7 +345,7 @@ jobs:
             fi
 
       - name: Show sccache stats
-        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
+        if: always()
         run: sccache --show-stats || true
 
       - name: AppFlowy Cloud Logs
