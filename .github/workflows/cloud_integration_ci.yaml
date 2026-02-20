@@ -290,6 +290,7 @@ jobs:
           echo 'APPFLOWY_KEYWORD_WORKER_TICK_INTERVAL=3' >> .env
           echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=5242880' >> .env
           echo 'APPFLOWY_WORKSPACE_ACTOR_SNAPSHOT_INTERVAL_SECS=15' >> .env
+          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
 
           cat .env
         shell: bash

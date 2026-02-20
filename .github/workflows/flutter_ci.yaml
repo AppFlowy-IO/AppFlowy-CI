@@ -623,6 +623,9 @@ jobs:
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
 
+          echo '' >> .env
+          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:

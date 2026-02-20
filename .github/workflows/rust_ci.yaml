@@ -207,6 +207,9 @@ jobs:
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
           sed -i 's|^# APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=${APPFLOWY_BASE_URL}/minio-api|' .env
+          
+          echo '' >> .env
+          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
 
           cat .env
 
