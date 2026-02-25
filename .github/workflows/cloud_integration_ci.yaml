@@ -51,6 +51,7 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          fetch-depth: 0
 
       - name: Free disk space on runner
         run: |
@@ -79,7 +80,34 @@ jobs:
       - name: Prepare env for Docker build
         run: cp deploy.env .env
 
-      - name: Build Docker Images (cached)
+      - name: Detect appflowy-search Docker target and changes
+        id: detect_search_target
+        run: |
+          set -euo pipefail
+
+          if [ ! -f services/appflowy-search/Dockerfile ] || ! grep -q "appflowy_search" docker-compose-ci.yml; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "reason=target-missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build appflowy-search only when search service files changed against main.
+          if git fetch --no-tags origin main --depth=1; then
+            changed_files="$(git diff --name-only origin/main...HEAD || true)"
+            if echo "$changed_files" | grep -q '^services/appflowy-search/'; then
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "reason=search-files-changed" >> "$GITHUB_OUTPUT"
+            else
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "reason=search-files-unchanged" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::warning::Failed to fetch origin/main for changed-file detection; building appflowy_search as fallback."
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "reason=diff-detection-failed-fallback-build" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Core Docker Images (cached)
         uses: docker/bake-action@v5
         with:
           files: docker-compose-ci.yml
@@ -96,18 +124,35 @@ jobs:
             *.args.PROFILE=debug
             *.args.APP_VERSION=0.9.999
 
+      - name: Build appflowy-search Docker Image (cached)
+        if: steps.detect_search_target.outputs.enabled == 'true'
+        uses: docker/bake-action@v5
+        with:
+          files: docker-compose-ci.yml
+          targets: appflowy_search
+          load: true
+          set: |
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=cloud-integration
+            *.cache-to=type=gha,scope=cloud-integration,mode=max
+            *.args.BUILDKIT_INLINE_CACHE=1
+            *.args.BUILDKIT_MULTI_PLATFORM=0
+            *.args.PROFILE=debug
+            *.args.APP_VERSION=0.9.999
+
       - name: Save Docker Images
         run: |
           docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
           docker save appflowyinc/appflowy_worker_premium:latest | gzip > appflowy_worker.tar.gz
+          if [ "${{ steps.detect_search_target.outputs.enabled }}" = "true" ]; then
+            docker save appflowyinc/appflowy_search_premium:latest | gzip > appflowy_search.tar.gz
+          fi
 
       - name: Upload Docker Images as Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: docker-images
-          path: |
-            appflowy_cloud.tar.gz
-            appflowy_worker.tar.gz
+          path: appflowy_*.tar.gz
           retention-days: 1
 
   build:
@@ -256,9 +301,15 @@ jobs:
         run: |
           docker load < appflowy_cloud.tar.gz
           docker load < appflowy_worker.tar.gz
+          if [ -f appflowy_search.tar.gz ]; then
+            docker load < appflowy_search.tar.gz
+            echo "Loaded local appflowy_search image artifact"
+          else
+            echo "No appflowy_search image artifact found; using compose fallback for search service"
+          fi
 
       - name: Remove downloaded image archives
-        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz
+        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -316,8 +367,14 @@ jobs:
         run: |
           export APPFLOWY_WORKER_VERSION=latest
           export APPFLOWY_CLOUD_VERSION=latest
+          export APPFLOWY_SEARCH_VERSION=latest
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
           export APPFLOWY_AI_VERSION=0.9.59-amd64
+          if docker image inspect appflowyinc/appflowy_search_premium:${APPFLOWY_SEARCH_VERSION} >/dev/null 2>&1; then
+            echo "Using local appflowy_search image: appflowyinc/appflowy_search_premium:${APPFLOWY_SEARCH_VERSION}"
+          else
+            echo "Local appflowy_search image not found; compose may build/pull according to service config"
+          fi
           docker compose -f docker-compose-ci.yml up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
