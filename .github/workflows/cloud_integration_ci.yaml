@@ -237,7 +237,10 @@ jobs:
             test_modules: "workspace database file_test yrs_version"
           # Group 2: Root integration tests + workspace member package tests
           - test_service: "appflowy_cloud_group2"
-            test_modules: "collab ai_test gotrue redis_test search server_info sql_test user"
+            test_modules: "collab ai_test gotrue redis_test server_info sql_test user"
+          # Group 3: Search tests (dedicated docker instance for stable indexing)
+          - test_service: "appflowy_cloud_search"
+            test_modules: "search"
           - test_service: "appflowy_worker"
             test_modules: ""
     steps:
