@@ -383,6 +383,10 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
           docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
 
+      - name: Show appflowy_search startup logs
+        if: matrix.test_service == 'appflowy_cloud_search'
+        run: docker compose -f docker-compose-ci.yml logs appflowy_search
+
       - name: Wait for appflowy cloud to be ready
         run: |
           echo "Waiting for services to be ready..."
@@ -441,12 +445,13 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
-      - name: AppFlowy Cloud Logs
+      - name: Collect Docker logs
         if: failure()
         run: |
           docker ps -a > docker-ps-output.txt
           docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker_logs.txt
+          docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
 
       - name: Upload Logs as Artifact
         if: failure()
@@ -457,6 +462,7 @@ jobs:
             docker-ps-output.txt
             appflowy_cloud_logs.txt
             appflowy_worker_logs.txt
+            appflowy_search_logs.txt
           retention-days: 1
 
   notify-webhook:
