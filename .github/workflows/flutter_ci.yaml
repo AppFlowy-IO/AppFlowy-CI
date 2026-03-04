@@ -665,6 +665,9 @@ jobs:
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
 
+      - name: Fix Docker-owned file permissions
+        run: sudo chown -R $(id -u):$(id -g) $GITHUB_WORKSPACE || true
+
       - name: Checkout private repository
         uses: actions/checkout@v4
         with:
