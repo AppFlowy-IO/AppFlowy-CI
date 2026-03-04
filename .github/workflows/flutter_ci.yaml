@@ -665,6 +665,37 @@ jobs:
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
 
+      - name: Wait for MinIO to be ready
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          echo "Waiting for MinIO to be ready..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:9000/minio/health/ready 2>/dev/null; then
+              echo "MinIO ready after $((i*3)) seconds"
+              break
+            fi
+            echo "Attempt $i: MinIO not ready, waiting 3 seconds..."
+            sleep 3
+          done
+
+          # Verify bucket is accessible via S3 API
+          echo "Verifying MinIO bucket access..."
+          for i in {1..10}; do
+            if docker compose -f docker-compose-ci.yml exec -T minio mc ls local/ 2>/dev/null; then
+              echo "MinIO bucket listing succeeded"
+              exit 0
+            fi
+            # Fallback: try raw S3 list via curl
+            if curl -sf http://localhost:9000/appflowy/ 2>/dev/null; then
+              echo "MinIO bucket accessible via HTTP"
+              exit 0
+            fi
+            echo "Attempt $i: Bucket not accessible, waiting 3 seconds..."
+            sleep 3
+          done
+          echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
+          docker compose -f docker-compose-ci.yml logs minio
+
       - name: Fix Docker-owned file permissions
         run: sudo chown -R $(id -u):$(id -g) $GITHUB_WORKSPACE || true
 
