@@ -601,6 +601,8 @@ jobs:
             flutter_profile: development-linux-x86_64
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
+    env:
+      MINIO_DATA_DIR: /tmp/minio-data
 
     steps:
       - name: Checkout AppFlowy-Cloud-Premium code
@@ -644,6 +646,7 @@ jobs:
           docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
           docker container prune -f || true
           docker volume prune -f || true
+          sudo rm -rf /tmp/minio-data || true
 
           echo "Pulling and starting containers..."
           docker compose -f docker-compose-ci.yml pull
@@ -695,9 +698,6 @@ jobs:
           done
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
-
-      - name: Fix Docker-owned file permissions
-        run: sudo chown -R $(id -u):$(id -g) $GITHUB_WORKSPACE || true
 
       - name: Checkout private repository
         uses: actions/checkout@v4
