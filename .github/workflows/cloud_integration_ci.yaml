@@ -140,14 +140,14 @@ jobs:
             *.args.PROFILE=debug
             *.args.APP_VERSION=0.9.999
 
-      - name: Verify Docker Images exist
+      - name: Retag Docker Images
         run: |
-          echo "==> Available images:"
+          echo "==> Images from bake:"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
-          docker image inspect appflowyinc/appflowy_cloud_premium:latest > /dev/null
-          docker image inspect appflowyinc/appflowy_worker_premium:latest > /dev/null
+          docker tag appflowyinc/appflowy_cloud_premium:latest-amd64 appflowyinc/appflowy_cloud_premium:latest
+          docker tag appflowyinc/appflowy_worker_premium:latest-amd64 appflowyinc/appflowy_worker_premium:latest
           if [ "${{ steps.detect_search_target.outputs.enabled }}" = "true" ]; then
-            docker image inspect appflowyinc/appflowy_search_premium:latest > /dev/null
+            docker tag appflowyinc/appflowy_search_premium:latest-amd64 appflowyinc/appflowy_search_premium:latest
           fi
 
       - name: Save Docker Images
