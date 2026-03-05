@@ -211,6 +211,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build_cloud, build_worker, build_search]
     timeout-minutes: 60
+    env:
+      MINIO_DATA_DIR: /tmp/minio-data
     strategy:
       fail-fast: false
       matrix:
@@ -357,6 +359,7 @@ jobs:
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           export APPFLOWY_AI_VERSION=0.9.59-amd64
+          sudo rm -rf /tmp/minio-data || true
           echo "Pulling images..."
           docker compose -f docker-compose-ci.yml pull --quiet
           echo "Starting services..."
