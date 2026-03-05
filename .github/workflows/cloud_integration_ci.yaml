@@ -140,6 +140,16 @@ jobs:
             *.args.PROFILE=debug
             *.args.APP_VERSION=0.9.999
 
+      - name: Verify Docker Images exist
+        run: |
+          echo "==> Available images:"
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
+          docker image inspect appflowyinc/appflowy_cloud_premium:latest > /dev/null
+          docker image inspect appflowyinc/appflowy_worker_premium:latest > /dev/null
+          if [ "${{ steps.detect_search_target.outputs.enabled }}" = "true" ]; then
+            docker image inspect appflowyinc/appflowy_search_premium:latest > /dev/null
+          fi
+
       - name: Save Docker Images
         run: |
           docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
@@ -302,14 +312,16 @@ jobs:
 
       - name: Load Docker Images
         run: |
-          docker load < appflowy_cloud.tar.gz
-          docker load < appflowy_worker.tar.gz
+          gunzip -c appflowy_cloud.tar.gz | docker load
+          gunzip -c appflowy_worker.tar.gz | docker load
           if [ -f appflowy_search.tar.gz ]; then
-            docker load < appflowy_search.tar.gz
+            gunzip -c appflowy_search.tar.gz | docker load
             echo "Loaded local appflowy_search image artifact"
           else
             echo "No appflowy_search image artifact found; using compose fallback for search service"
           fi
+          echo "==> Loaded images:"
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
 
       - name: Remove downloaded image archives
         run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz
