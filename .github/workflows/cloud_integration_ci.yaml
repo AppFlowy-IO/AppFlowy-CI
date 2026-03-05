@@ -87,9 +87,7 @@ jobs:
             *.args.APP_VERSION=0.9.999
 
       - name: Save Docker Image
-        run: |
-          docker tag appflowyinc/appflowy_cloud_premium:latest-amd64 appflowyinc/appflowy_cloud_premium:latest
-          docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
+        run: docker save appflowyinc/appflowy_cloud_premium:latest-amd64 | gzip > appflowy_cloud.tar.gz
 
       - name: Upload Docker Image
         uses: actions/upload-artifact@v4
@@ -144,9 +142,7 @@ jobs:
             *.args.APP_VERSION=0.9.999
 
       - name: Save Docker Image
-        run: |
-          docker tag appflowyinc/appflowy_worker_premium:latest-amd64 appflowyinc/appflowy_worker_premium:latest
-          docker save appflowyinc/appflowy_worker_premium:latest | gzip > appflowy_worker.tar.gz
+        run: docker save appflowyinc/appflowy_worker_premium:latest-amd64 | gzip > appflowy_worker.tar.gz
 
       - name: Upload Docker Image
         uses: actions/upload-artifact@v4
@@ -201,9 +197,7 @@ jobs:
             *.args.APP_VERSION=0.9.999
 
       - name: Save Docker Image
-        run: |
-          docker tag appflowyinc/appflowy_search_premium:latest-amd64 appflowyinc/appflowy_search_premium:latest
-          docker save appflowyinc/appflowy_search_premium:latest | gzip > appflowy_search.tar.gz
+        run: docker save appflowyinc/appflowy_search_premium:latest-amd64 | gzip > appflowy_search.tar.gz
 
       - name: Upload Docker Image
         uses: actions/upload-artifact@v4
@@ -360,6 +354,8 @@ jobs:
 
       - name: Load Docker Images
         run: |
+          set -euo pipefail
+          ls -lh appflowy_*.tar.gz
           gunzip -c appflowy_cloud.tar.gz | docker load
           gunzip -c appflowy_worker.tar.gz | docker load
           gunzip -c appflowy_search.tar.gz | docker load
@@ -423,10 +419,10 @@ jobs:
 
       - name: Run Docker-Compose
         run: |
-          export APPFLOWY_WORKER_VERSION=latest
-          export APPFLOWY_CLOUD_VERSION=latest
-          export APPFLOWY_SEARCH_VERSION=latest
-          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest
+          export APPFLOWY_WORKER_VERSION=latest-amd64
+          export APPFLOWY_CLOUD_VERSION=latest-amd64
+          export APPFLOWY_SEARCH_VERSION=latest-amd64
+          export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           export APPFLOWY_AI_VERSION=0.9.59-amd64
           docker compose -f docker-compose-ci.yml up -d
           docker ps -a
