@@ -745,27 +745,21 @@ jobs:
           tar -xf appflowy_flutter.tar.gz
 
       - name: Run Flutter integration tests
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 60
-          max_attempts: 3
-          retry_wait_seconds: 10
-          command: |
-            cd frontend/appflowy_flutter
-            flutter pub get
-            export DISPLAY=:99
-            sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-            sudo apt-get install network-manager
-            docker ps -a
-            flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
+        run: |
+          cd frontend/appflowy_flutter
+          flutter pub get
+          export DISPLAY=:99
+          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+          sudo apt-get install network-manager
+          docker ps -a
+          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
 
       - name: Collect Docker logs
         if: failure()
-        working-directory: AppFlowy-Cloud-Premium
         run: |
           docker ps -a > docker-ps-output.txt
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud_logs.txt 2>&1 || true
-          docker compose -f docker-compose-ci.yml logs minio > minio_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
 
       - name: Upload Docker logs
         if: failure()
@@ -773,9 +767,9 @@ jobs:
         with:
           name: cloud-integration-test-logs-${{ github.run_id }}
           path: |
-            AppFlowy-Cloud-Premium/docker-ps-output.txt
-            AppFlowy-Cloud-Premium/appflowy_cloud_logs.txt
-            AppFlowy-Cloud-Premium/minio_logs.txt
+            docker-ps-output.txt
+            appflowy_cloud_logs.txt
+            minio_logs.txt
           retention-days: 1
 
   integration_test:
