@@ -423,37 +423,33 @@ jobs:
           df -h
 
       - name: Run Tests
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 50
-          max_attempts: 2
-          retry_wait_seconds: 10
-          command: |
-            set -e
-            echo "Running tests for ${{ matrix.test_service }}"
-            if [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
+        timeout-minutes: 50
+        run: |
+          set -e
+          echo "Running tests for ${{ matrix.test_service }}"
+          if [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              -p appflowy-worker -- --test-threads=1
+          else
+            # Run root crate integration tests module by module
+            for module in ${{ matrix.test_modules }}; do
+              echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                -p appflowy-worker -- --test-threads=1
-            else
-              # Run root crate integration tests module by module
-              for module in ${{ matrix.test_modules }}; do
-                echo "==> Testing module: ${module}"
-                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                  --features ai-test-enabled,sync-v2 "${module}" \
-                  -- --skip stress_test --skip commercial_test --test-threads=1
-              done
+                --features ai-test-enabled,sync-v2 "${module}" \
+                -- --skip stress_test --skip commercial_test --test-threads=1
+            done
 
-              # Group 2 also runs workspace member package tests
-              if [ "${{ matrix.test_service }}" = "appflowy_cloud_group2" ]; then
-                echo "==> Testing workspace member packages"
-                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                  -p appflowy-collaborate \
-                  -p pdf-exporter \
-                  -p collab-rt-entity \
-                  -p appflowy-proto \
-                  -- --test-threads=1
-              fi
+            # Group 2 also runs workspace member package tests
+            if [ "${{ matrix.test_service }}" = "appflowy_cloud_group2" ]; then
+              echo "==> Testing workspace member packages"
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+                -p appflowy-collaborate \
+                -p pdf-exporter \
+                -p collab-rt-entity \
+                -p appflowy-proto \
+                -- --test-threads=1
             fi
+          fi
 
       - name: Show sccache stats
         if: always()
