@@ -579,13 +579,32 @@ jobs:
           retry_wait_seconds: 10
           command: |
             cd frontend
+
+            set +eo pipefail
             if [ "$RUNNER_OS" == "macOS" ]; then
-              cargo make dart_unit_test
+              cargo make dart_unit_test > /tmp/test_output.txt 2>&1
             elif [ "$RUNNER_OS" == "Linux" ]; then
-              cargo make dart_unit_test_no_build
+              cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
             elif [ "$RUNNER_OS" == "Windows" ]; then
-              cargo make dart_unit_test_no_build
+              cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
             fi
+            TEST_EXIT=$?
+            set -eo pipefail
+
+            if [ $TEST_EXIT -eq 0 ]; then
+              PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
+              echo "✅ All $PASS_COUNT tests passed"
+            else
+              echo "❌ Tests failed! Showing failures (hiding passed tests):"
+              echo ""
+              grep -v '✅' /tmp/test_output.txt || true
+              echo ""
+              echo "::group::Full test output (click to expand)"
+              cat /tmp/test_output.txt
+              echo "::endgroup::"
+            fi
+
+            exit $TEST_EXIT
         env:
           DISABLE_EVENT_LOG: true
           DISABLE_CI_TEST_LOG: "true"
@@ -752,7 +771,26 @@ jobs:
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           sudo apt-get install network-manager
           docker ps -a
-          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage
+
+          set +eo pipefail
+          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage > /tmp/test_output.txt 2>&1
+          TEST_EXIT=$?
+          set -eo pipefail
+
+          if [ $TEST_EXIT -eq 0 ]; then
+            PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
+            echo "✅ All $PASS_COUNT cloud integration tests passed"
+          else
+            echo "❌ Cloud integration tests failed! Showing failures (hiding passed tests):"
+            echo ""
+            grep -v '✅' /tmp/test_output.txt || true
+            echo ""
+            echo "::group::Full test output (click to expand)"
+            cat /tmp/test_output.txt
+            echo "::endgroup::"
+          fi
+
+          exit $TEST_EXIT
 
       - name: Collect Docker logs
         if: failure()
@@ -850,4 +888,23 @@ jobs:
             export DISPLAY=:99
             sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
             sudo apt-get install network-manager
-            flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage
+
+            set +eo pipefail
+            flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage > /tmp/test_output.txt 2>&1
+            TEST_EXIT=$?
+            set -eo pipefail
+
+            if [ $TEST_EXIT -eq 0 ]; then
+              PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
+              echo "✅ All $PASS_COUNT integration tests passed"
+            else
+              echo "❌ Integration tests failed! Showing failures (hiding passed tests):"
+              echo ""
+              grep -v '✅' /tmp/test_output.txt || true
+              echo ""
+              echo "::group::Full test output (click to expand)"
+              cat /tmp/test_output.txt
+              echo "::endgroup::"
+            fi
+
+            exit $TEST_EXIT
