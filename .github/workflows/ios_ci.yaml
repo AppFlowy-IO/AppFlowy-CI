@@ -20,7 +20,7 @@ on:
 env:
   FLUTTER_VERSION: "3.27.4"
   RUST_TOOLCHAIN: "1.92.0"
-  CLOUD_VERSION: latest-amd64
+  CLOUD_VERSION: latest-arm64
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
@@ -36,6 +36,9 @@ jobs:
       MINIO_DATA_DIR: /tmp/minio-data
 
     steps:
+      - name: Setup Docker
+        uses: docker/setup-docker-action@v4
+
       - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
         with:
