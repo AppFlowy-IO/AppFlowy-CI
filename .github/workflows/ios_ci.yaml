@@ -20,7 +20,6 @@ on:
 env:
   FLUTTER_VERSION: "3.27.4"
   RUST_TOOLCHAIN: "1.92.0"
-  CLOUD_VERSION: latest-arm64
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
@@ -32,110 +31,7 @@ jobs:
 
     runs-on: macos-latest
 
-    env:
-      MINIO_DATA_DIR: /tmp/minio-data
-
     steps:
-      - name: Setup Docker via Colima
-        run: |
-          brew install docker docker-compose colima
-          colima start --vm-type vz --cpu 3 --memory 6 --disk 60
-          # Symlink docker socket for docker compose compatibility
-          sudo ln -sf "$HOME/.colima/default/docker.sock" /var/run/docker.sock
-
-      - name: Checkout AppFlowy-Cloud-Premium code
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          path: AppFlowy-Cloud-Premium
-
-      - name: Prepare appflowy cloud env
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          # log level
-          cp deploy.env .env
-          sed -i '' 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
-          sed -i '' 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
-          sed -i '' 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
-          sed -i '' 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          sed -i '' 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
-          sed -i '' 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
-
-          echo '' >> .env
-          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
-      - name: Run Docker-Compose
-        working-directory: AppFlowy-Cloud-Premium
-        env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
-        run: |
-          echo "Cleaning up any existing containers..."
-          docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
-          docker container prune -f || true
-          docker volume prune -f || true
-          sudo rm -rf /tmp/minio-data || true
-
-          echo "Pulling and starting containers..."
-          docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d
-          docker ps -a
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
-
-      - name: Wait for appflowy cloud to be ready
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          echo "Waiting for services to be ready..."
-          for i in {1..60}; do
-            if curl -f http://localhost/api/health 2>/dev/null; then
-              echo "Health check passed after $((i*5)) seconds"
-              exit 0
-            fi
-            echo "Attempt $i: Health check failed, waiting 5 seconds..."
-            sleep 5
-          done
-          echo "Health check timeout after 300 seconds - proceeding anyway"
-
-      - name: Wait for MinIO to be ready
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          echo "Waiting for MinIO to be ready..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:9000/minio/health/ready 2>/dev/null; then
-              echo "MinIO ready after $((i*3)) seconds"
-              break
-            fi
-            echo "Attempt $i: MinIO not ready, waiting 3 seconds..."
-            sleep 3
-          done
-
-          # Verify bucket is accessible via S3 API
-          echo "Verifying MinIO bucket access..."
-          for i in {1..10}; do
-            if docker compose -f docker-compose-ci.yml exec -T minio mc ls local/ 2>/dev/null; then
-              echo "MinIO bucket listing succeeded"
-              exit 0
-            fi
-            # Fallback: try raw S3 list via curl
-            if curl -sf http://localhost:9000/appflowy/ 2>/dev/null; then
-              echo "MinIO bucket accessible via HTTP"
-              exit 0
-            fi
-            echo "Attempt $i: Bucket not accessible, waiting 3 seconds..."
-            sleep 3
-          done
-          echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
-          docker compose -f docker-compose-ci.yml logs minio
-
       - name: Checkout private repository
         uses: actions/checkout@v4
         with:
@@ -213,21 +109,3 @@ jobs:
           command: |
             cd frontend/appflowy_flutter
             flutter test integration_test/runner.dart -d ${{ steps.simulator-action.outputs.udid }}
-
-      - name: Collect Docker logs
-        if: failure()
-        run: |
-          docker ps -a > docker-ps-output.txt
-          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
-
-      - name: Upload Docker logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-cloud-integration-test-logs-${{ github.run_id }}
-          path: |
-            docker-ps-output.txt
-            appflowy_cloud_logs.txt
-            minio_logs.txt
-          retention-days: 1
