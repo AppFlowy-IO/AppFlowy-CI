@@ -445,6 +445,7 @@ jobs:
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                 -p appflowy-collaborate \
                 -p pdf-exporter \
+                -p collab \
                 -p collab-rt-entity \
                 -p appflowy-proto \
                 -- --test-threads=1
