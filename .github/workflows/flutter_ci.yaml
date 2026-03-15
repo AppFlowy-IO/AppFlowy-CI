@@ -591,18 +591,24 @@ jobs:
             TEST_EXIT=$?
             set -eo pipefail
 
+            PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
+            FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+
             if [ $TEST_EXIT -eq 0 ]; then
-              PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
               echo "✅ All $PASS_COUNT tests passed"
             else
-              echo "❌ Tests failed! Showing failures (hiding passed tests):"
-              echo ""
-              grep -v '✅' /tmp/test_output.txt || true
-              echo ""
-              echo "::group::Full test output (click to expand)"
-              cat /tmp/test_output.txt
-              echo "::endgroup::"
+              echo "❌ $FAIL_COUNT test(s) failed, $PASS_COUNT test(s) passed"
             fi
+
+            echo ""
+            echo "::group::Failed tests (click to expand)"
+            awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
+            echo "::endgroup::"
+
+            echo ""
+            echo "::group::All logs (click to expand)"
+            cat /tmp/test_output.txt
+            echo "::endgroup::"
 
             exit $TEST_EXIT
         env:
@@ -777,18 +783,24 @@ jobs:
           TEST_EXIT=$?
           set -eo pipefail
 
+          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
+          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+
           if [ $TEST_EXIT -eq 0 ]; then
-            PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
             echo "✅ All $PASS_COUNT cloud integration tests passed"
           else
-            echo "❌ Cloud integration tests failed! Showing failures (hiding passed tests):"
-            echo ""
-            grep -v '✅' /tmp/test_output.txt || true
-            echo ""
-            echo "::group::Full test output (click to expand)"
-            cat /tmp/test_output.txt
-            echo "::endgroup::"
+            echo "❌ $FAIL_COUNT cloud integration test(s) failed, $PASS_COUNT test(s) passed"
           fi
+
+          echo ""
+          echo "::group::Failed tests (click to expand)"
+          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
+          echo "::endgroup::"
+
+          echo ""
+          echo "::group::All logs (click to expand)"
+          cat /tmp/test_output.txt
+          echo "::endgroup::"
 
           exit $TEST_EXIT
 
@@ -894,17 +906,23 @@ jobs:
             TEST_EXIT=$?
             set -eo pipefail
 
+            PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
+            FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+
             if [ $TEST_EXIT -eq 0 ]; then
-              PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "?")
               echo "✅ All $PASS_COUNT integration tests passed"
             else
-              echo "❌ Integration tests failed! Showing failures (hiding passed tests):"
-              echo ""
-              grep -v '✅' /tmp/test_output.txt || true
-              echo ""
-              echo "::group::Full test output (click to expand)"
-              cat /tmp/test_output.txt
-              echo "::endgroup::"
+              echo "❌ $FAIL_COUNT integration test(s) failed, $PASS_COUNT test(s) passed"
             fi
+
+            echo ""
+            echo "::group::Failed tests (click to expand)"
+            awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
+            echo "::endgroup::"
+
+            echo ""
+            echo "::group::All logs (click to expand)"
+            cat /tmp/test_output.txt
+            echo "::endgroup::"
 
             exit $TEST_EXIT
