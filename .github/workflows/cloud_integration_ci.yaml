@@ -360,10 +360,8 @@ jobs:
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           export APPFLOWY_AI_VERSION=0.9.59-amd64
           sudo rm -rf /tmp/minio-data || true
-          echo "Pulling images..."
-          docker compose -f docker-compose-ci.yml pull --quiet
-          echo "Starting services..."
-          docker compose -f docker-compose-ci.yml up -d
+          echo "Starting services (using locally built images, pulling only missing ones)..."
+          docker compose -f docker-compose-ci.yml up -d --pull=missing
           docker ps -a
           docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
