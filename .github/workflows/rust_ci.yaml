@@ -314,12 +314,6 @@ jobs:
         run: |
           docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker.log 2>&1
 
-      - name: "Appflowy-Collaborate container logs"
-        if: always()
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          docker compose -f docker-compose-ci.yml logs appflowy_collaborate > appflowy_collaborate.log 2>&1
-
       - name: "Minio container logs"
         if: always()
         working-directory: AppFlowy-Cloud-Premium
@@ -334,7 +328,6 @@ jobs:
           path: |
             AppFlowy-Cloud-Premium/appflowy_cloud.log
             AppFlowy-Cloud-Premium/appflowy_worker.log
-            AppFlowy-Cloud-Premium/appflowy_collaborate.log
             AppFlowy-Cloud-Premium/minio.log
           retention-days: 1
 
