@@ -57,7 +57,7 @@ jobs:
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg PROFILE=debug \
-            --build-arg FEATURES="self-host-af, commercial-ci" \
+            --build-arg FEATURES="self-host-af, commercial-ci, test-mailer" \
             appflowy_cloud
 
       - name: Save Docker Images
@@ -151,6 +151,15 @@ jobs:
           sed -i 's|GOTRUE_RATE_LIMIT_EMAIL_SENT=100|GOTRUE_RATE_LIMIT_EMAIL_SENT=1000|' .env
           sed -i 's|APPFLOWY_MAILER_SMTP_USERNAME=.*|APPFLOWY_MAILER_SMTP_USERNAME=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
           sed -i 's|APPFLOWY_MAILER_SMTP_PASSWORD=.*|APPFLOWY_MAILER_SMTP_PASSWORD=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
+          # Route outbound appflowy_cloud mail through the mailpit sidecar
+          # (added to docker-compose-ci.yml) so the email_delivery_* tests in
+          # commercial_test can assert delivery via mailpit's HTTP API. The
+          # override only activates because the image was built with
+          # `--features test-mailer` above. `mailpit` is the service name on
+          # the shared docker-compose network.
+          echo 'APPFLOWY_MAILER_TEST_MODE=true' >> .env
+          echo 'APPFLOWY_MAILER_TEST_SMTP_HOST=mailpit' >> .env
+          echo 'APPFLOWY_MAILER_TEST_SMTP_PORT=1025' >> .env
 
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
