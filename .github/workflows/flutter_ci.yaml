@@ -811,6 +811,7 @@ jobs:
           docker ps -a > docker-ps-output.txt
           docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
           docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
 
       - name: Upload Docker logs
         if: failure()
@@ -821,6 +822,7 @@ jobs:
             docker-ps-output.txt
             appflowy_cloud_logs.txt
             minio_logs.txt
+            gotrue_logs.txt
           retention-days: 1
 
   integration_test:
