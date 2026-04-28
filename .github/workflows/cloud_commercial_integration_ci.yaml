@@ -192,6 +192,17 @@ jobs:
 
         shell: bash
 
+      - name: Configure GoTrue for whitelist tests
+        if: matrix.test_service == 'appflowy_cloud_whitelist'
+        run: |
+          # Whitelist sign-up tests require sign-up enabled and the
+          # before-user-created hook so the gateway can vet the address.
+          sed -i '/^GOTRUE_DISABLE_SIGNUP=/d' .env
+          sed -i '/^GOTRUE_HOOK_BEFORE_USER_CREATED_ENABLED=/d' .env
+          echo 'GOTRUE_DISABLE_SIGNUP=false' >> .env
+          echo 'GOTRUE_HOOK_BEFORE_USER_CREATED_ENABLED=true' >> .env
+        shell: bash
+
       - name: Update Nginx Configuration
         # the wasm-pack headless tests will run on random ports, so we need to allow all origins
         run: sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
