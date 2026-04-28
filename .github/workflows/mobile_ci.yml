@@ -58,6 +58,7 @@ jobs:
 
           echo '' >> .env
           echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
+          echo 'APPFLOWY_PAGE_HISTORY_CLIENT_ENABLED=true' >> .env
           echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
 
       - name: Log in to Docker Hub
