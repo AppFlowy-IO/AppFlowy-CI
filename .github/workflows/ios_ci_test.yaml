@@ -46,6 +46,7 @@ jobs:
 
           echo '' >> .env
           echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
+          echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
 
       - name: Setup Docker on macOS
         uses: douglascamata/setup-docker-macos-action@v1

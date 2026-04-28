@@ -73,10 +73,20 @@ jobs:
           retention-days: 1
 
   test:
-    name: Integration Tests
+    name: Integration Tests (${{ matrix.test_service }})
     runs-on: ubuntu-latest
     needs: setup
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Commercial tests (billing, self-host)
+          - test_service: "appflowy_cloud_commercial"
+            test_modules: "commercial_test"
+          # Whitelist tests (isolated — these toggle GoTrue global state)
+          - test_service: "appflowy_cloud_whitelist"
+            test_modules: "whitelist"
     steps:
       - name: Checkout Private Repo
         uses: actions/checkout@v4
@@ -213,10 +223,28 @@ jobs:
 
       - name: Run Tests
         run: |
-          cat .env
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test commercial_test --features=commercial-ci -- --test-threads=1
+          set -e
+          echo "Running tests for ${{ matrix.test_service }}"
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_whitelist" ]; then
+            # Whitelist tests run in isolation — they toggle GoTrue global state
+            for module in ${{ matrix.test_modules }}; do
+              echo "==> Testing module: ${module}"
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+                --features=commercial-ci "${module}" \
+                -- --skip stress_test --test-threads=1
+            done
+          else
+            # Skip whitelist tests — they run in the dedicated whitelist group
+            for module in ${{ matrix.test_modules }}; do
+              echo "==> Testing module: ${module}"
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+                --features=commercial-ci "${module}" \
+                -- --skip stress_test --skip whitelist --test-threads=1
+            done
+          fi
 
       - name: Test Server Info Endpoint
+        if: matrix.test_service == 'appflowy_cloud_commercial'
         run: |
           # Make request to server-info endpoint and capture response
           response=$(curl -s http://localhost/api/server-info)

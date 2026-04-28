@@ -347,6 +347,7 @@ jobs:
           echo 'APPFLOWY_KEYWORD_INDEX_MAP_SIZE_BYTES=5242880' >> .env
           echo 'APPFLOWY_WORKSPACE_ACTOR_SNAPSHOT_INTERVAL_SECS=15' >> .env
           echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
+          echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
 
           cat .env
         shell: bash
