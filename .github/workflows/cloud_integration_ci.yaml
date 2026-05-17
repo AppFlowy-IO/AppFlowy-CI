@@ -498,20 +498,27 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-worker -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_whitelist" ]; then
-            # Whitelist tests run in isolation — they toggle GoTrue global state
+            # Whitelist tests run in isolation — they toggle GoTrue global state.
+            # `${module}::` makes the filter a Rust path prefix rather than a
+            # substring, so e.g. `workspace::` matches tests in `tests/workspace/`
+            # but not `mcp::tools_test::get_self_returns_workspace_id`.
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2 "${module}" \
+                --features ai-test-enabled,sync-v2 "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
           else
-            # Run root crate integration tests module by module
-            # Skip whitelist tests — they run in the dedicated whitelist group
+            # Run root crate integration tests module by module.
+            # `${module}::` makes the filter a Rust path prefix rather than a
+            # substring, so a module like `workspace` only matches tests under
+            # `tests/workspace/` and not unrelated `mcp::*workspace*` or
+            # `search::*workspace*` tests.
+            # Skip whitelist tests — they run in the dedicated whitelist group.
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2 "${module}" \
+                --features ai-test-enabled,sync-v2 "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
             done
 
