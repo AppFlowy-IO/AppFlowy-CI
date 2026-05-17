@@ -207,10 +207,65 @@ jobs:
           path: appflowy_search.tar.gz
           retention-days: 1
 
+  build_mcp:
+    name: Build appflowy_mcp Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          docker builder prune -af || true
+          docker image prune -af || true
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Prepare env for Docker build
+        run: cp deploy.env .env
+
+      - name: Build Docker Image (cached)
+        uses: docker/bake-action@v5
+        with:
+          files: docker-compose-ci.yml
+          targets: appflowy_mcp
+          load: true
+          set: |
+            *.platform=linux/amd64
+            *.cache-from=type=gha,scope=cloud-integration-mcp
+            *.cache-to=type=gha,scope=cloud-integration-mcp,mode=max
+            *.args.BUILDKIT_INLINE_CACHE=1
+            *.args.BUILDKIT_MULTI_PLATFORM=0
+            *.args.PROFILE=debug
+            *.args.APP_VERSION=0.9.999
+
+      - name: Save Docker Image
+        run: docker save appflowyinc/appflowy_mcp_premium:latest-amd64 | gzip > appflowy_mcp.tar.gz
+
+      - name: Upload Docker Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-mcp
+          path: appflowy_mcp.tar.gz
+          retention-days: 1
+
   test:
     name: Integration Tests (${{ matrix.test_service }})
     runs-on: ubuntu-latest
-    needs: [build_cloud, build_worker, build_search]
+    needs: [build_cloud, build_worker, build_search, build_mcp]
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
@@ -297,11 +352,12 @@ jobs:
           gunzip -c appflowy_cloud.tar.gz | docker load
           gunzip -c appflowy_worker.tar.gz | docker load
           gunzip -c appflowy_search.tar.gz | docker load
+          gunzip -c appflowy_mcp.tar.gz | docker load
           echo "==> Loaded images:"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
 
       - name: Remove downloaded image archives
-        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz
+        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
