@@ -19,7 +19,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FLUTTER_VERSION: "3.27.4"
+  FLUTTER_VERSION: "3.41.9"
   RUST_TOOLCHAIN: "1.92.0"
   CARGO_MAKE_VERSION: "0.37.18"
   CLOUD_VERSION: latest-amd64
@@ -164,12 +164,17 @@ jobs:
       - name: Check FFI library size
         shell: bash
         run: |
-          LIB=$(find frontend -name "libappflowy_backend.so" 2>/dev/null | head -1)
+          LIB=$(find frontend/rust-lib/target -type f \( \
+            -name "libappflowy_backend.so" -o \
+            -name "libappflowy_backend.a" -o \
+            -name "libappflowy_backend.dylib" -o \
+            -name "appflowy_backend.dll" \
+          \) 2>/dev/null | head -1)
           if [ -n "$LIB" ]; then
             SIZE_BYTES=$(stat -c%s "$LIB")
             SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
             echo "## FFI Library Size" >> $GITHUB_STEP_SUMMARY
-            echo "**libappflowy_backend.so: ${SIZE_MB} MB**" >> $GITHUB_STEP_SUMMARY
+            echo "**$(basename "$LIB"): ${SIZE_MB} MB**" >> $GITHUB_STEP_SUMMARY
             echo "FFI library size: ${SIZE_MB} MB"
 
             MAX_SIZE_MB=150
@@ -178,7 +183,7 @@ jobs:
               exit 1
             fi
           else
-            echo "::warning::Could not find libappflowy_backend.so"
+            echo "::warning::Could not find AppFlowy backend FFI library"
           fi
 
       - name: Clean cargo build artifacts
