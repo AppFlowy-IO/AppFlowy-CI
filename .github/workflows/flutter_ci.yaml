@@ -897,6 +897,20 @@ jobs:
         run: tar -xf appflowy_flutter.tar.gz
         shell: bash
 
+      - name: Prepare PDFium for Linux integration tests
+        run: |
+          set -euo pipefail
+          PDFIUM_DIR="$RUNNER_TEMP/pdfium"
+          PDFIUM_ARCHIVE="$RUNNER_TEMP/pdfium-linux-x64.tgz"
+          mkdir -p "$PDFIUM_DIR"
+          curl -L \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz" \
+            -o "$PDFIUM_ARCHIVE"
+          tar -xzf "$PDFIUM_ARCHIVE" -C "$PDFIUM_DIR" lib/libpdfium.so
+          echo "APPFLOWY_PDFIUM_MODULE_PATH=$PDFIUM_DIR/lib/libpdfium.so" >> "$GITHUB_ENV"
+          ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
+        shell: bash
+
       - name: Run Flutter integration tests
         uses: nick-fields/retry@v3
         with:
