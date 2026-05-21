@@ -795,6 +795,15 @@ jobs:
           PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
           FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
 
+          if [ "$TEST_EXIT" -ne 0 ] &&
+            grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
+            grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
+            grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
+            ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
+            echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
+            TEST_EXIT=0
+          fi
+
           if [ $TEST_EXIT -eq 0 ]; then
             echo "✅ All $PASS_COUNT cloud integration tests passed"
           else
@@ -935,6 +944,15 @@ jobs:
 
             PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
             FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+
+            if [ "$TEST_EXIT" -ne 0 ] &&
+              grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
+              grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
+              grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
+              ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
+              echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
+              TEST_EXIT=0
+            fi
 
             if [ $TEST_EXIT -eq 0 ]; then
               echo "✅ All $PASS_COUNT integration tests passed"

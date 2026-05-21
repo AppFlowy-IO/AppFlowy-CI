@@ -88,5 +88,21 @@ runs:
         export DISPLAY=:99
         sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
         sudo apt-get install network-manager
-        flutter test ${{ inputs.test_path }} -d Linux --coverage
+        set +eo pipefail
+        flutter test ${{ inputs.test_path }} -d Linux --coverage > /tmp/test_output.txt 2>&1
+        TEST_EXIT=$?
+        set -eo pipefail
+
+        cat /tmp/test_output.txt
+
+        if [ "$TEST_EXIT" -ne 0 ] &&
+          grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
+          grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
+          grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
+          ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
+          echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
+          TEST_EXIT=0
+        fi
+
+        exit "$TEST_EXIT"
       shell: bash
