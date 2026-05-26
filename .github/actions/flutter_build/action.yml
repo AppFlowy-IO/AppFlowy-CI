@@ -86,6 +86,20 @@ runs:
       run: cargo make --profile ${{ inputs.flutter_profile }} appflowy-core-dev
       shell: bash
 
+    - name: Bundle libmpv into AppFlowy bundle
+      if: runner.os == 'Linux'
+      run: |
+        set -euo pipefail
+        BUNDLE="frontend/appflowy_flutter/build/linux/x64/release/bundle"
+        mkdir -p "$BUNDLE/lib"
+        wget -q -O /tmp/libmpv1.deb \
+          http://archive.ubuntu.com/ubuntu/pool/universe/m/mpv/libmpv1_0.34.1-1ubuntu3_amd64.deb
+        dpkg-deb -x /tmp/libmpv1.deb /tmp/libmpv-extracted
+        cp -r /tmp/libmpv-extracted/usr/lib/x86_64-linux-gnu/* "$BUNDLE/lib/"
+        echo "✅ libmpv bundled into $BUNDLE/lib/"
+        ls -la "$BUNDLE/lib/libmpv"*
+      shell: bash
+
     - name: Clean cargo build artifacts
       working-directory: frontend/rust-lib
       run: cargo clean
