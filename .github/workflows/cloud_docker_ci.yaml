@@ -115,6 +115,10 @@ jobs:
           GOTRUE_MAILER_AUTOCONFIRM=true
           API_EXTERNAL_URL=http://localhost
           APPFLOWY_SPAM_DETECT_ENABLED=false
+          APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0
+          APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0
           EOF
 
           # Start test services
@@ -181,6 +185,10 @@ jobs:
                 - RUST_LOG=info
                 - DATABASE_URL=postgres://postgres:password@postgres:5432/appflowy_cloud
                 - REDIS_URL=redis://redis:6379
+                - APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0
+                - APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0
+                - APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0
+                - APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0
           EOF
 
           # Test with docker-compose

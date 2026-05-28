@@ -385,6 +385,10 @@ jobs:
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
+          echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
@@ -673,6 +677,10 @@ jobs:
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
           sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
           sed -i 's|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=.*|APPFLOWY_SPAM_USER_DETECT_THRESHOLD=1|' .env
+          echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env

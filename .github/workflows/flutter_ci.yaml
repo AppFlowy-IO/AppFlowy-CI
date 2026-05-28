@@ -686,6 +686,10 @@ jobs:
           echo '' >> .env
           echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
           echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
+          echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
+          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
