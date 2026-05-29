@@ -106,6 +106,10 @@ jobs:
           RUST_BACKTRACE: 1
           DATABASE_URL: ${{ env.DATABASE_URL }}
           REDIS_URL: redis://localhost:6379
+          APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS: 0
+          APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS: 0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR: 0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_DAY: 0
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
           cargo test --workspace --exclude frontend --exclude desktop -- --test-threads=2
