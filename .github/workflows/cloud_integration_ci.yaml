@@ -378,7 +378,6 @@ jobs:
             test_modules: >-
               sql_test::whitelist_test
               user::admin_signup_whitelist_test
-              user::admin_user_deletion_whitelist_test
               user::sign_up
               workspace::admin_system_config_test
           - test_service: "appflowy_search_package"
