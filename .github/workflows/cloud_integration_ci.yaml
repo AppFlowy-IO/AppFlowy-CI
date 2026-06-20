@@ -286,7 +286,6 @@ jobs:
               workspace::admin_copy_workspace_test
               workspace::admin_invitation_search_test
               workspace::admin_permissions_test
-              workspace::admin_system_config_test
               workspace::admin_transfer_ownership_test
               workspace::csv_import_test
               workspace::database_listing_test
@@ -332,15 +331,56 @@ jobs:
             test_modules: "database file_test yrs_test"
           - test_service: "appflowy_cloud_misc"
             test_modules: "cache_validation folder_test mcp mention_api"
-          # Group 2: Root integration tests + workspace member package tests
-          - test_service: "appflowy_cloud_group2"
-            test_modules: "collab ai_test gotrue redis_test server_info sql_test user"
+          - test_service: "appflowy_cloud_collab"
+            test_modules: "collab"
+          - test_service: "appflowy_cloud_ai"
+            test_modules: "ai_test"
+          - test_service: "appflowy_cloud_auth_user"
+            test_modules: "gotrue user"
+          - test_service: "appflowy_cloud_redis_info"
+            test_modules: "redis_test server_info"
+          - test_service: "appflowy_cloud_sql_core"
+            test_modules: >-
+              sql_test::admin_guest_status_test
+              sql_test::admin_user_test
+              sql_test::chat_test
+              sql_test::guest_limit_test
+              sql_test::permission_mapping_test
+              sql_test::spam_signal_test
+              sql_test::spam_test
+              sql_test::user_test
+          - test_service: "appflowy_cloud_sql_collab"
+            test_modules: >-
+              sql_test::collab_db_ops_test
+              sql_test::collab_embed_test
+              sql_test::collab_history_graph_test
+              sql_test::collab_restore_state_test
+              sql_test::pg_direct_write_test
+          - test_service: "appflowy_cloud_sql_workspace"
+            test_modules: >-
+              sql_test::folder_db_ops_test
+              sql_test::folder_read_test
+              sql_test::guest_workspace_test
+              sql_test::publish_blob_ref_test
+              sql_test::publish_test
+              sql_test::s3_cleanup_test
+              sql_test::workspace_database_backfill_test
+              sql_test::workspace_database_listing_test
+              sql_test::workspace_database_sync_test
+              sql_test::workspace_test
+          - test_service: "appflowy_cloud_member_packages"
+            test_modules: ""
           # Group 3: Search tests (dedicated docker instance for stable indexing)
           - test_service: "appflowy_cloud_search"
             test_modules: "search"
           # Group 4: Whitelist tests (isolated — these toggle GoTrue global state)
           - test_service: "appflowy_cloud_whitelist"
-            test_modules: "whitelist"
+            test_modules: >-
+              sql_test::whitelist_test
+              user::admin_signup_whitelist_test
+              user::admin_user_deletion_whitelist_test
+              user::sign_up
+              workspace::admin_system_config_test
           - test_service: "appflowy_search_package"
             test_modules: ""
           - test_service: "appflowy_worker"
@@ -570,6 +610,15 @@ jobs:
             echo "==> Testing appflowy-search package"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-search -- --test-threads=1
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_member_packages" ]; then
+            echo "==> Testing workspace member packages"
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              -p appflowy-collaborate \
+              -p pdf-exporter \
+              -p collab \
+              -p collab-rt-entity \
+              -p appflowy-proto \
+              -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-worker -- --test-threads=1
@@ -597,18 +646,6 @@ jobs:
                 --features ai-test-enabled,sync-v2 "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
             done
-
-            # Group 2 also runs workspace member package tests
-            if [ "${{ matrix.test_service }}" = "appflowy_cloud_group2" ]; then
-              echo "==> Testing workspace member packages"
-              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                -p appflowy-collaborate \
-                -p pdf-exporter \
-                -p collab \
-                -p collab-rt-entity \
-                -p appflowy-proto \
-                -- --test-threads=1
-            fi
           fi
 
       - name: Show sccache stats
