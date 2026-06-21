@@ -380,6 +380,11 @@ jobs:
               user::admin_signup_whitelist_test
               user::sign_up
               workspace::admin_system_config_test
+          # Group 5: SCIM directory-sync end-to-end (drives the real Authentik IdP
+          # from docker-compose-ci.yml). The cloud image is the default build, so
+          # SCIM is available with no seat limit and no license.
+          - test_service: "appflowy_cloud_scim"
+            test_modules: "scim"
           - test_service: "appflowy_search_package"
             test_modules: ""
           - test_service: "appflowy_worker"
@@ -632,6 +637,18 @@ jobs:
                 --features ai-test-enabled,sync-v2 "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+            # SCIM end-to-end against the real Authentik IdP (from docker-compose-ci.yml).
+            # Authentik (in docker) reaches the cloud over the compose network; the
+            # test (on the runner) reaches Authentik's health port and drives it via
+            # `docker exec`. The cloud image is the default build, so SCIM is available
+            # with no seat limit and no license.
+            echo "==> SCIM directory-sync end-to-end (Authentik)"
+            SCIM_URL_FOR_AUTHENTIK=http://appflowy_cloud:8000/scim/v2 \
+            AUTHENTIK_HEALTH_URL=http://localhost:9010/-/health/ready/ \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              --features ai-test-enabled,sync-v2 "scim::" \
+              -- --test-threads=1 --nocapture
           else
             # Run root crate integration tests module by module.
             # `${module}::` makes the filter a Rust path prefix rather than a
