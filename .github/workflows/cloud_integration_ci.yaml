@@ -26,6 +26,9 @@ env:
   LOCALHOST_URL: http://localhost
   LOCALHOST_WS: ws://localhost/ws/v1
   LOCALHOST_WS_V2: ws://localhost/ws/v2
+  # Root MCP integration tests run on the Actions runner and call the
+  # standalone appflowy_mcp service exposed by docker-compose-ci.yml.
+  APPFLOWY_MCP_TEST_BASE_URL: http://localhost:8002
   APPFLOWY_REDIS_URI: redis://redis:6379
   APPFLOWY_AI_REDIS_URL: redis://redis:6379
   LOCALHOST_GOTRUE: http://localhost/gotrue
