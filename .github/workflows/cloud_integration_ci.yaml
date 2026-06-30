@@ -676,6 +676,7 @@ jobs:
         run: |
           docker ps -a > docker-ps-output.txt
           docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud_logs.txt
+          docker compose -f docker-compose-ci.yml logs appflowy_mcp > appflowy_mcp_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
 
@@ -687,6 +688,7 @@ jobs:
           path: |
             docker-ps-output.txt
             appflowy_cloud_logs.txt
+            appflowy_mcp_logs.txt
             appflowy_worker_logs.txt
             appflowy_search_logs.txt
           retention-days: 1
