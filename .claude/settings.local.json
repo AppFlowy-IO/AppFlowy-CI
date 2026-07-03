@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh run view 22707844980 --log-failed 2>&1 | head -200)",
+      "Bash(gh run view 22707844980 --log-failed 2>&1 | head -300)",
+      "Bash(gh run view 22707844980 --json jobs 2>&1 | head -100)",
+      "Bash(gh run view 22707844980 --json status,conclusion,event,headBranch,createdAt 2>&1)",
+      "Bash(gh run list --workflow=cloud_integration_ci.yaml --limit 5 --json databaseId,conclusion,status,createdAt,event 2>&1)",
+      "Bash(gh run list --workflow=cloud_integration_ci.yaml --limit 3 --json databaseId,conclusion,status,createdAt 2>&1)",
+      "Bash(gh run view 22714514431 --json jobs --jq '.jobs[] | {name: .name, conclusion: .conclusion, steps: [.steps[] | select\\(.conclusion != \"success\" and .conclusion != \"skipped\"\\) | {name: .name, conclusion: .conclusion}]}' 2>&1)",
+      "Bash(gh run view 22715997091 --json jobs --jq '.jobs[] | select\\(.conclusion != \"success\" and .conclusion != \"skipped\"\\) | {name: .name, conclusion: .conclusion, steps: [.steps[] | select\\(.conclusion != \"success\" and .conclusion != \"skipped\" and .conclusion != \"\"\\) | {name: .name, conclusion: .conclusion}]}' 2>&1)",
+      "Bash(gh run view 22715997091 --json jobs 2>&1 | python3 -c \"\nimport json, sys\ndata = json.load\\(sys.stdin\\)\nfor job in data['jobs']:\n    if job['conclusion'] not in \\('success', 'skipped', ''\\):\n        print\\(f\\\\\"JOB: {job['name']} -> {job['conclusion']}\\\\\"\\)\n        for step in job['steps']:\n            if step['conclusion'] not in \\('success', 'skipped', ''\\):\n                print\\(f\\\\\"  STEP: {step['name']} -> {step['conclusion']}\\\\\"\\)\n\"\\\\)",
+      "Bash(gh run view 22715997091 --log-failed 2>&1 | tail -100)",
+      "Bash(gh run view 22716438089 --json jobs 2>&1 | python3 -c \"\nimport json, sys\ndata = json.load\\(sys.stdin\\)\nfor job in data['jobs']:\n    print\\(f'{job[\\\\\"name\\\\\"]}: {job[\\\\\"status\\\\\"]} {job[\\\\\"conclusion\\\\\"]} started={job[\\\\\"startedAt\\\\\"]} completed={job[\\\\\"completedAt\\\\\"]}'\\)\" 2>&1)",
+      "Bash(gh run view 22716438089 --json jobs 2>&1 | python3 -c \"\nimport json, sys\ndata = json.load\\(sys.stdin\\)\nfor job in data['jobs']:\n    if 'Integration' in job['name']:\n        print\\(f'=== {job[\\\\\"name\\\\\"]} ==='\\)\n        for step in job['steps']:\n            status = step.get\\('conclusion', step.get\\('status', ''\\)\\)\n            print\\(f'  {step[\\\\\"name\\\\\"]}: {status}'\\)\n\" 2>&1)",
+      "Bash(gh run view 22719127537 --json jobs 2>&1 | python3 -c \"\nimport json, sys\ndata = json.load\\(sys.stdin\\)\nfor job in data['jobs']:\n    print\\(f'{job[\\\\\"name\\\\\"]}: status={job[\\\\\"status\\\\\"]} conclusion={job[\\\\\"conclusion\\\\\"]} started={job[\\\\\"startedAt\\\\\"]}'\\)\" 2>&1)",
+      "Bash(gh run view 22719127537 --json jobs 2>&1 | python3 -c \"\nimport json, sys\ndata = json.load\\(sys.stdin\\)\nfor job in data['jobs']:\n    if 'Integration' in job['name']:\n        print\\(f'=== {job[\\\\\"name\\\\\"]} ==='\\)\n        for step in job['steps']:\n            c = step.get\\('conclusion',''\\)\n            s = step.get\\('status',''\\)\n            print\\(f'  [{s}/{c}] {step[\\\\\"name\\\\\"]}'\\)\" 2>&1)",
+      "Bash(gh run view 23007978694 --job 66810132671 --log-failed 2>/dev/null || gh api repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/66810132671/logs 2>/dev/null || gh run view 23007978694 --log-failed 2>/dev/null | tail -100)",
+      "Bash(gh run view 23007978694 --log-failed 2>&1 | tail -200)",
+      "Bash(gh run view 23007978694 --repo AppFlowy-IO/AppFlowy-CI 2>&1 | head -50)",
+      "Bash(gh run view 23007978694 --repo AppFlowy-IO/AppFlowy-CI --log-failed 2>&1 | tail -100)",
+      "Bash(gh run view 23007978694 --repo AppFlowy-IO/AppFlowy-CI --log 2>&1 | grep -A 50 \"Setup Docker\" | head -80)",
+      "Bash(gh api repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/66810132671/logs 2>&1 | head -200)",
+      "Bash(gh api repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/66810132671/logs 2>&1 | grep -A 20 \"failed with exit code\\\\|limactl\\\\|Error\\\\|error\\\\|FAIL\" | head -80)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(gh api:*)",
+      "WebFetch(domain:localhost)",
+      "WebFetch(domain:github.blog)"
+    ]
+  }
+}

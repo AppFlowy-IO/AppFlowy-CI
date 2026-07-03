@@ -475,7 +475,7 @@ jobs:
           # in the "Show appflowy_search startup logs" step — without them a
           # skipped ensure worker is invisible and search test failures look
           # like flaky timeouts.
-          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info,appflowy_search=info,search=info'|' .env
+          sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info,appflowy_search=info,search=info,info'|' .env
           sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
           sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
@@ -679,6 +679,8 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_mcp > appflowy_mcp_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
+          docker compose -f docker-compose-ci.yml logs ai > appflowy_ai_logs.txt 2>&1 || true
+          docker compose -f docker-compose-ci.yml logs gotrue > gotrue_logs.txt 2>&1 || true
 
       - name: Upload Logs as Artifact
         if: failure()
@@ -691,6 +693,8 @@ jobs:
             appflowy_mcp_logs.txt
             appflowy_worker_logs.txt
             appflowy_search_logs.txt
+            appflowy_ai_logs.txt
+            gotrue_logs.txt
           retention-days: 1
 
   notify-webhook:
