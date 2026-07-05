@@ -1048,8 +1048,8 @@ jobs:
 
             exit $TEST_EXIT
 
-      # Consumed by frontend/scripts/tool/rebalance_integration_shards.py
-      # in AppFlowy-Premium to keep shard durations balanced.
+      # Per-test durations (package:test JSON reporter format), kept for
+      # analyzing shard balance when repacking desktop_runner_N.dart files.
       - name: Upload test timing data
         if: always()
         uses: actions/upload-artifact@v4
