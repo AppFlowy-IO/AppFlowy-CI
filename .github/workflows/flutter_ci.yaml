@@ -997,10 +997,10 @@ jobs:
         uses: nick-fields/retry@v3
         with:
           # Per-test retries are handled by dart_test.yaml (retry: 2) inside
-          # the test binary; this wrapper is only a safety net for infra
-          # failures, so one retry with a tighter timeout is enough.
+          # the test binary; the wrapper only enforces the 40-minute timeout
+          # so a wedged shard can't hang the run.
           timeout_minutes: 40
-          max_attempts: 2
+          max_attempts: 1
           retry_wait_seconds: 10
           command: |
             cd frontend/appflowy_flutter
