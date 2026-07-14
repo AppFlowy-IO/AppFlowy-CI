@@ -476,8 +476,8 @@ jobs:
           # skipped ensure worker is invisible and search test failures look
           # like flaky timeouts.
           sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info,appflowy_search=info,search=info,info'|' .env
-          # GoTrue has a separate mailer from appflowy_cloud. Keep public signup
-          # deterministic, and route mandatory email-change/magic-link mail to Mailpit.
+          # GoTrue has a separate mailer from appflowy_cloud. Keep confirmation enabled so CI
+          # exercises production-like repeated-signup behavior, but route all mail to Mailpit.
           # Mailpit does not require authentication. Leaving credentials populated makes
           # Go's SMTP client reject AUTH over this intentionally plaintext CI connection.
           sed -i 's|GOTRUE_SMTP_HOST=.*|GOTRUE_SMTP_HOST=mailpit|' .env
@@ -486,7 +486,7 @@ jobs:
           sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=|' .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=notify@appflowy.io|' .env
           sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
-          sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
+          sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=false|' .env
           sed -i 's|API_EXTERNAL_URL=http://your-host/gotrue|API_EXTERNAL_URL=http://localhost/gotrue|' .env
           sed -i 's|GOTRUE_RATE_LIMIT_EMAIL_SENT=100|GOTRUE_RATE_LIMIT_EMAIL_SENT=1000|' .env
           sed -i 's|APPFLOWY_MAILER_SMTP_USERNAME=.*|APPFLOWY_MAILER_SMTP_USERNAME=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
