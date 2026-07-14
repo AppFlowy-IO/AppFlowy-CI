@@ -541,7 +541,8 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=latest-amd64
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          export APPFLOWY_AI_VERSION=0.9.59-amd64
+          # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
+          export APPFLOWY_AI_VERSION=0.12.1-amd64
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
