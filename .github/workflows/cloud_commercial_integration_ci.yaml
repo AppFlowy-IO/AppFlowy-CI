@@ -153,11 +153,13 @@ jobs:
           # log level
           sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=trace,appflowy_worker=trace,database=trace,indexer=trace'|' .env
           # GoTrue has a separate mailer from appflowy_cloud. Keep public signup
-          # deterministic, and route mandatory email-change verification to Mailpit.
+          # deterministic, and route mandatory email-change/magic-link mail to Mailpit.
+          # Mailpit does not require authentication. Leaving credentials populated makes
+          # Go's SMTP client reject AUTH over this intentionally plaintext CI connection.
           sed -i 's|GOTRUE_SMTP_HOST=.*|GOTRUE_SMTP_HOST=mailpit|' .env
           sed -i 's|GOTRUE_SMTP_PORT=.*|GOTRUE_SMTP_PORT=1025|' .env
-          sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=test|' .env
-          sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=test|' .env
+          sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=|' .env
+          sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=|' .env
           sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=notify@appflowy.io|' .env
           sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
