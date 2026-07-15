@@ -534,6 +534,15 @@ jobs:
           sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
           cat nginx/nginx.conf
 
+      - name: Install snapshot recovery test Redis
+        if: matrix.test_service == 'appflowy_worker'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          # The tests spawn isolated Redis processes on random ports. Stop the package-managed
+          # instance before Compose claims the host's standard Redis port.
+          sudo systemctl stop redis-server || true
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
