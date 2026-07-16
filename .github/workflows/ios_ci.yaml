@@ -97,7 +97,7 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: "iPhone 16 Pro"
+          model: "iPhone 17 Pro"
           shutdown_after_job: false
 
       # Integration tests
