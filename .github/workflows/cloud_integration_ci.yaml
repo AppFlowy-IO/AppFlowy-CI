@@ -528,6 +528,14 @@ jobs:
           cat .env
         shell: bash
 
+      - name: Disable historical keyword warm-up in CI
+        run: |
+          # The restored CI database marks many historical workspaces as recent. Rebuilding
+          # those indexes competes with the integration test's explicit keyword tasks and makes
+          # search readiness depend on an unrelated multi-thousand-task background backlog.
+          sed -i '/- APPFLOWY_KEYWORD_WORKER_ENABLED=true/a\      - APPFLOWY_SEARCH_REPAIR_RECENT_WORKSPACE_WARMUP_LIMIT=0' docker-compose-ci.yml
+          grep -q 'APPFLOWY_SEARCH_REPAIR_RECENT_WORKSPACE_WARMUP_LIMIT=0' docker-compose-ci.yml
+
       - name: Update Nginx Configuration
         # the wasm-pack headless tests will run on random ports, so we need to allow all origins
         run: |
