@@ -648,11 +648,14 @@ jobs:
           DISABLE_CI_TEST_LOG: "true"
 
   cloud_integration_test:
+    name: Cloud integration test (${{ matrix.cloud_test_suite }})
     needs: [prepare-linux]
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         os: [ubuntu-latest]
+        cloud_test_suite: [core_workspace, sidebar, database, document]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -817,7 +820,7 @@ jobs:
           pkg-config --modversion mpv || true
           pkg-config --modversion epoxy || true
 
-      - name: Run Flutter integration tests
+      - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         run: |
           cd frontend/appflowy_flutter
           flutter pub get
@@ -829,7 +832,11 @@ jobs:
           docker ps -a
 
           set +eo pipefail
-          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux --coverage > /tmp/test_output.txt 2>&1
+          flutter test \
+            --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+            integration_test/desktop/cloud/cloud_runner.dart \
+            -d Linux \
+            --coverage > /tmp/test_output.txt 2>&1
           TEST_EXIT=$?
           set -eo pipefail
 
@@ -875,7 +882,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cloud-integration-test-logs-${{ github.run_id }}
+          name: cloud-integration-test-logs-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
           path: |
             docker-ps-output.txt
             appflowy_cloud_logs.txt
