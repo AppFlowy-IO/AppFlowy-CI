@@ -330,8 +330,16 @@ jobs:
               workspace::page_view
               workspace::publish
               workspace::published_data_test
-          - test_service: "appflowy_cloud_database_file_yrs"
-            test_modules: "database file_test yrs_test"
+          # Database history tests can leave a large indexing backlog. Run the
+          # database index test on a clean stack so that backlog cannot starve it,
+          # and keep file/yrs coverage independent from database failures.
+          - test_service: "appflowy_cloud_database"
+            test_modules: "database"
+            test_skips: "database::database_index_test"
+          - test_service: "appflowy_cloud_database_index"
+            test_modules: "database::database_index_test"
+          - test_service: "appflowy_cloud_file_yrs"
+            test_modules: "file_test yrs_test"
           - test_service: "appflowy_cloud_misc"
             test_modules: "cache_validation folder_test mcp mention_api"
           - test_service: "appflowy_cloud_collab"
@@ -574,7 +582,9 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
       - name: Show appflowy_search startup logs
-        if: matrix.test_service == 'appflowy_cloud_search'
+        if: >-
+          matrix.test_service == 'appflowy_cloud_search' ||
+          matrix.test_service == 'appflowy_cloud_database_index'
         run: docker compose -f docker-compose-ci.yml logs appflowy_search
 
       - name: Wait for appflowy cloud to be ready
@@ -629,6 +639,8 @@ jobs:
 
       - name: Run Tests
         timeout-minutes: 50
+        env:
+          TEST_SKIPS: ${{ matrix.test_skips }}
         run: |
           set -e
           echo "Running tests for ${{ matrix.test_service }}"
@@ -683,11 +695,16 @@ jobs:
             # `tests/workspace/` and not unrelated `mcp::*workspace*` or
             # `search::*workspace*` tests.
             # Skip whitelist tests — they run in the dedicated whitelist group.
+            skip_args=()
+            for skipped_test in ${TEST_SKIPS:-}; do
+              skip_args+=(--skip "${skipped_test}")
+            done
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                 --features ai-test-enabled,sync-v2 "${module}::" \
-                -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
+                -- --skip stress_test --skip commercial_test --skip whitelist \
+                "${skip_args[@]}" --test-threads=1
             done
           fi
 
