@@ -574,6 +574,9 @@ jobs:
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
           export APPFLOWY_AI_VERSION=0.12.1-amd64
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
+          fi
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
@@ -599,6 +602,13 @@ jobs:
             sleep 5
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
+
+      - name: Wait for Authentik
+        if: matrix.test_service == 'appflowy_cloud_scim'
+        run: |
+          echo "Waiting for Authentik..."
+          timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
+          echo "Authentik ready."
 
       - name: Wait for MinIO to be ready
         run: |
@@ -722,6 +732,10 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs ai > appflowy_ai_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs gotrue > gotrue_logs.txt 2>&1 || true
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+            docker compose -f docker-compose-ci.yml --profile authentik \
+              logs authentik-db authentik-server authentik-worker > authentik_logs.txt 2>&1 || true
+          fi
 
       - name: Upload Logs as Artifact
         if: failure()
@@ -736,6 +750,7 @@ jobs:
             appflowy_search_logs.txt
             appflowy_ai_logs.txt
             gotrue_logs.txt
+            authentik_logs.txt
           retention-days: 1
 
   notify-webhook:
