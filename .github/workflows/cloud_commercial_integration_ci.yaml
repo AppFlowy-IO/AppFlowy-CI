@@ -229,6 +229,9 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
+          fi
           docker compose -f docker-compose-ci.yml down
           docker compose -f docker-compose-ci.yml up -d
 
@@ -236,6 +239,13 @@ jobs:
         run: |
           echo "Waiting for services to be ready..."
           timeout 300 bash -c 'until curl -f http://localhost/api/health 2>/dev/null; do sleep 5; done' || echo "Health check timeout - proceeding anyway"
+
+      - name: Wait for Authentik
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        run: |
+          echo "Waiting for Authentik..."
+          timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
+          echo "Authentik ready."
 
       - name: Install prerequisites
         run: |
@@ -294,3 +304,7 @@ jobs:
         run: |
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
+            docker compose -f docker-compose-ci.yml --profile authentik \
+              logs authentik-db authentik-server authentik-worker || true
+          fi
