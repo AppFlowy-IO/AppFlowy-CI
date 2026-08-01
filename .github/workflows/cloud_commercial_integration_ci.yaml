@@ -304,6 +304,12 @@ jobs:
         run: |
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
+          # GoTrue answers a failed admin user delete with a generic
+          # `500 Database error deleting user` and keeps the actual PostgreSQL
+          # error (constraint name, SQLSTATE, offending row) only in its own log.
+          # Without this, a delete blocked by a schema constraint is undiagnosable
+          # from CI alone.
+          docker compose -f docker-compose-ci.yml logs gotrue || true
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
             docker compose -f docker-compose-ci.yml --profile authentik \
               logs authentik-db authentik-server authentik-worker || true
