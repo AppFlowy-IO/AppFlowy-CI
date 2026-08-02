@@ -131,7 +131,7 @@ jobs:
               sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
               sudo apt-get update
               sudo apt-get install -y --fix-broken
-              sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+              sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
               sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
               sudo apt-get install -y libmpv-dev mpv libasound2-dev
               # Install GStreamer for audioplayers_linux
@@ -667,11 +667,14 @@ jobs:
         shell: bash
 
   cloud_integration_test:
+    name: Cloud integration test (${{ matrix.cloud_test_suite }})
     needs: [prepare-linux]
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         os: [ubuntu-latest]
+        cloud_test_suite: [core_workspace, sidebar, database, document]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -836,7 +839,7 @@ jobs:
           pkg-config --modversion mpv || true
           pkg-config --modversion epoxy || true
 
-      - name: Run Flutter integration tests
+      - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         run: |
           cd frontend/appflowy_flutter
           flutter pub get
@@ -848,7 +851,13 @@ jobs:
           docker ps -a
 
           set +eo pipefail
-          flutter test integration_test/desktop/cloud/cloud_runner.dart -d Linux > /tmp/test_output.txt 2>&1
+
+          flutter test \
+            --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+            integration_test/desktop/cloud/cloud_runner.dart \
+            -d Linux \
+            --coverage > /tmp/test_output.txt 2>&1
+
           TEST_EXIT=$?
           set -eo pipefail
 
@@ -894,7 +903,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: cloud-integration-test-logs-${{ github.run_id }}
+          name: cloud-integration-test-logs-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
           path: |
             docker-ps-output.txt
             appflowy_cloud_logs.txt

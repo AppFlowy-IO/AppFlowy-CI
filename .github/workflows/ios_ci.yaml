@@ -27,7 +27,12 @@ concurrency:
 
 jobs:
   integration-tests:
+    name: Mobile integration tests (runner ${{ matrix.test_number }})
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        test_number: [1, 2, 3, 4]
 
     runs-on: macos-latest
 
@@ -56,7 +61,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: ${{ matrix.os }}
+          prefix-key: ios-simulator
           workspaces: |
             frontend/rust-lib
           cache-all-crates: true
@@ -92,7 +97,7 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: "iPhone 16 Pro"
+          model: "iPhone 17 Pro"
           shutdown_after_job: false
 
       # Integration tests
@@ -100,7 +105,7 @@ jobs:
         working-directory: frontend/appflowy_flutter
         run: flutter build ios --simulator --debug
 
-      - name: Run Flutter unit tests
+      - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 60
@@ -108,4 +113,4 @@ jobs:
           retry_wait_seconds: 10
           command: |
             cd frontend/appflowy_flutter
-            flutter test integration_test/runner.dart -d ${{ steps.simulator-action.outputs.udid }}
+            flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}

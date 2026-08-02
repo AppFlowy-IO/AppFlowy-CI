@@ -330,8 +330,16 @@ jobs:
               workspace::page_view
               workspace::publish
               workspace::published_data_test
-          - test_service: "appflowy_cloud_database_file_yrs"
-            test_modules: "database file_test yrs_test"
+          # Database history tests can leave a large indexing backlog. Run the
+          # database index test on a clean stack so that backlog cannot starve it,
+          # and keep file/yrs coverage independent from database failures.
+          - test_service: "appflowy_cloud_database"
+            test_modules: "database"
+            test_skips: "database::database_index_test"
+          - test_service: "appflowy_cloud_database_index"
+            test_modules: "database::database_index_test"
+          - test_service: "appflowy_cloud_file_yrs"
+            test_modules: "file_test yrs_test"
           - test_service: "appflowy_cloud_misc"
             test_modules: "cache_validation folder_test mcp mention_api"
           - test_service: "appflowy_cloud_collab"
@@ -476,9 +484,15 @@ jobs:
           # skipped ensure worker is invisible and search test failures look
           # like flaky timeouts.
           sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info,appflowy_search=info,search=info,info'|' .env
-          sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=${{ secrets.CI_GOTRUE_SMTP_USER }}|' .env
-          sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=${{ secrets.CI_GOTRUE_SMTP_PASS }}|' .env
-          sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=${{ secrets.CI_GOTRUE_SMTP_ADMIN_EMAIL }}|' .env
+          # GoTrue has a separate mailer from appflowy_cloud. Keep confirmation enabled so CI
+          # exercises production-like repeated-signup behavior, but route all mail to Mailpit.
+          # Mailpit does not require authentication. Leaving credentials populated makes
+          # Go's SMTP client reject AUTH over this intentionally plaintext CI connection.
+          sed -i 's|GOTRUE_SMTP_HOST=.*|GOTRUE_SMTP_HOST=mailpit|' .env
+          sed -i 's|GOTRUE_SMTP_PORT=.*|GOTRUE_SMTP_PORT=1025|' .env
+          sed -i 's|GOTRUE_SMTP_USER=.*|GOTRUE_SMTP_USER=|' .env
+          sed -i 's|GOTRUE_SMTP_PASS=.*|GOTRUE_SMTP_PASS=|' .env
+          sed -i 's|GOTRUE_SMTP_ADMIN_EMAIL=.*|GOTRUE_SMTP_ADMIN_EMAIL=notify@appflowy.io|' .env
           sed -i 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=false|' .env
           sed -i 's|API_EXTERNAL_URL=http://your-host/gotrue|API_EXTERNAL_URL=http://localhost/gotrue|' .env
@@ -495,7 +509,7 @@ jobs:
           echo 'APPFLOWY_MAILER_TEST_SMTP_PORT=1025' >> .env
 
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
+          sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-5-mini"|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_SIZE=.*|APPFLOWY_EMBEDDING_CHUNK_SIZE=500|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
@@ -522,11 +536,28 @@ jobs:
           cat .env
         shell: bash
 
+      - name: Disable historical keyword warm-up in CI
+        run: |
+          # The restored CI database marks many historical workspaces as recent. Rebuilding
+          # those indexes competes with the integration test's explicit keyword tasks and makes
+          # search readiness depend on an unrelated multi-thousand-task background backlog.
+          sed -i '/- APPFLOWY_KEYWORD_WORKER_ENABLED=true/a\      - APPFLOWY_SEARCH_REPAIR_RECENT_WORKSPACE_WARMUP_LIMIT=0' docker-compose-ci.yml
+          grep -q 'APPFLOWY_SEARCH_REPAIR_RECENT_WORKSPACE_WARMUP_LIMIT=0' docker-compose-ci.yml
+
       - name: Update Nginx Configuration
         # the wasm-pack headless tests will run on random ports, so we need to allow all origins
         run: |
           sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
           cat nginx/nginx.conf
+
+      - name: Install snapshot recovery test Redis
+        if: matrix.test_service == 'appflowy_worker'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          # The tests spawn isolated Redis processes on random ports. Stop the package-managed
+          # instance before Compose claims the host's standard Redis port.
+          sudo systemctl stop redis-server || true
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -541,7 +572,12 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=latest-amd64
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          export APPFLOWY_AI_VERSION=0.9.59-amd64
+          # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
+          export APPFLOWY_AI_VERSION=0.13.2-amd64
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
+          fi
+
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
@@ -550,7 +586,9 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
       - name: Show appflowy_search startup logs
-        if: matrix.test_service == 'appflowy_cloud_search'
+        if: >-
+          matrix.test_service == 'appflowy_cloud_search' ||
+          matrix.test_service == 'appflowy_cloud_database_index'
         run: docker compose -f docker-compose-ci.yml logs appflowy_search
 
       - name: Wait for appflowy cloud to be ready
@@ -565,6 +603,13 @@ jobs:
             sleep 5
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
+
+      - name: Wait for Authentik
+        if: matrix.test_service == 'appflowy_cloud_scim'
+        run: |
+          echo "Waiting for Authentik..."
+          timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
+          echo "Authentik ready."
 
       - name: Wait for MinIO to be ready
         run: |
@@ -605,6 +650,8 @@ jobs:
 
       - name: Run Tests
         timeout-minutes: 50
+        env:
+          TEST_SKIPS: ${{ matrix.test_skips }}
         run: |
           set -e
           echo "Running tests for ${{ matrix.test_service }}"
@@ -659,11 +706,16 @@ jobs:
             # `tests/workspace/` and not unrelated `mcp::*workspace*` or
             # `search::*workspace*` tests.
             # Skip whitelist tests — they run in the dedicated whitelist group.
+            skip_args=()
+            for skipped_test in ${TEST_SKIPS:-}; do
+              skip_args+=(--skip "${skipped_test}")
+            done
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                 --features ai-test-enabled,sync-v2 "${module}::" \
-                -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
+                -- --skip stress_test --skip commercial_test --skip whitelist \
+                "${skip_args[@]}" --test-threads=1
             done
           fi
 
@@ -681,6 +733,10 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs ai > appflowy_ai_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs gotrue > gotrue_logs.txt 2>&1 || true
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+            docker compose -f docker-compose-ci.yml --profile authentik \
+              logs authentik-db authentik-server authentik-worker > authentik_logs.txt 2>&1 || true
+          fi
 
       - name: Upload Logs as Artifact
         if: failure()
@@ -695,6 +751,7 @@ jobs:
             appflowy_search_logs.txt
             appflowy_ai_logs.txt
             gotrue_logs.txt
+            authentik_logs.txt
           retention-days: 1
 
   notify-webhook:
