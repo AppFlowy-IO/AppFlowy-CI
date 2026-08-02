@@ -573,10 +573,11 @@ jobs:
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
-          export APPFLOWY_AI_VERSION=0.12.1-amd64
+          export APPFLOWY_AI_VERSION=0.13.2-amd64
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
           fi
+
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
