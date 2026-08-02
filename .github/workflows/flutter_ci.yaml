@@ -220,19 +220,6 @@ jobs:
         run: cargo make code_generation
         shell: bash
 
-      - name: Flutter Analyzer
-        working-directory: frontend/appflowy_flutter
-        run: |
-          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
-            | grep -v -e "\.g\.dart$" \
-            -e "\.freezed\.dart$" \
-            -e "/generated/" \
-            -e "\.dart_tool/" \
-            -e "build/" \
-            -e "packages/")
-          flutter analyze .
-        shell: bash
-
       - name: Compress appflowy_flutter
         run: tar -czf appflowy_flutter.tar.gz frontend/appflowy_flutter
         shell: bash
@@ -492,19 +479,6 @@ jobs:
         run: cargo make code_generation
         shell: bash
 
-      - name: Flutter Analyzer
-        working-directory: frontend/appflowy_flutter
-        run: |
-          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
-            | grep -v -e "\.g\.dart$" \
-            -e "\.freezed\.dart$" \
-            -e "/generated/" \
-            -e "\.dart_tool/" \
-            -e "build/" \
-            -e "packages/")
-          flutter analyze .
-        shell: bash
-
       - name: Compress appflowy_flutter
         run: tar -czf appflowy_flutter.tar.gz frontend/appflowy_flutter
         shell: bash
@@ -646,6 +620,51 @@ jobs:
         env:
           DISABLE_EVENT_LOG: true
           DISABLE_CI_TEST_LOG: "true"
+
+  flutter_analyze:
+    needs: [prepare-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.run_id }}-ubuntu-latest
+
+      - name: Uncompress appflowy_flutter
+        run: tar -xf appflowy_flutter.tar.gz
+        shell: bash
+
+      - name: Run flutter pub get
+        working-directory: frontend/appflowy_flutter
+        run: flutter pub get
+        shell: bash
+
+      - name: Flutter Analyzer
+        working-directory: frontend/appflowy_flutter
+        run: |
+          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
+            | grep -v -e "\.g\.dart$" \
+            -e "\.freezed\.dart$" \
+            -e "/generated/" \
+            -e "\.dart_tool/" \
+            -e "build/" \
+            -e "packages/")
+          flutter analyze .
+        shell: bash
 
   cloud_integration_test:
     name: Cloud integration test (${{ matrix.cloud_test_suite }})
@@ -832,11 +851,13 @@ jobs:
           docker ps -a
 
           set +eo pipefail
+
           flutter test \
             --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
             integration_test/desktop/cloud/cloud_runner.dart \
             -d Linux \
             --coverage > /tmp/test_output.txt 2>&1
+
           TEST_EXIT=$?
           set -eo pipefail
 
@@ -896,7 +917,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        test_number: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        test_number: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         include:
           - os: ubuntu-latest
             target: "x86_64-unknown-linux-gnu"
@@ -984,8 +1005,11 @@ jobs:
       - name: Run Flutter integration tests
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 60
-          max_attempts: 3
+          # Per-test retries are handled by dart_test.yaml (retry: 2) inside
+          # the test binary; the wrapper only enforces the 40-minute timeout
+          # so a wedged shard can't hang the run.
+          timeout_minutes: 40
+          max_attempts: 1
           retry_wait_seconds: 10
           command: |
             cd frontend/appflowy_flutter
@@ -997,7 +1021,9 @@ jobs:
             sudo apt-get install network-manager
 
             set +eo pipefail
-            flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage > /tmp/test_output.txt 2>&1
+            flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux \
+              --file-reporter json:/tmp/test_timing_${{ matrix.test_number }}.json \
+              > /tmp/test_output.txt 2>&1
             TEST_EXIT=$?
             set -eo pipefail
 
@@ -1030,3 +1056,14 @@ jobs:
             echo "::endgroup::"
 
             exit $TEST_EXIT
+
+      # Per-test durations (package:test JSON reporter format), kept for
+      # analyzing shard balance when repacking desktop_runner_N.dart files.
+      - name: Upload test timing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-timing-${{ matrix.test_number }}
+          path: /tmp/test_timing_${{ matrix.test_number }}.json
+          retention-days: 7
+          if-no-files-found: ignore
