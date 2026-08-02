@@ -178,7 +178,7 @@ jobs:
           echo 'APPFLOWY_MAILER_TEST_SMTP_PORT=1025' >> .env
 
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-4o-mini"|' .env
+          sed -i 's|AI_OPENAI_API_SUMMARY_MODEL=.*|AI_OPENAI_API_SUMMARY_MODEL="gpt-5-mini"|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_SIZE=.*|APPFLOWY_EMBEDDING_CHUNK_SIZE=500|' .env
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
@@ -229,6 +229,9 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
+          fi
           docker compose -f docker-compose-ci.yml down
           docker compose -f docker-compose-ci.yml up -d
 
@@ -236,6 +239,13 @@ jobs:
         run: |
           echo "Waiting for services to be ready..."
           timeout 300 bash -c 'until curl -f http://localhost/api/health 2>/dev/null; do sleep 5; done' || echo "Health check timeout - proceeding anyway"
+
+      - name: Wait for Authentik
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        run: |
+          echo "Waiting for Authentik..."
+          timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
+          echo "Authentik ready."
 
       - name: Install prerequisites
         run: |
@@ -294,3 +304,13 @@ jobs:
         run: |
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
+          # GoTrue answers a failed admin user delete with a generic
+          # `500 Database error deleting user` and keeps the actual PostgreSQL
+          # error (constraint name, SQLSTATE, offending row) only in its own log.
+          # Without this, a delete blocked by a schema constraint is undiagnosable
+          # from CI alone.
+          docker compose -f docker-compose-ci.yml logs gotrue || true
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
+            docker compose -f docker-compose-ci.yml --profile authentik \
+              logs authentik-db authentik-server authentik-worker || true
+          fi
