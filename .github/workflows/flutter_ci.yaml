@@ -989,6 +989,10 @@ jobs:
           retry_wait_seconds: 10
           command: |
             cd frontend/appflowy_flutter
+            # A failed CMake configure can leave the debug tree with the
+            # default /usr/local install prefix. Start each outer retry from a
+            # fresh debug tree so transient plugin downloads are retryable.
+            rm -rf build/linux/x64/debug
             flutter pub get
             dart run pdfrx:remove_wasm_modules
             trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
