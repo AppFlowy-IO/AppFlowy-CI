@@ -74,6 +74,10 @@ jobs:
       - name: Prepare env for Docker build
         run: cp deploy.env .env
 
+      # NOTE: the cloud `Dockerfile` ignores PROFILE and always builds --release, so
+      # test-only server code must sit behind the `ci-test` cargo feature rather than
+      # `debug_assertions`. FEATURES below must stay in sync with the `--features`
+      # passed to `cargo test`, or those tests call endpoints that 404.
       - name: Build Docker Image (cached)
         uses: docker/bake-action@v5
         with:
@@ -88,7 +92,7 @@ jobs:
             *.args.BUILDKIT_MULTI_PLATFORM=0
             *.args.PROFILE=debug
             *.args.APP_VERSION=0.9.999
-            *.args.FEATURES=test-mailer
+            *.args.FEATURES=test-mailer,ci-test
 
       - name: Save Docker Image
         run: docker save appflowyinc/appflowy_cloud_premium:latest-amd64 | gzip > appflowy_cloud.tar.gz
@@ -658,7 +662,7 @@ jobs:
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_root_unit" ]; then
             echo "==> Testing appflowy-cloud root unit tests"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              --features ai-test-enabled,sync-v2 --lib --bins \
+              --features ai-test-enabled,sync-v2,ci-test --lib --bins \
               -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_search_package" ]; then
             echo "==> Testing appflowy-search package"
@@ -684,7 +688,7 @@ jobs:
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2 "${module}::" \
+                --features ai-test-enabled,sync-v2,ci-test "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
@@ -697,7 +701,7 @@ jobs:
             SCIM_URL_FOR_AUTHENTIK=http://appflowy_cloud:8000/scim/v2 \
             AUTHENTIK_HEALTH_URL=http://localhost:9010/-/health/ready/ \
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              --features ai-test-enabled,sync-v2 "scim::" \
+              --features ai-test-enabled,sync-v2,ci-test "scim::" \
               -- --test-threads=1 --nocapture
           else
             # Run root crate integration tests module by module.
@@ -713,7 +717,7 @@ jobs:
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2 "${module}::" \
+                --features ai-test-enabled,sync-v2,ci-test "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist \
                 "${skip_args[@]}" --test-threads=1
             done
