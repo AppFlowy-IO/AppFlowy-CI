@@ -322,9 +322,19 @@ jobs:
               workspace::notification_etag_test
               workspace::notification_events_test
               workspace::notification_inbox_test
+              workspace::recent_notification_test
               workspace::throttle_test
           - test_service: "appflowy_cloud_workspace_permissions"
             test_modules: "workspace::permissions"
+          # Structured-space suites (space ACL matrix, policy mutations, structured
+          # creation/update). Separate from workspace::permissions so the two heavy
+          # permission suites do not share one runner's timeout budget.
+          - test_service: "appflowy_cloud_workspace_spaces"
+            test_modules: >-
+              workspace::space_permission_test
+              workspace::space_policy_mutation_test
+              workspace::structured_space_creation_test
+              workspace::structured_space_update_test
           - test_service: "appflowy_cloud_workspace_import"
             test_modules: >-
               workspace::notion_import
@@ -364,12 +374,25 @@ jobs:
               sql_test::spam_signal_test
               sql_test::spam_test
               sql_test::user_test
+          # Permission-consolidation harnesses. The differential and share-union
+          # suites are PINNED equivalence gates (zero-divergence assertions for the
+          # M1 engine); the rest cover generations, resident staleness, row
+          # permission facts, and realtime first-writer ownership.
+          - test_service: "appflowy_cloud_sql_permissions"
+            test_modules: >-
+              sql_test::database_row_permission_fact_test
+              sql_test::permission_differential_test
+              sql_test::permission_generation_test
+              sql_test::permission_resident_staleness_test
+              sql_test::permission_share_union_test
+              sql_test::realtime_collab_owner_test
           - test_service: "appflowy_cloud_sql_collab"
             test_modules: >-
               sql_test::collab_db_ops_test
               sql_test::collab_embed_test
               sql_test::collab_history_graph_test
               sql_test::collab_restore_state_test
+              sql_test::database_duplicate_upload_test
               sql_test::pg_direct_write_test
           - test_service: "appflowy_cloud_sql_workspace"
             test_modules: >-
@@ -378,6 +401,7 @@ jobs:
               sql_test::guest_workspace_test
               sql_test::publish_blob_ref_test
               sql_test::publish_test
+              sql_test::recent_views_test
               sql_test::s3_cleanup_test
               sql_test::workspace_database_backfill_test
               sql_test::workspace_database_listing_test
