@@ -361,7 +361,7 @@ jobs:
           - test_service: "appflowy_cloud_ai"
             test_modules: "ai_test"
           - test_service: "appflowy_cloud_auth_user"
-            test_modules: "gotrue user"
+            test_modules: "gotrue oidc user"
           - test_service: "appflowy_cloud_redis_info"
             test_modules: "redis_test server_info"
           - test_service: "appflowy_cloud_sql_core"
@@ -374,6 +374,7 @@ jobs:
               sql_test::spam_signal_test
               sql_test::spam_test
               sql_test::user_test
+              test_pg_pool
           # Permission-consolidation harnesses. The differential and share-union
           # suites are PINNED equivalence gates (zero-divergence assertions for the
           # M1 engine); the rest cover generations, resident staleness, row
@@ -417,6 +418,7 @@ jobs:
             test_modules: >-
               sql_test::whitelist_test
               user::admin_signup_whitelist_test
+              user::admin_user_deletion_whitelist_test
               user::sign_up
               workspace::admin_system_config_test
           # Group 5: SCIM directory-sync end-to-end (drives the real Authentik IdP
@@ -424,6 +426,10 @@ jobs:
           # SCIM is available with no seat limit and no license.
           - test_service: "appflowy_cloud_scim"
             test_modules: "scim"
+          # Group 6: LDAP login + SCIM-interop end-to-end against the compose
+          # openldap service (profile `ldap`, seeded from script/ldap/seed.ldif).
+          - test_service: "appflowy_cloud_ldap"
+            test_modules: "ldap"
           - test_service: "appflowy_search_package"
             test_modules: ""
           - test_service: "appflowy_worker"
@@ -605,6 +611,9 @@ jobs:
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
           fi
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ldap"
+          fi
 
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
@@ -638,6 +647,15 @@ jobs:
           echo "Waiting for Authentik..."
           timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
           echo "Authentik ready."
+
+      - name: Wait for OpenLDAP
+        if: matrix.test_service == 'appflowy_cloud_ldap'
+        run: |
+          echo "Waiting for OpenLDAP..."
+          timeout 180 bash -c 'until docker compose -f docker-compose-ci.yml --profile ldap exec -T openldap \
+            ldapsearch -x -H ldap://localhost:1389 -D cn=admin,dc=example,dc=org -w adminpassword \
+            -b ou=users,dc=example,dc=org "(uid=alice)" dn >/dev/null 2>&1; do sleep 3; done'
+          echo "OpenLDAP ready."
 
       - name: Wait for MinIO to be ready
         run: |
@@ -715,6 +733,14 @@ jobs:
                 --features ai-test-enabled,sync-v2,ci-test "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
+            # The cloud container dials the directory over the compose network;
+            # the test process reaches the published port with the built-in default.
+            echo "==> LDAP end-to-end (openldap)"
+            LDAP_TEST_SERVER=ldap://openldap:1389 \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              --features ai-test-enabled,sync-v2,ci-test "ldap::" \
+              -- --skip stress_test --skip commercial_test --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
             # SCIM end-to-end against the real Authentik IdP (from docker-compose-ci.yml).
             # Authentik (in docker) reaches the cloud over the compose network; the
@@ -765,6 +791,10 @@ jobs:
             docker compose -f docker-compose-ci.yml --profile authentik \
               logs authentik-db authentik-server authentik-worker > authentik_logs.txt 2>&1 || true
           fi
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
+            docker compose -f docker-compose-ci.yml --profile ldap \
+              logs openldap > openldap_logs.txt 2>&1 || true
+          fi
 
       - name: Upload Logs as Artifact
         if: failure()
@@ -780,6 +810,7 @@ jobs:
             appflowy_ai_logs.txt
             gotrue_logs.txt
             authentik_logs.txt
+            openldap_logs.txt
           retention-days: 1
 
   notify-webhook:
