@@ -387,6 +387,7 @@ jobs:
               sql_test::permission_resident_staleness_test
               sql_test::permission_share_union_test
               sql_test::realtime_collab_owner_test
+              sql_test::space_acl_seed_test
           - test_service: "appflowy_cloud_sql_collab"
             test_modules: >-
               sql_test::collab_db_ops_test
