@@ -736,8 +736,14 @@ jobs:
             done
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
             # The cloud container dials the directory over the compose network;
-            # the test process reaches the published port with the built-in default.
+            # the test process reaches OpenLDAP through its published port. LDAP
+            # login requests target appflowy-cloud's published port directly so
+            # each test's documentation-range XFF address reaches the limiter.
+            # The general nginx route correctly replaces caller XFF with the
+            # runner's one address, which would make every negative test share
+            # and exhaust a single production-style IP bucket.
             echo "==> LDAP end-to-end (openldap)"
+            LOCALHOST_URL=http://localhost:8000 \
             LDAP_TEST_SERVER=ldap://openldap:1389 \
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               --features ai-test-enabled,sync-v2,ci-test "ldap::" \
