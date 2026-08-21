@@ -585,8 +585,10 @@ jobs:
           sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
           cat nginx/nginx.conf
 
-      - name: Install snapshot recovery test Redis
-        if: matrix.test_service == 'appflowy_worker'
+      - name: Install isolated test Redis
+        if: >-
+          matrix.test_service == 'appflowy_worker' ||
+          matrix.test_service == 'appflowy_cloud_member_packages'
         run: |
           sudo apt-get update
           sudo apt-get install -y redis-server
@@ -715,6 +717,8 @@ jobs:
             echo "==> Testing workspace member packages"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-collaborate \
+              -p collab-stream \
+              -p workspace-permission \
               -p pdf-exporter \
               -p collab \
               -p collab-rt-entity \
