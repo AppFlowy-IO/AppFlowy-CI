@@ -718,6 +718,7 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-collaborate \
               -p collab-stream \
+              -p database \
               -p workspace-permission \
               -p pdf-exporter \
               -p collab \
