@@ -335,6 +335,14 @@ jobs:
               workspace::space_policy_mutation_test
               workspace::structured_space_creation_test
               workspace::structured_space_update_test
+          # Custom-space three-audience model, groups as space members, and the
+          # PRD §39 acceptance suite. Kept off the appflowy_cloud_workspace_spaces
+          # runner so the heavy space suites keep their own timeout budget.
+          - test_service: "appflowy_cloud_workspace_custom_spaces"
+            test_modules: >-
+              workspace::custom_space_test
+              workspace::prd_space_acceptance_test
+              workspace::space_group_permission_test
           - test_service: "appflowy_cloud_workspace_import"
             test_modules: >-
               workspace::notion_import
