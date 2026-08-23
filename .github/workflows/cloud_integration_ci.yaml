@@ -44,6 +44,34 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # The matrices below select test modules through explicit allow-lists, whose
+  # failure mode is silence: a new test module nobody adds simply never runs.
+  # This job fails naming any test-bearing module missing from the matrices.
+  verify_test_module_coverage:
+    name: Verify test module coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout CI Repo
+        uses: actions/checkout@v4
+        with:
+          path: appflowy-ci
+
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          path: appflowy-cloud-premium
+
+      - name: Every test-bearing module must be in a matrix
+        run: |
+          python3 appflowy-ci/scripts/check_test_module_coverage.py \
+            --tests appflowy-cloud-premium/tests \
+            --workflow appflowy-ci/.github/workflows/cloud_integration_ci.yaml \
+            --workflow appflowy-ci/.github/workflows/cloud_commercial_integration_ci.yaml
+
   build_cloud:
     name: Build appflowy_cloud Image
     runs-on: ubuntu-latest
