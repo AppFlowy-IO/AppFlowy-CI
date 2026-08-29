@@ -359,6 +359,7 @@ jobs:
           # permission suites do not share one runner's timeout budget.
           - test_service: "appflowy_cloud_workspace_spaces"
             test_modules: >-
+              workspace::private_space_migration_test
               workspace::space_permission_test
               workspace::space_policy_mutation_test
               workspace::structured_space_creation_test
