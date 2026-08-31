@@ -17,7 +17,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.92.0"
+  RUST_TOOLCHAIN: "1.98.0"
   CLOUD_VERSION: "latest-amd64"
   # Speed up crate downloads with sparse registry
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse

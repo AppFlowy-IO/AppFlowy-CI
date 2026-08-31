@@ -16,7 +16,7 @@ on:
         default: "main"
 
 env:
-  RUST_TOOLCHAIN: "1.92.0"
+  RUST_TOOLCHAIN: "1.98.0"
   NODE_VERSION: "20"
   CLOUD_VERSION: latest-amd64
 
