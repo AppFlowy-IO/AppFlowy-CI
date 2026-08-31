@@ -35,7 +35,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.92.0"
+  RUST_TOOLCHAIN: "1.98.0"
   # Speed up crate downloads with sparse registry
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   # Faster for git dependencies
@@ -752,9 +752,21 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-search -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_member_packages" ]; then
+            # The former appflowy-collaborate umbrella was split into focused
+            # libraries. Keep their moved unit and integration tests in this
+            # service-backed lane so removing the umbrella does not reduce coverage.
             echo "==> Testing workspace member packages"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              -p appflowy-collaborate \
+              -p workspace-folder \
+              -p collab-storage \
+              -p database-blob \
+              -p collab-access \
+              -p collab-indexing \
+              -p collab-snapshot \
+              -p collab-history \
+              -p collab-realtime \
+              -p collab-realtime-server \
+              -p indexer \
               -p collab-stream \
               -p database \
               -p workspace-permission \
