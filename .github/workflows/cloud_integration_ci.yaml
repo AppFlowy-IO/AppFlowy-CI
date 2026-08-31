@@ -330,6 +330,7 @@ jobs:
               workspace::folder_notification_test
               workspace::folder_projection_test
               workspace::folder_traversal_test
+              workspace::form_share_test
               workspace::inline_comment
               workspace::invitation_crud_test
               workspace::join_workspace_test
