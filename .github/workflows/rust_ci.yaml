@@ -53,6 +53,14 @@ jobs:
           components: rustfmt, clippy
           profile: minimal
 
+      - name: Install Dart SDK
+        uses: dart-lang/setup-dart@v1
+
+      - name: Install protoc-gen-dart
+        run: |
+          dart pub global activate protoc_plugin 21.1.2
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
+
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ runner.os }}
@@ -129,6 +137,14 @@ jobs:
           override: true
           components: rustfmt, clippy
           profile: minimal
+
+      - name: Install Dart SDK
+        uses: dart-lang/setup-dart@v1
+
+      - name: Install protoc-gen-dart
+        run: |
+          dart pub global activate protoc_plugin 21.1.2
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
 
       - name: Setup sccache
         id: sccache
