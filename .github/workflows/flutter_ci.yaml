@@ -34,6 +34,8 @@ concurrency:
 
 jobs:
   prepare-linux:
+    outputs:
+      cloud_test_suites: ${{ steps.cloud-test-suites.outputs.suites }}
     strategy:
       fail-fast: true
       matrix:
@@ -60,6 +62,25 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Select cloud test suites from the tested revision
+        id: cloud-test-suites
+        shell: bash
+        run: |
+          manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
+          if [ -f "$manifest" ]; then
+            suites=$(jq -ce '
+              if type == "array" and length > 0
+                and all(.[]; type == "string" and test("^[a-z][a-z0-9_]*$"))
+                and (unique | length) == length
+              then . else error("Expected a nonempty array of unique cloud suite names") end
+            ' "$manifest")
+          else
+            # Older AppFlowy branches do not understand the split suite names.
+            suites='["core_workspace","sidebar","database","document"]'
+          fi
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "Cloud integration suites: $suites"
 
       - name: Install Rust toolchain
         id: rust_toolchain
@@ -654,7 +675,7 @@ jobs:
       max-parallel: 4
       matrix:
         os: [ubuntu-latest]
-        cloud_test_suite: [core_workspace, sidebar, database, document]
+        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.cloud_test_suites) }}
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -821,6 +842,9 @@ jobs:
           pkg-config --modversion epoxy || true
 
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
+        # Leave time inside the 60-minute job limit to upload partial results.
+        timeout-minutes: 45
+        shell: bash
         run: |
           cd frontend/appflowy_flutter
           flutter pub get
@@ -831,17 +855,19 @@ jobs:
           sudo apt-get install network-manager
           docker ps -a
 
-          set +eo pipefail
+          set +e
           flutter test \
             --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
             integration_test/desktop/cloud/cloud_runner.dart \
             -d Linux \
-            --coverage > /tmp/test_output.txt 2>&1
+            --file-reporter=json:/tmp/cloud-test-events.jsonl \
+            --coverage 2>&1 | tee /tmp/test_output.txt
+          # bash runs with pipefail, so tee cannot hide a failing Flutter exit.
           TEST_EXIT=$?
           set -eo pipefail
 
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
+          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
 
           if [ "$TEST_EXIT" -ne 0 ] &&
             grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
@@ -863,15 +889,23 @@ jobs:
           awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
           echo "::endgroup::"
 
-          echo ""
-          echo "::group::All logs (click to expand)"
-          cat /tmp/test_output.txt
-          echo "::endgroup::"
-
           exit $TEST_EXIT
 
+      - name: Upload cloud test output
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-test-output-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
+          path: |
+            /tmp/test_output.txt
+            /tmp/cloud-test-events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Collect Docker logs
-        if: failure()
+        if: failure() || cancelled()
+        timeout-minutes: 2
         run: |
           docker ps -a > docker-ps-output.txt
           docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
@@ -879,7 +913,8 @@ jobs:
           docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
 
       - name: Upload Docker logs
-        if: failure()
+        if: failure() || cancelled()
+        timeout-minutes: 3
         uses: actions/upload-artifact@v4
         with:
           name: cloud-integration-test-logs-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
