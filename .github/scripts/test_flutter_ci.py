@@ -136,6 +136,30 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1, result.stderr)
 
+    def test_runner_receives_the_https_cloud_endpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = Path(directory) / "flutter-arguments"
+            script = (
+                'flutter() { printf "%s\\n" "$@" > "$FLUTTER_ARGUMENTS"; }\n'
+                + self.execution_script(directory, include_stub=False)
+            )
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script],
+                env={
+                    **os.environ,
+                    **self.cloud["env"],
+                    "FLUTTER_ARGUMENTS": str(arguments),
+                },
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "--dart-define=APPFLOWY_CLOUD_URL=https://localhost",
+                arguments.read_text().splitlines(),
+            )
+
     def test_output_is_visible_before_flutter_finishes(self):
         with tempfile.TemporaryDirectory() as directory:
             stub = 'flutter() { echo "test has started"; read -r release; }\n'

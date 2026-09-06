@@ -684,6 +684,7 @@ jobs:
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
+      APPFLOWY_CLOUD_URL: https://localhost
 
     steps:
       - name: Checkout AppFlowy-Cloud-Premium code
@@ -699,13 +700,16 @@ jobs:
           # log level
           cp deploy.env .env
           #sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=trace,appflowy_collaborate=trace|' .env
+          sed -i 's|^FQDN=.*|FQDN=localhost|' .env
+          sed -i 's|^SCHEME=.*|SCHEME=https|' .env
+          sed -i 's|^WS_SCHEME=.*|WS_SCHEME=wss|' .env
           sed -i 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
           sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
-          sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
+          sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=https://localhost|' .env
           sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
-          sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=http://localhost/minio-api|' .env
+          sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=https://localhost/minio-api|' .env
 
           echo '' >> .env
           echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
@@ -714,6 +718,35 @@ jobs:
           echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
+
+      - name: Trust localhost HTTPS for cloud tests
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          # Public Forms require HTTPS. Use a fresh localhost certificate and
+          # the runner's trust store so Dart, native HTTP, and WebSockets verify TLS.
+          umask 077
+          cert_dir=$(mktemp -d "$RUNNER_TEMP/appflowy-ci-tls.XXXXXX")
+          trap 'rm -rf "$cert_dir"' EXIT
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -subj '/CN=AppFlowy CI Root' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+            -keyout "$cert_dir/ca.key" -out "$cert_dir/ca.crt"
+          openssl req -new -newkey rsa:2048 -nodes -subj '/CN=localhost' \
+            -keyout nginx/ssl/private_key.key -out "$cert_dir/server.csr"
+          cat > "$cert_dir/server.ext" <<'EOF'
+          basicConstraints=critical,CA:FALSE
+          keyUsage=critical,digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1
+          EOF
+          openssl x509 -req -days 2 -in "$cert_dir/server.csr" \
+            -CA "$cert_dir/ca.crt" -CAkey "$cert_dir/ca.key" -CAcreateserial \
+            -extfile "$cert_dir/server.ext" -out nginx/ssl/certificate.crt
+          chmod 600 nginx/ssl/private_key.key
+          sudo install -m 0644 "$cert_dir/ca.crt" \
+            /usr/local/share/ca-certificates/appflowy-ci.crt
+          sudo update-ca-certificates
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -746,14 +779,15 @@ jobs:
         run: |
           echo "Waiting for services to be ready..."
           for i in {1..60}; do
-            if curl -f http://localhost/api/health 2>/dev/null; then
+            if curl --fail --show-error --max-time 5 "$APPFLOWY_CLOUD_URL/api/health"; then
               echo "Health check passed after $((i*5)) seconds"
               exit 0
             fi
             echo "Attempt $i: Health check failed, waiting 5 seconds..."
             sleep 5
           done
-          echo "Health check timeout after 300 seconds - proceeding anyway"
+          echo "::error::Cloud HTTPS health check timed out"
+          exit 1
 
       - name: Wait for MinIO to be ready
         working-directory: AppFlowy-Cloud-Premium
@@ -858,6 +892,7 @@ jobs:
           set +e
           flutter test \
             --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+            --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
             integration_test/desktop/cloud/cloud_runner.dart \
             -d Linux \
             --file-reporter=json:/tmp/cloud-test-events.jsonl \
@@ -909,8 +944,10 @@ jobs:
         run: |
           docker ps -a > docker-ps-output.txt
           docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
           docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
           docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
 
       - name: Upload Docker logs
         if: failure() || cancelled()
@@ -921,8 +958,10 @@ jobs:
           path: |
             docker-ps-output.txt
             appflowy_cloud_logs.txt
+            appflowy_worker_logs.txt
             minio_logs.txt
             gotrue_logs.txt
+            nginx_logs.txt
           retention-days: 1
 
   integration_test:
