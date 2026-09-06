@@ -29,7 +29,8 @@ env:
   CARGO_INCREMENTAL: "0"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  # Dispatches share the public workflow ref; isolate the private revision tested.
+  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
