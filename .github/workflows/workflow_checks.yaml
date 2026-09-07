@@ -5,11 +5,13 @@ on:
     paths:
       - '.github/workflows/**'
       - '.github/scripts/**'
+      - 'scripts/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/**'
       - '.github/scripts/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 permissions:
@@ -26,3 +28,4 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install PyYAML==6.0.2
       - run: python -B -m unittest discover -s .github/scripts
+      - run: python -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
