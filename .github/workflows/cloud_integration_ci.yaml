@@ -432,15 +432,21 @@ jobs:
               sql_test::collab_embed_test
               sql_test::collab_history_graph_test
               sql_test::collab_restore_state_test
+              sql_test::content_graph_test
+              sql_test::content_processing_test
               sql_test::database_duplicate_upload_test
+              sql_test::document_reference_test
+              sql_test::parsed_content_test
               sql_test::pg_direct_write_test
           - test_service: "appflowy_cloud_sql_workspace"
             test_modules: >-
               sql_test::folder_db_ops_test
               sql_test::folder_read_test
+              sql_test::form_share_lifecycle_trigger_test
               sql_test::guest_workspace_test
               sql_test::publish_blob_ref_test
               sql_test::publish_test
+              sql_test::quick_note_projection_test
               sql_test::recent_views_test
               sql_test::s3_cleanup_test
               sql_test::workspace_database_backfill_test

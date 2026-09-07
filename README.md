@@ -11,3 +11,12 @@ Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
 ```sh
 python3 -B -m unittest discover -s .github/scripts
 ```
+
+The Cloud test-matrix coverage gate recognizes standard Rust, Tokio, and SQLx
+test attributes. New test-bearing modules must be assigned to an integration or
+commercial matrix entry, including modules containing only `#[sqlx::test]` cases.
+Run the coverage-checker regressions with Python 3:
+
+```sh
+python3 -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
+```

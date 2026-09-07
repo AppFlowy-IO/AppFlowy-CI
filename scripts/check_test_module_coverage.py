@@ -14,7 +14,8 @@ Coverage rules, mirroring how the workflows invoke ``cargo test "<module>::"``:
 * A tree is covered when its bare name is listed (runs the whole tree), or —
   for directory trees — when every *test-bearing* submodule of its ``mod.rs``
   is listed as ``tree::submodule`` (or deeper).
-* Modules without any ``#[test]``/``#[tokio::test]`` are helpers and exempt.
+* Modules without ``#[test]``, ``#[tokio::test]``, or ``#[sqlx::test]`` are helpers
+  and exempt.
 * Separate test targets (``tests/*.rs`` seed fixtures) are not part of the
   ``main`` target and are exempt by design (they are ``#[ignore]`` suites).
 """
@@ -27,7 +28,7 @@ import re
 import sys
 
 MOD_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+([A-Za-z0-9_]+)\s*;", re.M)
-TEST_ATTR_RE = re.compile(r"#\[\s*(?:tokio\s*::\s*)?test\b")
+TEST_ATTR_RE = re.compile(r"#\[\s*(?:(?:tokio|sqlx)\s*::\s*)?test\b")
 
 # Modules that intentionally never run from these matrices. Keep every entry
 # commented so an exemption cannot hide an accident.
