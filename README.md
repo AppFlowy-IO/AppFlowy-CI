@@ -20,3 +20,10 @@ Run the coverage-checker regressions with Python 3:
 ```sh
 python3 -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
 ```
+
+Each Cloud root integration lane ends with `script/test_final_account_deletion.sh` from
+the checked-out Cloud source. It explicitly runs an ignored API test that deletes the shared
+`eva@appflowy.io` snapshot account and verifies private-space recovery. Each matrix job has its
+own restored database; keep this step after all ordinary tests. Package-only lanes and the
+commercial reset suite do not use this final fixture check. Older Cloud refs without the runner
+remain supported.

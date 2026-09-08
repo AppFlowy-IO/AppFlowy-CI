@@ -332,6 +332,7 @@ jobs:
               workspace::folder_traversal_test
               workspace::form_share_test
               workspace::inline_comment
+              workspace::integration_test
               workspace::invitation_crud_test
               workspace::join_workspace_test
               workspace::member_crud_test
@@ -420,12 +421,14 @@ jobs:
           - test_service: "appflowy_cloud_sql_permissions"
             test_modules: >-
               sql_test::database_row_permission_fact_test
+              sql_test::exact_view_acl_fence_test
               sql_test::permission_differential_test
               sql_test::permission_generation_test
               sql_test::permission_resident_staleness_test
               sql_test::permission_share_union_test
               sql_test::realtime_collab_owner_test
               sql_test::space_acl_seed_test
+              sql_test::space_user_delete_test
           - test_service: "appflowy_cloud_sql_collab"
             test_modules: >-
               sql_test::collab_db_ops_test
@@ -840,6 +843,13 @@ jobs:
                 "${skip_args[@]}" --test-threads=1
             done
           fi
+
+      # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
+      # ordinary modules in this lane or another matrix job. Older Cloud refs lack the runner.
+      - name: Final seeded account deletion
+        if: matrix.test_modules != '' && hashFiles('script/test_final_account_deletion.sh') != ''
+        timeout-minutes: 5
+        run: bash script/test_final_account_deletion.sh --features ai-test-enabled,sync-v2,ci-test
 
       - name: Show sccache stats
         if: always()
