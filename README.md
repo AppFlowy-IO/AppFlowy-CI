@@ -27,3 +27,18 @@ the checked-out Cloud source. It explicitly runs an ignored API test that delete
 own restored database; keep this step after all ordinary tests. Package-only lanes and the
 commercial reset suite do not use this final fixture check. Older Cloud refs without the runner
 remain supported.
+
+The Cloud integration workflow also runs the encoded-collab cache contracts and cache dashboard
+checks from the requested private Cloud ref. These jobs use disposable PostgreSQL, private Redis
+and S3 fixtures, and four Rust test threads; they do not wait for the application images. The Rust
+runner first builds the ordinary indexing library, then runs the selected cache and Worker tests.
+The dashboard job validates Prometheus queries and both CI Compose cache configurations.
+
+Older Cloud refs with none of `script/test_encoded_cache.sh`,
+`script/test_encoded_cache_dashboard.py`, and `script/test_encoded_cache_compose.py` skip these
+jobs. A partial suite fails setup. Cache, image-build, coverage, and integration failures all feed
+the final integration notification. Regression checks for this wiring are included in the
+`.github/scripts` unittest command above.
+
+When migrating an existing Cloud branch to these jobs, land the CI workflow change before
+removing that branch's `.github/workflows/encoded-cache.yml` scheduler.

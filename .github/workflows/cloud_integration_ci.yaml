@@ -51,6 +51,8 @@ jobs:
     name: Verify test module coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      encoded_cache_available: ${{ steps.encoded_cache.outputs.enabled }}
     steps:
       - name: Checkout CI Repo
         uses: actions/checkout@v4
@@ -65,12 +67,121 @@ jobs:
           ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
           path: appflowy-cloud-premium
 
+      - name: Detect encoded cache suite
+        id: encoded_cache
+        working-directory: appflowy-cloud-premium
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts=(
+            script/test_encoded_cache.sh
+            script/test_encoded_cache_dashboard.py
+            script/test_encoded_cache_compose.py
+          )
+          present=0
+          for script in "${scripts[@]}"; do
+            if [[ -f "$script" ]]; then
+              present=$((present + 1))
+            fi
+          done
+          if (( present == 0 )); then
+            echo '::notice::This Cloud ref predates the encoded cache suite; skipping its jobs.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          elif (( present == ${#scripts[@]} )); then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Incomplete encoded cache suite; all three test scripts are required.'
+            exit 1
+          fi
+
       - name: Every test-bearing module must be in a matrix
         run: |
           python3 appflowy-ci/scripts/check_test_module_coverage.py \
             --tests appflowy-cloud-premium/tests \
             --workflow appflowy-ci/.github/workflows/cloud_integration_ci.yaml \
             --workflow appflowy-ci/.github/workflows/cloud_commercial_integration_ci.yaml
+
+  cache-contracts:
+    name: Parallel cache and snapshot contracts
+    needs: [verify_test_module_coverage]
+    if: needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
+      SQLX_OFFLINE: 'true'
+      CARGO_BUILD_JOBS: '2'
+      APPFLOWY_CACHE_TEST_THREADS: '4'
+      RUST_LOG: warn
+      DISABLE_CI_TEST_LOG: 'true'
+    services:
+      postgres:
+        # SQLx creates disposable databases. Redis and S3 fixtures run private local servers.
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: encoded-cache-parallel-ci
+      - name: Install required test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler redis-server locales
+          sudo locale-gen en_US.UTF-8
+          locale -a | grep -qi 'en_US.utf8'
+          redis-server --version
+      - name: Run cache and snapshot regressions with parallel libtest execution
+        run: bash script/test_encoded_cache.sh
+
+  cache-observability:
+    name: Cache dashboard and CI configuration
+    needs: [verify_test_module_coverage]
+    if: needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROMETHEUS_VERSION: '2.55.1'
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          persist-credentials: false
+      - name: Install pinned Prometheus evaluator
+        run: |
+          set -euo pipefail
+          archive="prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          release="https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}"
+          directory="${RUNNER_TEMP}/encoded-cache-prometheus"
+          mkdir -p "$directory"
+          cd "$directory"
+          curl -fsSL --retry 3 "$release/$archive" -o "$archive"
+          curl -fsSL --retry 3 "$release/sha256sums.txt" -o sha256sums.txt
+          awk -v archive="$archive" '$2 == archive { print }' sha256sums.txt | sha256sum --check --strict
+          tar -xzf "$archive" "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          echo "$directory/prometheus-${PROMETHEUS_VERSION}.linux-amd64" >> "$GITHUB_PATH"
+      - name: Evaluate actual Grafana queries against synthetic cache incidents
+        run: python3 script/test_encoded_cache_dashboard.py
+      - name: Verify both CI stacks activate all cache tiers
+        run: python3 script/test_encoded_cache_compose.py
 
   build_cloud:
     name: Build appflowy_cloud Image
@@ -894,9 +1005,28 @@ jobs:
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
     if: always()
     steps:
+      - name: Aggregate integration results
+        id: result
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          results = [job['result'] for job in needs.values()]
+          if 'failure' in results:
+              status = 'failure'
+          elif 'cancelled' in results:
+              status = 'cancelled'
+          else:
+              status = needs['test']['result']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'status={status}\n')
+          PY
       - name: Send webhook notification
         uses: peter-evans/repository-dispatch@v3
         with:
@@ -907,6 +1037,6 @@ jobs:
             {
               "execution_id": "${{ github.event.client_payload.execution_id || inputs.execution_id || github.run_id }}",
               "workflow_type": "integration",
-              "status": "${{ needs.test.result }}",
+              "status": "${{ steps.result.outputs.status }}",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }
