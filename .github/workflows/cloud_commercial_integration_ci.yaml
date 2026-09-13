@@ -13,6 +13,9 @@ env:
   LOCALHOST_WS_V2: ws://localhost/ws/v2
   APPFLOWY_REDIS_URI: redis://redis:6379
   APPFLOWY_AI_REDIS_URL: redis://redis:6379
+  # CI-only compatibility DSN for Cloud revisions that require the AI runtime database.
+  # Cloud's role-specific lane verifies appflowy_ai_runtime; never use this owner DSN in production.
+  APPFLOWY_AI_DATABASE_URL: postgres://postgres:password@postgres:5432/postgres
   LOCALHOST_GOTRUE: http://localhost/gotrue
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres

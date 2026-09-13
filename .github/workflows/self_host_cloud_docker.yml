@@ -548,7 +548,11 @@ jobs:
           images: registry.hub.docker.com/${{ env.IMAGE_NAME }}
 
       - name: Build ${{ matrix.job.name }}:${{ env.GIT_TAG }}
+        env:
+          AI_SOURCE_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          test -n "$AI_SOURCE_TOKEN"
           echo "::group::build-appflowy-ai-${{ matrix.job.name }}"
           docker buildx build \
             --platform ${{ matrix.job.docker_platform }} \
@@ -557,7 +561,7 @@ jobs:
             -t ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }} \
             --cache-from type=gha,scope=appflowy_ai-${{ matrix.job.name }} \
             --cache-to type=gha,mode=max,scope=appflowy_ai-${{ matrix.job.name }} \
-            --build-arg GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }} \
+            --secret id=github_token,env=AI_SOURCE_TOKEN \
             --build-arg PROFILE=release \
             --build-arg FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }} \
             --build-arg APP_VERSION=${{ env.GIT_TAG }} \
