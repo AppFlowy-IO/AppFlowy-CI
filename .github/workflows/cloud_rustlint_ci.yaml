@@ -84,6 +84,17 @@ jobs:
             echo "No code_gen.sh found, skipping code generation"
           fi
 
+      # Enforces the target crate layering inside appflowy-cloud's src/ (see
+      # doc/context/plans/cloud_crate_split_plan.md in the private repo). Older refs
+      # predate the script, so its absence is not a failure.
+      - name: Cloud module layering
+        run: |
+          if [ -f script/check_cloud_layering.py ]; then
+            python3 script/check_cloud_layering.py
+          else
+            echo "No check_cloud_layering.py found, skipping"
+          fi
+
       - name: Rustfmt
         run: cargo fmt --check
         env:
