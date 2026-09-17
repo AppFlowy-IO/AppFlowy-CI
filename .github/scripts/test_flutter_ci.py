@@ -1,4 +1,4 @@
-"""Cloud runner checks: python3 -B -m unittest discover -s .github/scripts.
+"""Flutter runner checks: python3 -B -m unittest discover -s .github/scripts.
 
 Requires PyYAML. Executes the actual workflow shell snippets with a stub Flutter
 command; no app, cloud services, or GitHub credentials are used.
@@ -26,6 +26,84 @@ SPLIT_SUITES = [
     "document",
 ]
 LEGACY_SUITES = ["core_workspace", "sidebar", "database", "document"]
+
+
+class DesktopRunnerWorkflowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        cls.prepare = jobs["prepare-linux"]
+        cls.desktop = jobs["integration_test"]
+        cls.selection = next(
+            step
+            for step in cls.prepare["steps"]
+            if step.get("id") == "desktop-test-runners"
+        )
+
+    def select_runners(self, files=(), directories=()):
+        with tempfile.TemporaryDirectory(prefix="desktop-ci-matrix-") as directory:
+            root = Path(directory)
+            tests = root / "frontend/appflowy_flutter/integration_test"
+            tests.mkdir(parents=True)
+            for name in files:
+                target = tests / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            for name in directories:
+                (tests / name).mkdir()
+            output = root / "github-output"
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", self.selection["run"]],
+                cwd=root,
+                env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            contents = output.read_text() if output.exists() else ""
+            return result, contents
+
+    def test_new_and_old_revisions_schedule_their_existing_runners(self):
+        for count in [9, 15, 16, 17]:
+            with self.subTest(count=count):
+                numbers = list(range(1, count + 1))
+                result, output = self.select_runners(
+                    [f"desktop_runner_{number}.dart" for number in reversed(numbers)]
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(output.removeprefix("runners=")), numbers)
+
+    def test_only_top_level_numeric_runner_files_are_scheduled(self):
+        result, output = self.select_runners(
+            files=[
+                "desktop_runner_17.dart", "desktop_runner_2.dart",
+                "desktop_runner_10.dart", "desktop_runner_cloud.dart",
+                "desktop_runner_0.dart", "desktop_runner_02.dart",
+                "desktop_runner_7.dart.bak", "mobile_runner_1.dart",
+                "nested/desktop_runner_3.dart",
+            ],
+            directories=["desktop_runner_4.dart"],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(output.removeprefix("runners=")), [2, 10, 17])
+
+    def test_missing_runners_fail_instead_of_omitting_tests(self):
+        result, output = self.select_runners()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertIn("No desktop integration test runners found", result.stderr)
+
+    def test_matrix_consumes_preparation_output(self):
+        self.assertEqual(
+            self.prepare["outputs"]["desktop_test_runners"],
+            "${{ steps.desktop-test-runners.outputs.runners }}",
+        )
+        self.assertEqual(
+            self.desktop["strategy"]["matrix"]["test_number"],
+            "${{ fromJSON(needs.prepare-linux.outputs.desktop_test_runners) }}",
+        )
+        self.assertIn("prepare-linux", self.desktop["needs"])
+        self.assertFalse(self.desktop["strategy"]["fail-fast"])
 
 
 class CloudRunnerWorkflowTest(unittest.TestCase):
