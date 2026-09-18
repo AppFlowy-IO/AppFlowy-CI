@@ -1083,6 +1083,9 @@ jobs:
         shell: bash
 
       - name: Run Flutter integration tests
+        # Leave time inside the 60-minute job limit to upload partial results.
+        timeout-minutes: 45
+        shell: bash
         run: |
           cd frontend/appflowy_flutter
           flutter pub get
@@ -1092,13 +1095,17 @@ jobs:
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           sudo apt-get install network-manager
 
-          set +eo pipefail
-          flutter test integration_test/desktop_runner_${{ matrix.test_number }}.dart -d Linux --coverage > /tmp/test_output.txt 2>&1
-          TEST_EXIT=$?
+          set +e
+          flutter test \
+            integration_test/desktop_runner_${{ matrix.test_number }}.dart \
+            -d Linux \
+            --file-reporter=json:/tmp/desktop-test-events.jsonl \
+            --coverage 2>&1 | tee /tmp/test_output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
           set -eo pipefail
 
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
+          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
+          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
 
           if [ "$TEST_EXIT" -ne 0 ] &&
             grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
@@ -1120,9 +1127,16 @@ jobs:
           awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
           echo "::endgroup::"
 
-          echo ""
-          echo "::group::All logs (click to expand)"
-          cat /tmp/test_output.txt
-          echo "::endgroup::"
-
           exit $TEST_EXIT
+
+      - name: Upload desktop test output
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-output-${{ matrix.test_number }}-${{ github.run_id }}
+          path: |
+            /tmp/test_output.txt
+            /tmp/desktop-test-events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
