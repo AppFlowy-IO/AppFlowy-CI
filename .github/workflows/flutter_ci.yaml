@@ -707,7 +707,7 @@ jobs:
             flutter_profile: development-linux-x86_64
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.cloud_test_suite == 'timeline' && 90 || 60 }}
     env:
       MINIO_DATA_DIR: /tmp/minio-data
       APPFLOWY_CLOUD_URL: https://localhost
@@ -780,6 +780,29 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+      - name: Make room for the Timeline server build
+        if: matrix.cloud_test_suite == 'timeline'
+        run: |
+          # This Linux desktop job does not use the mobile, .NET or Haskell SDKs.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Set up Timeline server build
+        if: matrix.cloud_test_suite == 'timeline'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the Timeline self-hosted server
+        if: matrix.cloud_test_suite == 'timeline'
+        uses: docker/build-push-action@v6
+        with:
+          context: AppFlowy-Cloud-Premium
+          file: AppFlowy-Cloud-Premium/Dockerfile
+          load: true
+          tags: appflowy-timeline-ci:${{ github.run_id }}
+          build-args: |
+            FEATURES=self-host-af,commercial-ci
+          cache-from: type=gha,scope=flutter-timeline-server
+          cache-to: type=gha,mode=max,scope=flutter-timeline-server
+
       - name: Run Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -787,6 +810,7 @@ jobs:
           APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+          CLOUD_TEST_SUITE: ${{ matrix.cloud_test_suite }}
         run: |
           echo "Cleaning up any existing containers..."
           docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
@@ -794,9 +818,26 @@ jobs:
           docker volume prune -f || true
           sudo rm -rf /tmp/minio-data || true
 
+          # Timeline's creation scenarios use fresh Free workspaces. Run that
+          # isolated suite against a real self-hosted server; the other suites
+          # retain the enterprise image and their billing/permission fixtures.
+          compose_files=(-f docker-compose-ci.yml)
+          if [ "$CLOUD_TEST_SUITE" = timeline ]; then
+            cat > docker-compose.timeline.yml <<'EOF'
+          services:
+            appflowy_cloud:
+              image: appflowy-timeline-ci:${GITHUB_RUN_ID}
+              pull_policy: never
+              environment:
+                # The restored CI snapshot already contains seeded accounts.
+                APPFLOWY_COMMERCIAL_FREE_MAX_USERS: "10000"
+          EOF
+            compose_files+=(-f docker-compose.timeline.yml)
+          fi
+
           echo "Pulling and starting containers..."
-          docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d
+          docker compose "${compose_files[@]}" pull
+          docker compose "${compose_files[@]}" up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
@@ -814,6 +855,12 @@ jobs:
           done
           echo "::error::Cloud HTTPS health check timed out"
           exit 1
+
+      - name: Verify Timeline server eligibility
+        if: matrix.cloud_test_suite == 'timeline'
+        run: |
+          curl --fail --show-error --max-time 10 "$APPFLOWY_CLOUD_URL/api/server-info" \
+            | jq -e '.code == 0 and .data.self_hosted == true'
 
       - name: Wait for MinIO to be ready
         working-directory: AppFlowy-Cloud-Premium
