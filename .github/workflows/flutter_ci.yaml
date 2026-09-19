@@ -949,7 +949,7 @@ jobs:
           pkg-config --modversion epoxy || true
 
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
-        # Leave time inside the 60-minute job limit to upload partial results.
+        # Leave time inside either job budget to upload partial results.
         timeout-minutes: 45
         shell: bash
         run: |

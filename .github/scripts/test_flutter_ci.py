@@ -261,7 +261,10 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             self.assertEqual(process.returncode, 0)
 
     def test_timeout_leaves_budget_for_partial_log_uploads(self):
-        self.assertEqual(self.cloud["timeout-minutes"], 60)
+        self.assertEqual(
+            self.cloud["timeout-minutes"],
+            "${{ matrix.cloud_test_suite == 'timeline' && 90 || 60 }}",
+        )
         self.assertEqual(self.test_step["timeout-minutes"], 45)
         steps = self.cloud["steps"]
         upload = next(
@@ -278,6 +281,55 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         for name in ["Collect Docker logs", "Upload Docker logs"]:
             step = next(step for step in steps if step.get("name") == name)
             self.assertEqual(step["if"], "failure() || cancelled()")
+
+    def test_only_timeline_uses_the_locally_built_self_hosted_server(self):
+        setup = next(
+            step for step in self.cloud["steps"]
+            if step.get("name") == "Run Docker-Compose"
+        )
+        for suite in ["timeline", "database"]:
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                commands = root / "docker-commands"
+                # Run the actual suite-selection script without touching Docker
+                # or removing the machine's MinIO directory.
+                script = (
+                    'docker() { printf "%s\\n" "$*" >> "$DOCKER_COMMANDS"; }\n'
+                    'sudo() { :; }\n'
+                    + setup["run"]
+                )
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "CLOUD_TEST_SUITE": suite,
+                        "GITHUB_RUN_ID": "123",
+                        "DOCKER_COMMANDS": str(commands),
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                compose = "compose -f docker-compose-ci.yml"
+                override = root / "docker-compose.timeline.yml"
+                if suite == "timeline":
+                    compose += " -f docker-compose.timeline.yml"
+                    services = yaml.safe_load(override.read_text())["services"]
+                    self.assertEqual(set(services), {"appflowy_cloud"})
+                    cloud = services["appflowy_cloud"]
+                    self.assertEqual(cloud["image"], "appflowy-timeline-ci:${GITHUB_RUN_ID}")
+                    self.assertEqual(cloud["pull_policy"], "never")
+                    self.assertEqual(
+                        cloud["environment"]["APPFLOWY_COMMERCIAL_FREE_MAX_USERS"],
+                        "10000",
+                    )
+                else:
+                    self.assertFalse(override.exists())
+                executed = commands.read_text().splitlines()
+                self.assertIn(f"{compose} pull", executed)
+                self.assertIn(f"{compose} up -d", executed)
 
     def execution_script(self, directory, include_stub=True):
         # Exercise only test execution/reporting, not service setup or pub get.
