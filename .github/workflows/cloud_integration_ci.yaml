@@ -855,6 +855,27 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
           df -h
 
+      - name: Build historical row document fixture generator
+        if: >-
+          matrix.test_service == 'appflowy_cloud_collab' &&
+          hashFiles('tests/tools/legacy_row_history/Cargo.toml') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cargo fetches Git dependencies outside this checkout. Reuse its
+          # temporary credential only for the pinned private client repository.
+          if ! authorization="$(git config --local --get http.https://github.com/.extraheader)" || [ -z "$authorization" ]; then
+            echo '::error::The Cloud checkout credential is required to build the historical row fixture.'
+            exit 1
+          fi
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/AppFlowy-IO/AppFlowy-Client.git.extraheader \
+          GIT_CONFIG_VALUE_0="$authorization" \
+          CARGO_NET_GIT_FETCH_WITH_CLI=true \
+          cargo build --locked \
+            --manifest-path tests/tools/legacy_row_history/Cargo.toml \
+            --target-dir "$PWD/target/row-document-history-generator"
+
       - name: Run Tests
         timeout-minutes: 50
         env:
@@ -867,6 +888,11 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               --features ai-test-enabled,sync-v2,ci-test --lib --bins \
               -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
+            # The server workspace owns client-api's probe, refresh-session, and
+            # update-recovery unit tests, including their corrupt-document fixture.
+            echo "==> Testing client-api unit tests"
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              -p client-api --lib -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_search_package" ]; then
             echo "==> Testing appflowy-search package"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \

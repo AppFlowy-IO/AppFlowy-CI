@@ -42,3 +42,10 @@ the final integration notification. Regression checks for this wiring are includ
 
 When migrating an existing Cloud branch to these jobs, land the CI workflow change before
 removing that branch's `.github/workflows/encoded-cache.yml` scheduler.
+
+The root-unit lane also runs `client-api --lib` from the Cloud workspace, which contains
+its document fixture. The collab lane prebuilds `tests/tools/legacy_row_history` when
+present so API tests can reproduce documents created by the historical client. This
+build reuses the checkout credential only for `AppFlowy-IO/AppFlowy-Client.git`; the
+existing `ADMIN_GITHUB_TOKEN` must have read access to that repository. Its separate
+target directory is reused by the test without holding the server build's Cargo lock.
