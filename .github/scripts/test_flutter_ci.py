@@ -23,6 +23,7 @@ SPLIT_SUITES = [
     "space_permissions",
     "sidebar",
     "database",
+    "timeline",
     "document",
 ]
 LEGACY_SUITES = ["core_workspace", "sidebar", "database", "document"]
@@ -237,6 +238,24 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
                 "--dart-define=APPFLOWY_CLOUD_URL=https://localhost",
                 arguments.read_text().splitlines(),
             )
+
+    def test_timeline_suite_builds_and_verifies_self_hosted_cloud(self):
+        run_scripts = [step.get("run", "") for step in self.cloud["steps"]]
+        timeline_build = next(
+            script for script in run_scripts if "APPFLOWY_CLOUD_BUILD_FEATURES" in script
+        )
+        self.assertIn('matrix.cloud_test_suite', timeline_build)
+        self.assertIn("self-host-af", timeline_build)
+        self.assertIn("commercial-ci", timeline_build)
+        self.assertIn("ci-test", timeline_build)
+
+        verification = next(
+            step for step in self.cloud["steps"]
+            if step.get("name") == "Verify self-hosted Cloud for Timeline tests"
+        )
+        self.assertEqual(verification["if"], "matrix.cloud_test_suite == 'timeline'")
+        self.assertIn("/api/server-info", verification["run"])
+        self.assertIn("self_hosted", verification["run"])
 
     def test_output_is_visible_before_flutter_finishes(self):
         with tempfile.TemporaryDirectory() as directory:
