@@ -796,6 +796,14 @@ jobs:
 
           echo "Pulling and starting containers..."
           docker compose -f docker-compose-ci.yml pull
+          if [ "${{ matrix.cloud_test_suite }}" = "timeline" ]; then
+            # Timeline creation is Pro-gated on hosted release builds. Build this
+            # suite's Cloud image from the checked-out source with the self-hosted
+            # deployment feature so fresh Free workspaces can exercise creation.
+            export APPFLOWY_CLOUD_BUILD_FEATURES="disposable-email-domains,self-host-af,commercial-ci,ci-test"
+            echo "Building the self-hosted Cloud image for Timeline tests"
+            docker compose -f docker-compose-ci.yml build appflowy_cloud
+          fi
           docker compose -f docker-compose-ci.yml up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
@@ -814,6 +822,26 @@ jobs:
           done
           echo "::error::Cloud HTTPS health check timed out"
           exit 1
+
+      - name: Verify self-hosted Cloud for Timeline tests
+        if: matrix.cloud_test_suite == 'timeline'
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          curl --fail --show-error --silent "$APPFLOWY_CLOUD_URL/api/server-info" \
+            > /tmp/timeline-server-info.json
+          python3 - <<'PY'
+          import json
+
+          with open('/tmp/timeline-server-info.json', encoding='utf-8') as handle:
+              payload = json.load(handle)
+          server_info = payload.get('data', payload)
+          if server_info.get('self_hosted') is not True:
+              raise SystemExit(
+                  'Timeline tests require a self-hosted Cloud image; '
+                  f"server-info reported self_hosted={server_info.get('self_hosted')!r}"
+              )
+          print('Timeline Cloud server reports self_hosted=true')
+          PY
 
       - name: Wait for MinIO to be ready
         working-directory: AppFlowy-Cloud-Premium
