@@ -520,6 +520,7 @@ jobs:
               sql_test::admin_user_test
               sql_test::chat_test
               sql_test::guest_limit_test
+              sql_test::mcp_database_access_test
               sql_test::permission_mapping_test
               sql_test::spam_signal_test
               sql_test::spam_test
