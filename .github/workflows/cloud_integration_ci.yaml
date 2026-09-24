@@ -285,7 +285,7 @@ jobs:
             *.cache-to=type=gha,scope=cloud-integration-worker,mode=max
             *.args.BUILDKIT_INLINE_CACHE=1
             *.args.BUILDKIT_MULTI_PLATFORM=0
-            *.args.PROFILE=debug
+            *.args.PROFILE=release
             *.args.APP_VERSION=0.9.999
 
       - name: Save Docker Image
@@ -423,6 +423,11 @@ jobs:
           # filters so split integration suites cannot accidentally drop unit coverage.
           - test_service: "appflowy_cloud_root_unit"
             test_modules: ""
+          # Discover standalone Cargo targets, including hosted_plan_limits.
+          # Ignored fixture seeds remain ignored; new regression targets run automatically.
+          - test_service: "appflowy_cloud_standalone_targets"
+            test_modules: ""
+            test_targets: "*"
           # Heavy workspace integration tests are split by Rust module path.
           # Each matrix entry still runs tests serially inside one Docker stack,
           # but independent suites can run in parallel across GitHub runners.
@@ -442,7 +447,6 @@ jobs:
               workspace::folder_projection_test
               workspace::folder_traversal_test
               workspace::form_share_test
-              workspace::hosted_workspace_plan_test
               workspace::inline_comment
               workspace::integration_test
               workspace::invitation_crud_test
@@ -870,6 +874,17 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               --features ai-test-enabled,sync-v2,ci-test --lib --bins \
               -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
+          elif [ "${{ matrix.test_targets }}" = "*" ]; then
+            mapfile -t targets < <(cargo metadata --locked --no-deps --format-version=1 |
+              jq -r '.packages[] | select(.name == "appflowy-cloud") | .targets[] |
+                select(.kind | index("test")) | select(.name != "main") | .name')
+            test "${#targets[@]}" -gt 0
+            for target in "${targets[@]}"; do
+              echo "==> Testing standalone target: ${target}"
+              APPFLOWY_TEST_HOSTED_PLAN_LIMITS=true RUST_LOG=info DISABLE_CI_TEST_LOG=true \
+                cargo test --locked --features ai-test-enabled,sync-v2,ci-test \
+                --test "$target" -- --test-threads=1
+            done
           elif [ "${{ matrix.test_service }}" = "appflowy_search_package" ]; then
             echo "==> Testing appflowy-search package"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
@@ -881,6 +896,9 @@ jobs:
             echo "==> Testing workspace member packages"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p workspace-folder \
+              -p appflowy-cloud-workspace-support \
+              -p appflowy-cloud-workspace \
+              -p appflowy-cloud-admin \
               -p collab-storage \
               -p database-blob \
               -p collab-access \

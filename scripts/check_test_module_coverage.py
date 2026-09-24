@@ -16,8 +16,8 @@ Coverage rules, mirroring how the workflows invoke ``cargo test "<module>::"``:
   is listed as ``tree::submodule`` (or deeper).
 * Modules without ``#[test]``, ``#[tokio::test]``, or ``#[sqlx::test]`` are helpers
   and exempt.
-* Separate test targets (``tests/*.rs`` seed fixtures) are not part of the
-  ``main`` target and are exempt by design (they are ``#[ignore]`` suites).
+* Separate test targets must be listed in ``test_targets``. A ``*`` entry runs
+  every non-main Cargo integration target, including newly added targets.
 """
 
 from __future__ import annotations
@@ -39,11 +39,11 @@ EXEMPT = {
 }
 
 
-def parse_covered_tokens(workflow_paths: list[pathlib.Path]) -> set[str]:
+def parse_covered_tokens(workflow_paths: list[pathlib.Path], key: str = "test_modules") -> set[str]:
   """All module tokens inside ``test_modules`` values across the workflows."""
   tokens: set[str] = set()
-  token_re = re.compile(r"[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*")
-  key_re = re.compile(r"^(\s*)(?:-\s*)?test_modules:\s*(.*)$")
+  token_re = re.compile(r"\*|[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*")
+  key_re = re.compile(r"^(\s*)(?:-\s*)?" + re.escape(key) + r":\s*(.*)$")
   module_line_re = re.compile(r"^\s+[A-Za-z0-9_: ]+$")
   for path in workflow_paths:
     lines = path.read_text().splitlines()
@@ -81,6 +81,27 @@ def has_tests(sources: list[pathlib.Path]) -> bool:
   return any(TEST_ATTR_RE.search(src.read_text(errors="ignore")) for src in sources)
 
 
+def target_has_tests(source: pathlib.Path, visited: set[pathlib.Path] | None = None) -> bool:
+  """Follow out-of-line modules, including the #[path] used by hosted_plan_limits."""
+  visited = set() if visited is None else visited
+  if source in visited or not source.exists():
+    return False
+  visited.add(source)
+  text = source.read_text()
+  if TEST_ATTR_RE.search(text):
+    return True
+  module_re = re.compile(
+    r'(?:#\[path\s*=\s*"([^"]+)"\]\s*)?(?:pub\s+)?mod\s+(\w+)\s*;'
+  )
+  for path, name in module_re.findall(text):
+    candidates = [source.parent / path] if path else [
+      source.parent / f"{name}.rs", source.parent / name / "mod.rs"
+    ]
+    if any(target_has_tests(candidate, visited) for candidate in candidates):
+      return True
+  return False
+
+
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--tests", required=True, type=pathlib.Path,
@@ -90,7 +111,13 @@ def main() -> int:
   args = parser.parse_args()
 
   covered = parse_covered_tokens(args.workflow)
+  targets = parse_covered_tokens(args.workflow, "test_targets")
   missing: list[str] = []
+
+  for source in sorted(args.tests.glob("*.rs")):
+    if source.stem != "main" and target_has_tests(source):
+      if "*" not in targets and source.stem not in targets:
+        missing.append(f"--test {source.stem}")
 
   for tree in MOD_RE.findall((args.tests / "main.rs").read_text()):
     sources = module_sources(args.tests, tree)
@@ -115,7 +142,7 @@ def main() -> int:
         missing.append(qualified)
 
   if missing:
-    print("The following test modules exist but no test_modules entry runs them:")
+    print("The following test modules or targets have no CI selection:")
     for module in sorted(missing):
       print(f"  - {module}")
     print(
