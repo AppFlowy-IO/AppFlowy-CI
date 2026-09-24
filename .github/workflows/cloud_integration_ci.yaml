@@ -442,6 +442,7 @@ jobs:
               workspace::folder_projection_test
               workspace::folder_traversal_test
               workspace::form_share_test
+              workspace::hosted_workspace_plan_test
               workspace::inline_comment
               workspace::integration_test
               workspace::invitation_crud_test
@@ -487,6 +488,7 @@ jobs:
               workspace::space_group_permission_test
           - test_service: "appflowy_cloud_workspace_import"
             test_modules: >-
+              workspace::document_import_test
               workspace::notion_import
               workspace::notion_import_test
           - test_service: "appflowy_cloud_workspace_publish"
