@@ -501,13 +501,18 @@ jobs:
               workspace::publish
               workspace::published_data_test
           # Database history tests can leave a large indexing backlog. Run the
-          # database index test on a clean stack so that backlog cannot starve it,
+          # database indexing and restore-search tests on a clean stack so that
+          # backlog cannot starve their initial search assertions,
           # and keep file/yrs coverage independent from database failures.
           - test_service: "appflowy_cloud_database"
             test_modules: "database"
-            test_skips: "database::database_index_test"
+            test_skips: >-
+              database::database_index_test
+              database::database_history_test::search_restore
           - test_service: "appflowy_cloud_database_index"
-            test_modules: "database::database_index_test"
+            test_modules: >-
+              database::database_index_test
+              database::database_history_test::search_restore
           - test_service: "appflowy_cloud_file_yrs"
             test_modules: "file_test yrs_test"
           - test_service: "appflowy_cloud_misc"
