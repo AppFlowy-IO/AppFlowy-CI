@@ -6,6 +6,14 @@ configures the server and Flutter client to use HTTPS/WSS. Public Form routes
 reject plaintext HTTP, so changing the cloud URL back to HTTP breaks submission
 tests. Keep certificate verification enabled when reproducing this setup.
 
+Flutter cloud suites anchor their backend to the published Cloud image, which
+owns database migrations. `select_flutter_cloud_images.py` resolves Worker,
+Search, and MCP from that release, verifies their source revisions, and pins
+their image digests in a Compose override. A partially published release must
+never combine an older Cloud migrator with newer workers. The Cloud checkout
+uses the same revision, including the source build for Timeline's self-hosted
+Cloud variant. Missing or mismatched images fail setup before tests start.
+
 Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
 
 ```sh
