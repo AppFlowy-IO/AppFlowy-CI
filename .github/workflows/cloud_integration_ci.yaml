@@ -49,6 +49,7 @@ env:
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.98.0"
+  CLOUD_TEST_FEATURES: ai-test-enabled,sync-v2,ci-test
   # Speed up crate downloads with sparse registry
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   # Faster for git dependencies
@@ -478,12 +479,178 @@ jobs:
           path: appflowy_mcp.tar.gz
           retention-days: 1
 
+  build_test_binaries:
+    name: Compile shared Cloud test binaries (AMD64)
+    needs: image_source
+    # Keep the binary producer and consumers on one OS release during ubuntu-latest migrations.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CLOUD_CACHE_GROUP: root
+      CLOUD_CACHE_WRITER: 'true'
+      CLOUD_COMPILE_TESTS: 'true'
+      RUSTC_WRAPPER: ''
+    steps:
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ needs.image_source.outputs.sha }}
+          persist-credentials: false
+      - &cloud_ci_tools
+        name: Checkout CI tools
+        if: env.CLOUD_CACHE_GROUP == 'root'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+
+      - &cloud_free_disk
+        name: Free disk space on runner
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /opt/ghc
+          docker builder prune -af || true
+          docker image prune -af || true
+          echo "Disk usage after cleanup:"
+          df -h
+
+      - &cloud_rust_toolchain
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      # Root suites have the same Cargo features. Keep package-only configurations
+      # separate, and let one lane per group save each immutable snapshot.
+      - &cloud_cargo_cache
+        name: Restore Cargo dependencies
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: cargo_cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: cloud-integration-${{ env.CLOUD_CACHE_GROUP }}
+          save-if: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
+          cache-bin: false
+          cache-all-crates: false
+
+      - &cloud_sccache
+        name: Setup sccache
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
+          # Report only the server actually used for compilation. The action's
+          # post step otherwise starts a fresh server even after setup failed.
+          disable_annotations: true
+        continue-on-error: true
+
+      - &cloud_sccache_config
+        name: Configure sccache
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: sccache_config
+        timeout-minutes: 2
+        env:
+          SCCACHE_SETUP_OUTCOME: ${{ steps.sccache.outcome }}
+        run: |
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          if [[ "$SCCACHE_SETUP_OUTCOME" != success ]]; then
+            echo "::warning::sccache installation failed; using the Cargo dependency cache only."
+            exit 0
+          fi
+          if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "::warning::GitHub cache v2 credentials are unavailable; compiler caching is disabled."
+            exit 0
+          fi
+
+          export SCCACHE_GHA_ENABLED=true
+          timeout 5 sccache --stop-server 2>/dev/null || true
+          for attempt in 1 2; do
+            if timeout 15 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "sccache is using the GitHub Actions cache."
+              exit 0
+            fi
+            timeout 5 sccache --stop-server 2>/dev/null || true
+            if [[ "$attempt" == 1 ]]; then
+              echo "Retrying compiler cache startup in 3 seconds."
+              sleep 3
+            fi
+          done
+          echo "::warning::sccache startup failed twice; using the Cargo dependency cache only."
+
+      - name: Install test build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libclang-dev libssl-dev pkg-config
+
+      - name: Compile and archive Cloud test executables
+        run: |
+          python3 ci-tools/.github/scripts/cloud_test_binaries.py build \
+            --features "$CLOUD_TEST_FEATURES" --archive "$RUNNER_TEMP/cloud-tests.tar.gz"
+
+      - name: Upload shared Cloud test binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
+          path: ${{ runner.temp }}/cloud-tests.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+
+      - &cloud_cache_report
+        name: Report Rust cache usage
+        if: ${{ !cancelled() && env.CLOUD_COMPILE_TESTS == 'true' }}
+        env:
+          CACHE_GROUP: ${{ env.CLOUD_CACHE_GROUP }}
+          CACHE_WRITER: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
+          CARGO_CACHE_HIT: ${{ steps.cargo_cache.outputs.cache-hit || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache_config.outputs.enabled || 'false' }}
+        run: |
+          # Backticks in the printf formats are literal Markdown code spans.
+          # shellcheck disable=SC2016
+          {
+            printf '### Rust build cache\n\n'
+            printf -- '- Cargo cache group: `%s`\n' "$CACHE_GROUP"
+            printf -- '- Exact Cargo cache hit: `%s` (false may include a fallback restore)\n' "$CARGO_CACHE_HIT"
+            printf -- '- Cargo snapshot writer: `%s`\n' "$CACHE_WRITER"
+            printf -- '- Compiler cache enabled: `%s`\n\n' "$SCCACHE_ENABLED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$SCCACHE_ENABLED" == true ]]; then
+            if timeout 10 sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt" 2>&1; then
+              cat "$RUNNER_TEMP/sccache-stats.txt"
+              {
+                printf '```text\n'
+                cat "$RUNNER_TEMP/sccache-stats.txt"
+                printf '\n```\n'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Unable to collect compiler cache statistics."
+              printf 'Compiler cache statistics unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            printf 'Compiler caching was unavailable; see the setup warnings above.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   test:
     name: Integration Tests (${{ matrix.test_service }})
-    runs-on: ubuntu-latest
-    needs: [image_source, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
+    runs-on: ubuntu-24.04
+    needs: [image_source, build_test_binaries, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
     if: >-
       always() && !cancelled() && needs.image_source.result == 'success' &&
+      needs.build_test_binaries.result == 'success' &&
       ((needs.image_source.outputs.builder == 'self-hosted' &&
         needs.build_self_hosted.result == 'success') ||
        (needs.image_source.outputs.builder == 'github-hosted' &&
@@ -492,6 +659,9 @@ jobs:
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
+      CLOUD_CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
+      CLOUD_CACHE_WRITER: ${{ matrix.cache_writer == true }}
+      CLOUD_COMPILE_TESTS: ${{ matrix.cache_group != '' }}
       # Restore Cargo artifacts before enabling the optional compiler wrapper so
       # cache availability cannot change the Cargo snapshot's environment hash.
       RUSTC_WRAPPER: ""
@@ -503,7 +673,6 @@ jobs:
           # filters so split integration suites cannot accidentally drop unit coverage.
           - test_service: "appflowy_cloud_root_unit"
             test_modules: ""
-            cache_writer: true
           # Heavy workspace integration tests are split by Rust module path.
           # Each matrix entry still runs tests serially inside one Docker stack,
           # but independent suites can run in parallel across GitHub runners.
@@ -691,78 +860,27 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - *cloud_ci_tools
+      - *cloud_rust_toolchain
+      - *cloud_cargo_cache
+      - *cloud_sccache
+      - *cloud_sccache_config
 
-      # Root suites have the same Cargo features. Keep package-only configurations
-      # separate, and let one lane per group save each immutable snapshot.
-      - name: Restore Cargo dependencies
-        id: cargo_cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "."
-          shared-key: cloud-integration-${{ matrix.cache_group || 'root' }}
-          save-if: ${{ matrix.cache_writer == true }}
-          cache-bin: false
-          cache-all-crates: false
+      - *cloud_free_disk
 
-      - name: Setup sccache
-        id: sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Download shared Cloud test binaries
+        if: env.CLOUD_CACHE_GROUP == 'root'
+        uses: actions/download-artifact@v4
         with:
-          version: v0.18.0
-          # Report only the server actually used for compilation. The action's
-          # post step otherwise starts a fresh server even after setup failed.
-          disable_annotations: true
-        continue-on-error: true
+          name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
+          path: ${{ runner.temp }}/cloud-test-binaries
 
-      - name: Configure sccache
-        id: sccache_config
-        timeout-minutes: 2
-        env:
-          SCCACHE_SETUP_OUTCOME: ${{ steps.sccache.outcome }}
+      - name: Restore and verify shared Cloud test binaries
+        if: env.CLOUD_CACHE_GROUP == 'root'
         run: |
-          echo "enabled=false" >> "$GITHUB_OUTPUT"
-          if [[ "$SCCACHE_SETUP_OUTCOME" != success ]]; then
-            echo "::warning::sccache installation failed; using the Cargo dependency cache only."
-            exit 0
-          fi
-          if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "::warning::GitHub cache v2 credentials are unavailable; compiler caching is disabled."
-            exit 0
-          fi
-
-          export SCCACHE_GHA_ENABLED=true
-          timeout 5 sccache --stop-server 2>/dev/null || true
-          for attempt in 1 2; do
-            if timeout 15 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
-              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-              echo "enabled=true" >> "$GITHUB_OUTPUT"
-              echo "sccache is using the GitHub Actions cache."
-              exit 0
-            fi
-            timeout 5 sccache --stop-server 2>/dev/null || true
-            if [[ "$attempt" == 1 ]]; then
-              echo "Retrying compiler cache startup in 3 seconds."
-              sleep 3
-            fi
-          done
-          echo "::warning::sccache startup failed twice; using the Cargo dependency cache only."
-
-      - name: Free disk space on runner
-        run: |
-          echo "Disk usage before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/ghc
-          docker builder prune -af || true
-          docker image prune -af || true
-          echo "Disk usage after cleanup:"
-          df -h
+          python3 ci-tools/.github/scripts/cloud_test_binaries.py restore \
+            --archive "$RUNNER_TEMP/cloud-test-binaries/cloud-tests.tar.gz"
+          rm "$RUNNER_TEMP/cloud-test-binaries/cloud-tests.tar.gz"
 
       - name: Download Docker Images
         uses: actions/download-artifact@v4
@@ -970,6 +1088,7 @@ jobs:
           docker compose -f docker-compose-ci.yml logs minio
 
       - name: Install prerequisites
+        if: env.CLOUD_COMPILE_TESTS == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
@@ -983,22 +1102,26 @@ jobs:
           TEST_SKIPS: ${{ matrix.test_skips }}
         run: |
           set -e
+          cargo_command=(cargo)
+          if [[ "$CLOUD_CACHE_GROUP" == root ]]; then
+            cargo_command=(python3 ci-tools/.github/scripts/cloud_test_binaries.py run)
+          fi
           echo "Running tests for ${{ matrix.test_service }}"
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_root_unit" ]; then
             echo "==> Testing appflowy-cloud root unit tests"
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              --features ai-test-enabled,sync-v2,ci-test --lib --bins \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+              --features "$CLOUD_TEST_FEATURES" --lib --bins \
               -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_search_package" ]; then
             echo "==> Testing appflowy-search package"
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-search -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_member_packages" ]; then
             # The former appflowy-collaborate umbrella was split into focused
             # libraries. Keep their moved unit and integration tests in this
             # service-backed lane so removing the umbrella does not reduce coverage.
             echo "==> Testing workspace member packages"
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p workspace-folder \
               -p collab-storage \
               -p database-blob \
@@ -1018,7 +1141,7 @@ jobs:
               -p appflowy-proto \
               -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-worker -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_whitelist" ]; then
             # Whitelist tests run in isolation — they toggle GoTrue global state.
@@ -1027,8 +1150,8 @@ jobs:
             # but not `mcp::tools_test::get_self_returns_workspace_id`.
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
-              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2,ci-test "${module}::" \
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+                --features "$CLOUD_TEST_FEATURES" "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
@@ -1042,8 +1165,8 @@ jobs:
             echo "==> LDAP end-to-end (openldap)"
             LOCALHOST_URL=http://localhost:8000 \
             LDAP_TEST_SERVER=ldap://openldap:1389 \
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              --features ai-test-enabled,sync-v2,ci-test "ldap::" \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+              --features "$CLOUD_TEST_FEATURES" "ldap::" \
               -- --skip stress_test --skip commercial_test --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
             # SCIM end-to-end against the real Authentik IdP (from docker-compose-ci.yml).
@@ -1054,8 +1177,8 @@ jobs:
             echo "==> SCIM directory-sync end-to-end (Authentik)"
             SCIM_URL_FOR_AUTHENTIK=http://appflowy_cloud:8000/scim/v2 \
             AUTHENTIK_HEALTH_URL=http://localhost:9010/-/health/ready/ \
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-              --features ai-test-enabled,sync-v2,ci-test "scim::" \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+              --features "$CLOUD_TEST_FEATURES" "scim::" \
               -- --test-threads=1 --nocapture
           else
             # Run root crate integration tests module by module.
@@ -1070,8 +1193,8 @@ jobs:
             done
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
-              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-                --features ai-test-enabled,sync-v2,ci-test "${module}::" \
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+                --features "$CLOUD_TEST_FEATURES" "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist \
                 "${skip_args[@]}" --test-threads=1
             done
@@ -1082,41 +1205,16 @@ jobs:
       - name: Final seeded account deletion
         if: matrix.test_modules != '' && hashFiles('script/test_final_account_deletion.sh') != ''
         timeout-minutes: 5
-        run: bash script/test_final_account_deletion.sh --features ai-test-enabled,sync-v2,ci-test
-
-      - name: Report Rust cache usage
-        if: ${{ !cancelled() }}
-        env:
-          CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
-          CACHE_WRITER: ${{ matrix.cache_writer == true }}
-          CARGO_CACHE_HIT: ${{ steps.cargo_cache.outputs.cache-hit || 'false' }}
-          SCCACHE_ENABLED: ${{ steps.sccache_config.outputs.enabled || 'false' }}
         run: |
-          # Backticks in the printf formats are literal Markdown code spans.
-          # shellcheck disable=SC2016
-          {
-            printf '### Rust build cache\n\n'
-            printf -- '- Cargo cache group: `%s`\n' "$CACHE_GROUP"
-            printf -- '- Exact Cargo cache hit: `%s` (false may include a fallback restore)\n' "$CARGO_CACHE_HIT"
-            printf -- '- Cargo snapshot writer: `%s`\n' "$CACHE_WRITER"
-            printf -- '- Compiler cache enabled: `%s`\n\n' "$SCCACHE_ENABLED"
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Keep the source-owned destructive-test guard and ordering check, using the archive
+          # for its two cargo invocations (listing first, then the exact ignored test).
+          cargo() {
+            python3 "$GITHUB_WORKSPACE/ci-tools/.github/scripts/cloud_test_binaries.py" run "$@"
+          }
+          export -f cargo
+          bash script/test_final_account_deletion.sh --features "$CLOUD_TEST_FEATURES"
 
-          if [[ "$SCCACHE_ENABLED" == true ]]; then
-            if timeout 10 sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt" 2>&1; then
-              cat "$RUNNER_TEMP/sccache-stats.txt"
-              {
-                printf '```text\n'
-                cat "$RUNNER_TEMP/sccache-stats.txt"
-                printf '\n```\n'
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::warning::Unable to collect compiler cache statistics."
-              printf 'Compiler cache statistics unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            printf 'Compiler caching was unavailable; see the setup warnings above.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - *cloud_cache_report
 
       - name: Collect Docker logs
         if: failure()
@@ -1157,7 +1255,7 @@ jobs:
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [image_source, build_self_hosted, verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
+    needs: [image_source, build_test_binaries, build_self_hosted, verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
     # Report failures and skipped dependencies, but let cancelled runs release
     # their PR concurrency slot without waiting for a notification runner.
     if: ${{ !cancelled() }}

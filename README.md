@@ -1,7 +1,7 @@
 # AppFlowy-CI
 
 Cloud integration images build on the ARM64 laptop through AppFlowy-Cloud-Premium's
-`build_ci_images_self_hosted.yml`; all test, coverage and cache jobs stay on `ubuntu-latest`.
+`build_ci_images_self_hosted.yml`; test compilation, test execution and coverage stay on GitHub runners.
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
 are downloaded from the private Cloud Premium run with their existing `latest-amd64` tags.
 
@@ -47,13 +47,21 @@ configures the server and Flutter client to use HTTPS/WSS. Public Form routes
 reject plaintext HTTP, so changing the cloud URL back to HTTP breaks submission
 tests. Keep certificate verification enabled when reproducing this setup.
 
-Cloud integration tests use two Rust caches: Cargo dependency snapshots and `sccache` with GitHub's
-cache v2 API. Root test lanes share one snapshot; Worker, Search, and workspace-member packages each
-have a separate snapshot. Root unit tests and the three package lanes are the only snapshot writers.
+`Compile shared Cloud test binaries (AMD64)` starts alongside image builds and compiles the root
+Cloud tests once with `CLOUD_TEST_FEATURES`. The 24 root test lanes download that run's binary archive
+and execute their existing Rust test harnesses and filters without invoking a compiler. The archive
+includes helper executables, generated runtime files and shared libraries, and expires after one day.
+Producer and consumers use `ubuntu-24.04`, the same source SHA and the same absolute checkout path;
+the archive helper verifies these before use. A missing or mismatched archive fails the job.
+The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
+Worker, Search and workspace-member lanes compile their different package selections as before.
+
+Compiling jobs use two Rust caches: Cargo dependency snapshots and `sccache` with GitHub's cache v2
+API. The shared root build and the three package lanes each own a snapshot and are its only writers.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. Keep
 the pinned Rust toolchain and `CARGO_INCREMENTAL=0`; compiler caching requires incremental builds off.
 The workflow pins the sccache action and binary, retries startup once, and falls back to ordinary
-compilation if compiler-cache setup fails. Each test job summary shows the exact Cargo cache hit,
+compilation if compiler-cache setup fails. Each compiling job's summary shows the exact Cargo cache hit,
 writer role, and compiler cache hits/misses. GitHub cache storage is shared with other workflows;
 check repository Actions cache usage if snapshots are repeatedly evicted. A new cache group or
 dependency/toolchain change needs a successful writer run before later runs can reuse its snapshot.
