@@ -647,7 +647,7 @@ jobs:
           fi
 
   test:
-    name: Integration Tests (${{ matrix.test_service }})
+    name: Integration Tests (${{ matrix.topic }})
     runs-on: ubuntu-24.04
     needs: [image_source, build_test_binaries, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
     if: >-
@@ -669,17 +669,23 @@ jobs:
       RUSTC_WRAPPER: ""
     strategy:
       fail-fast: false
+      max-parallel: 15
       matrix:
         include:
-          # These short suites share one artifact download and Docker stack. Run
-          # unfiltered root unit tests explicitly before the integration filters.
+          # Topic groups share artifact downloads and Docker setup. Run unfiltered
+          # root unit tests explicitly before the core integration filters.
           - test_service: "appflowy_cloud_core"
+            topic: "Core APIs and utilities"
             test_root_unit: true
             test_modules: >-
               file_test
               yrs_test
               redis_test
               server_info
+              cache_validation
+              folder_test
+              mcp
+              mention_api
               workspace::notification_etag_test
               workspace::notification_events_test
               workspace::notification_inbox_test
@@ -689,6 +695,7 @@ jobs:
           # Each matrix entry still runs tests serially inside one Docker stack,
           # but independent suites can run in parallel across GitHub runners.
           - test_service: "appflowy_cloud_workspace_core"
+            topic: "Workspace management"
             test_modules: >-
               workspace::access_request
               workspace::admin_copy_workspace_test
@@ -722,10 +729,7 @@ jobs:
               workspace::workspace_reorder_test
               workspace::workspace_settings_test
           - test_service: "appflowy_cloud_workspace_permissions"
-            test_modules: "workspace::permissions"
-          # Structured and custom spaces share a stack; the much longer
-          # workspace::permissions suite keeps its own runner and timeout budget.
-          - test_service: "appflowy_cloud_workspace_spaces"
+            topic: "Permissions and spaces"
             test_modules: >-
               workspace::private_space_migration_test
               workspace::space_permission_test
@@ -735,34 +739,32 @@ jobs:
               workspace::custom_space_test
               workspace::prd_space_acceptance_test
               workspace::space_group_permission_test
-          - test_service: "appflowy_cloud_workspace_import"
+              workspace::permissions
+          - test_service: "appflowy_cloud_workspace_content"
+            topic: "Import and publishing"
             test_modules: >-
               workspace::document_import_test
               workspace::notion_import
               workspace::notion_import_test
-          - test_service: "appflowy_cloud_workspace_publish"
-            test_modules: >-
               workspace::page_view
               workspace::publish
               workspace::published_data_test
-          # Database history tests can leave a large indexing backlog. Run the
-          # database index test on a clean stack so that backlog cannot starve it,
-          # and keep file/yrs coverage independent from database failures.
+          # Database history can leave a large indexing backlog. Its index test
+          # runs first in the separate search topic, before other indexing work.
           - test_service: "appflowy_cloud_database"
+            topic: "Databases"
             test_modules: "database"
             test_skips: "database::database_index_test"
-          - test_service: "appflowy_cloud_database_index"
-            test_modules: "database::database_index_test"
-          - test_service: "appflowy_cloud_misc"
-            test_modules: "cache_validation folder_test mcp mention_api"
           - test_service: "appflowy_cloud_collab"
+            topic: "Realtime collaboration"
             test_modules: "collab"
           - test_service: "appflowy_cloud_api"
+            topic: "AI and authentication"
             test_modules: "ai_test gotrue oidc user"
-          # SQL suites retain explicit module filters in two groups. Keep the
-          # permission differential/share-union equivalence gates in the access
-          # group; collab and workspace persistence share the storage group.
-          - test_service: "appflowy_cloud_sql_access"
+          # Preserve explicit SQL filters, including the permission differential
+          # and share-union equivalence gates, within one persistence topic.
+          - test_service: "appflowy_cloud_sql"
+            topic: "SQL persistence"
             test_modules: >-
               sql_test::admin_guest_status_test
               sql_test::admin_user_test
@@ -783,8 +785,6 @@ jobs:
               sql_test::realtime_collab_owner_test
               sql_test::space_acl_seed_test
               sql_test::space_user_delete_test
-          - test_service: "appflowy_cloud_sql_storage"
-            test_modules: >-
               sql_test::collab_db_ops_test
               sql_test::collab_embed_test
               sql_test::collab_history_graph_test
@@ -809,34 +809,42 @@ jobs:
               sql_test::workspace_database_sync_test
               sql_test::workspace_test
           - test_service: "appflowy_cloud_member_packages"
+            topic: "Shared libraries"
             test_modules: ""
             cache_group: members
             cache_writer: true
-          # Group 3: Search tests (dedicated docker instance for stable indexing)
+          # Run database indexing first on a fresh stack, then search. Database
+          # history and restore suites must not join this topic.
           - test_service: "appflowy_cloud_search"
-            test_modules: "search"
-          # Group 4: Whitelist tests (isolated — these toggle GoTrue global state)
+            topic: "Search and indexing"
+            test_modules: "database::database_index_test search"
+          # Whitelist tests toggle GoTrue global state and need their own stack.
           - test_service: "appflowy_cloud_whitelist"
+            topic: "Signup whitelist"
             test_modules: >-
               sql_test::whitelist_test
               user::admin_signup_whitelist_test
               user::admin_user_deletion_whitelist_test
               user::sign_up
               workspace::admin_system_config_test
-          # Group 5: SCIM directory-sync end-to-end (drives the real Authentik IdP
+          # SCIM directory-sync end-to-end (drives the real Authentik IdP
           # from docker-compose-ci.yml). The cloud image is the default build, so
           # SCIM is available with no seat limit and no license.
           - test_service: "appflowy_cloud_scim"
+            topic: "SCIM provisioning"
             test_modules: "scim"
-          # Group 6: LDAP login + SCIM-interop end-to-end against the compose
+          # LDAP login + SCIM-interop end-to-end against the compose
           # openldap service (profile `ldap`, seeded from script/ldap/seed.ldif).
           - test_service: "appflowy_cloud_ldap"
+            topic: "LDAP login"
             test_modules: "ldap"
           - test_service: "appflowy_search_package"
+            topic: "Search service"
             test_modules: ""
             cache_group: search
             cache_writer: true
           - test_service: "appflowy_worker"
+            topic: "Worker service"
             test_modules: ""
             cache_group: worker
             cache_writer: true
@@ -1015,9 +1023,7 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
       - name: Show appflowy_search startup logs
-        if: >-
-          matrix.test_service == 'appflowy_cloud_search' ||
-          matrix.test_service == 'appflowy_cloud_database_index'
+        if: matrix.test_service == 'appflowy_cloud_search'
         run: docker compose -f docker-compose-ci.yml logs appflowy_search
 
       - name: Wait for appflowy cloud to be ready

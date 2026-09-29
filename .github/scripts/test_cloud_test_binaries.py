@@ -93,6 +93,20 @@ mod failure {
     #[test]
     fn fails() { panic!("test failures must propagate"); }
 }
+mod database {
+    mod database_index_test {
+        #[test]
+        fn selected() { std::fs::write("index-first-ran", "ready").unwrap(); }
+    }
+    #[test]
+    fn history() { panic!("database history must keep its own stack"); }
+}
+mod search {
+    #[test]
+    fn selected() {
+        assert_eq!(std::fs::read_to_string("index-first-ran").unwrap(), "ready");
+    }
+}
 mod user { mod delete {
     #[test]
     #[ignore]
@@ -104,7 +118,7 @@ mod user { mod delete {
 }}
 ''',
             "tests/separate.rs": "#[test]\nfn separate_target() {}\n",
-            ".gitignore": "target/\nci-tools\nfinal-test-ran\n",
+            ".gitignore": "target/\nci-tools\nfinal-test-ran\nindex-first-ran\n",
             # Model the source-owned script's guard, exact listing and final execution.
             "script/test_final_account_deletion.sh": '''set -euo pipefail
 if [[ "${CI:-}" != true ]]; then
@@ -257,6 +271,22 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
         self.assertIn("test library_unit ... ok", result.stdout)
         self.assertIn("test failure::fails ... FAILED", result.stdout)
         self.assertEqual(result.returncode, 101, result.stdout)
+
+    def test_search_topic_indexes_first_without_running_database_history(self):
+        lane = next(lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
+                    if lane["test_service"] == "appflowy_cloud_search")
+        script = step("test", "Run Tests")["run"]
+        script = script.replace("${{ matrix.test_service }}", lane["test_service"])
+        script = script.replace("${{ matrix.test_modules }}", lane["test_modules"])
+        marker = self.workspace / "index-first-ran"
+        marker.unlink(missing_ok=True)
+        self.addCleanup(marker.unlink, missing_ok=True)
+        result = self.call(["bash", "-e", "-o", "pipefail", "-c", script],
+                           env={**self.run_env, "RUN_ROOT_UNIT_TESTS": "false",
+                                "TEST_SKIPS": lane.get("test_skips", "")})
+        self.assertIn("test database::database_index_test::selected ... ok", result.stdout)
+        self.assertIn("test search::selected ... ok", result.stdout)
+        self.assertNotIn("test database::history ...", result.stdout)
 
     def test_manifest_must_match_source_path_os_architecture_and_version(self):
         for key, value in (("source_sha", "wrong"), ("workspace", "/different/path"),
