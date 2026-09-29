@@ -53,7 +53,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
         raise ValueError("Expected the AppFlowy-CI run ID and attempt")
     title = f"CI images {request_id} ({source_sha})"
-    deadline = now() + timeout
+    started = now()
+    deadline = started + timeout
     run = find_run(request, title)
     submitted = run is not None
     try:
@@ -75,8 +76,18 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         print(f"Waiting for {url}", flush=True)
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             print(f"Images for {source_sha}: [self-hosted build]({url}).", file=summary)
-        while run["status"] != "completed":
-            if now() >= deadline:
+        last_status = None
+        last_report = started
+        while True:
+            current = now()
+            if run["status"] != last_status or current - last_report >= 60:
+                print(f"Private image build {run_id}: {run['status']} "
+                      f"({int((current - started) / 60)}m elapsed)", flush=True)
+                last_status = run["status"]
+                last_report = current
+            if run["status"] == "completed":
+                break
+            if current >= deadline:
                 raise TimeoutError(f"Timed out waiting for {url}")
             wait(15)
             run = request("GET", f"{API_ROOT}/runs/{run_id}")

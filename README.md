@@ -13,12 +13,16 @@ AppFlowy-CI needs no registered runner.
 Manual runs default `image_builder` to `self-hosted`. Choose `github-hosted` to use the existing
 image build jobs when the laptop is unavailable or an older Cloud ref is unsupported. For automatic
 runs, set repository variable `CLOUD_IMAGE_BUILD_RUNNER=github-hosted` to use that fallback;
-unset it or set `self-hosted` for laptop builds. The caller waits up to 330 minutes, links the private
-build in its job summary and attempts to cancel only that build if interrupted.
+unset it or set `self-hosted` for laptop builds. `Wait for self-hosted images` dispatches one private
+build and waits up to 330 minutes, reporting status changes and progress about once per minute.
+It links that build in its job summary and attempts to cancel only that build if interrupted. The four
+`GitHub fallback` image jobs are skipped in this mode.
 
-Release and integration image builds may overlap within a shared **16 CPU / 80 GiB** laptop budget.
-Its limits and runner setup are documented in Premium's `doc/context/ci/self_hosted_runner_context.md`.
-CI images are artifacts, not Docker Hub releases. Image artifact retention is one day.
+Release and integration builds have separate workflow queues and image caches. The laptop's
+current build settings are documented in Premium's `doc/context/ci/self_hosted_runner_context.md`.
+Cloud's CI image enables test features, and CI images use the `latest-amd64` artifact tags.
+Versioned Docker Hub release images are a separate build with different settings, even for the same
+source commit. Artifact retention is one day.
 
 Cloud integration tests use `https://localhost`. The workflow generates a short-lived
 localhost certificate, installs its CA in the runner's system trust store, and
