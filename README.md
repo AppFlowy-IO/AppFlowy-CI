@@ -59,10 +59,6 @@ Run the coverage-checker regressions with Python 3:
 python3 -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
 ```
 
-The commercial workflow also sets `appflowy.storage_policy=self_hosted` in GoTrue's database URL.
-GoTrue has its own pool: it must use the same storage policy as the self-host Cloud image when user
-deletion cascades into publications. The hosted workflow retains the hosted default.
-
 Each Cloud root integration lane ends with `script/test_final_account_deletion.sh` from
 the checked-out Cloud source. It explicitly runs an ignored API test that deletes the shared
 `eva@appflowy.io` snapshot account and verifies private-space recovery. Each matrix job has its
