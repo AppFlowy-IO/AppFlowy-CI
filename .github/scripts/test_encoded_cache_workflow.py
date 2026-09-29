@@ -20,6 +20,7 @@ SUITE_FILES = (
 CACHE_JOBS = ("cache-contracts", "cache-observability")
 REPORTED_JOBS = (
     "image_source",
+    "build_test_binaries",
     "build_self_hosted",
     "verify_test_module_coverage",
     "build_cloud",
@@ -184,6 +185,10 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         for job in CACHE_JOBS:
             with self.subTest(job=job):
                 self.assertEqual(self.aggregate({job: "failure"}), "failure")
+
+    def test_shared_binary_build_failure_cannot_report_success_for_skipped_tests(self):
+        self.assertEqual(self.aggregate({"build_test_binaries": "failure", "test": "skipped"}),
+                         "failure")
 
     def test_absent_legacy_suite_does_not_fail_successful_integration_tests(self):
         self.assertEqual(self.aggregate({job: "skipped" for job in CACHE_JOBS}), "success")

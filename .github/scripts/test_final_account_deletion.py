@@ -20,7 +20,7 @@ class FinalAccountDeletionTest(unittest.TestCase):
         final_index = final_steps[0]
         test_indices = [
             index for index, step in enumerate(steps)
-            if "cargo test" in step.get("run", "")
+            if step.get("name") == "Run Tests" or "cargo test" in step.get("run", "")
         ]
         self.assertTrue(test_indices)
         self.assertTrue(all(index < final_index for index in test_indices))
