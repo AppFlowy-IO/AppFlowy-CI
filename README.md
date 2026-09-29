@@ -47,6 +47,17 @@ configures the server and Flutter client to use HTTPS/WSS. Public Form routes
 reject plaintext HTTP, so changing the cloud URL back to HTTP breaks submission
 tests. Keep certificate verification enabled when reproducing this setup.
 
+Cloud integration tests use two Rust caches: Cargo dependency snapshots and `sccache` with GitHub's
+cache v2 API. Root test lanes share one snapshot; Worker, Search, and workspace-member packages each
+have a separate snapshot. Root unit tests and the three package lanes are the only snapshot writers.
+Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. Keep
+the pinned Rust toolchain and `CARGO_INCREMENTAL=0`; compiler caching requires incremental builds off.
+The workflow pins the sccache action and binary, retries startup once, and falls back to ordinary
+compilation if compiler-cache setup fails. Each test job summary shows the exact Cargo cache hit,
+writer role, and compiler cache hits/misses. GitHub cache storage is shared with other workflows;
+check repository Actions cache usage if snapshots are repeatedly evicted. A new cache group or
+dependency/toolchain change needs a successful writer run before later runs can reuse its snapshot.
+
 Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
 
 ```sh
