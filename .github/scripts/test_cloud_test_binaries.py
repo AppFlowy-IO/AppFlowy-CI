@@ -227,18 +227,36 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
         self.assertIn("test user::delete::ci_final_delete_eva ... ok", result.stdout)
         self.assertEqual(marker.read_text(), "yes")
 
-    def test_workflow_routes_root_module_and_unit_lanes_to_archive(self):
-        for service, modules, skips, expected in (
-            ("appflowy_cloud_workspace_core", "workspace", "skipped_case", "workspace::selected"),
-            ("appflowy_cloud_root_unit", "", "", "library_unit"),
+    def test_workflow_runs_combined_unit_and_module_tests_from_archive(self):
+        for service, root_units in (
+            ("appflowy_cloud_workspace_core", False),
+            ("appflowy_cloud_core", True),
         ):
             with self.subTest(service=service):
                 script = step("test", "Run Tests")["run"]
                 script = script.replace("${{ matrix.test_service }}", service)
-                script = script.replace("${{ matrix.test_modules }}", modules)
+                script = script.replace("${{ matrix.test_modules }}", "workspace")
                 result = self.call(["bash", "-e", "-o", "pipefail", "-c", script],
-                                   env={**self.run_env, "TEST_SKIPS": skips})
-                self.assertIn(f"test {expected} ... ok", result.stdout)
+                                   env={**self.run_env, "TEST_SKIPS": "skipped_case",
+                                        "RUN_ROOT_UNIT_TESTS": str(root_units).lower()})
+                self.assertEqual(result.stdout.count("test workspace::selected ... ok"), 1)
+                self.assertNotIn("test workspace::skipped_case ...", result.stdout)
+                for test in ("library_unit", "binary_unit"):
+                    output = f"test {test} ... ok"
+                    self.assertEqual(result.stdout.count(output), int(root_units))
+                    if root_units:
+                        self.assertLess(result.stdout.index(output),
+                                        result.stdout.index("test workspace::selected ... ok"))
+
+    def test_combined_lane_propagates_integration_failure_after_passing_units(self):
+        script = step("test", "Run Tests")["run"]
+        script = script.replace("${{ matrix.test_service }}", "appflowy_cloud_core")
+        script = script.replace("${{ matrix.test_modules }}", "failure")
+        result = self.call(["bash", "-e", "-o", "pipefail", "-c", script],
+                           env={**self.run_env, "RUN_ROOT_UNIT_TESTS": "true"}, check=False)
+        self.assertIn("test library_unit ... ok", result.stdout)
+        self.assertIn("test failure::fails ... FAILED", result.stdout)
+        self.assertEqual(result.returncode, 101, result.stdout)
 
     def test_manifest_must_match_source_path_os_architecture_and_version(self):
         for key, value in (("source_sha", "wrong"), ("workspace", "/different/path"),
@@ -286,6 +304,15 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
 
 
 class SharedBuildWorkflowTest(unittest.TestCase):
+    def test_unfiltered_root_units_run_once_alongside_integration_modules(self):
+        lanes = WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
+        unit_lanes = [lane for lane in lanes if lane.get("test_root_unit")]
+        self.assertEqual(len(unit_lanes), 1)
+        self.assertTrue(unit_lanes[0]["test_modules"].split())
+        self.assertNotIn("cache_group", unit_lanes[0])
+        self.assertEqual(step("test", "Run Tests")["env"]["RUN_ROOT_UNIT_TESTS"],
+                         "${{ matrix.test_root_unit == true }}")
+
     def matrix_will_run(self, builder, **results):
         needs = {}
         for job in WORKFLOW["jobs"]["test"]["needs"]:

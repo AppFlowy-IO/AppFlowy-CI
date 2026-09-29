@@ -50,7 +50,7 @@ tests. Keep certificate verification enabled when reproducing this setup.
 The private run's fifth job cross-compiles the root Cloud tests once with `CLOUD_TEST_FEATURES`,
 alongside its four image jobs. It uses the caller's pinned CI tools commit and `RUST_TOOLCHAIN`.
 ARM64 Rust/C/C++ compilers produce `x86_64-unknown-linux-gnu` binaries; only the Ubuntu 24.04 startup
-check uses QEMU to list tests without executing their bodies. The 24 root test lanes download the
+check uses QEMU to list tests without executing their bodies. The 17 root test lanes download the
 private run's binary archive and execute their existing Rust test harnesses and filters without
 invoking a compiler. The archive includes helper executables, generated runtime files and shared
 libraries, and expires after one day.
@@ -59,6 +59,13 @@ path. Consumers verify the source SHA, checkout path and Ubuntu 24.04 AMD64 runt
 A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
+
+The integration matrix has 20 jobs. Short suites share setup: root unit tests, files/Yrs,
+Redis/server-info and notifications run together; structured/custom spaces share a job; AI and
+authentication/user tests share another. SQL tests use two jobs (access and storage). Long suites,
+search, database indexing, whitelist, SCIM and LDAP keep their own stacks. Modules and tests still
+run serially within each job, with seeded account deletion last. Keep module filters and skips
+when regrouping suites so coverage and isolation are preserved.
 
 The laptop keeps registry downloads, Git dependencies and the complete Cargo `target/` directory in
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
