@@ -1,5 +1,25 @@
 # AppFlowy-CI
 
+Cloud integration images build on the ARM64 laptop through Premium's
+`build_ci_images_self_hosted.yml`; all test, coverage and cache jobs stay on `ubuntu-latest`.
+The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
+are downloaded from the private Premium run with their existing `latest-amd64` tags.
+
+Merge the Premium builder workflow before enabling this CI change. The existing
+`ADMIN_GITHUB_TOKEN` secret needs Premium repository access with Contents read and Actions write
+(dispatch/cancel builds and download artifacts). The five runner registrations remain in Premium;
+AppFlowy-CI needs no registered runner.
+
+Manual runs default `image_builder` to `self-hosted`. Choose `github-hosted` to use the existing
+image build jobs when the laptop is unavailable or an older Cloud ref is unsupported. For automatic
+runs, set repository variable `CLOUD_IMAGE_BUILD_RUNNER=github-hosted` to use that fallback;
+unset it or set `self-hosted` for laptop builds. The caller waits up to 330 minutes, links the private
+build in its job summary and attempts to cancel only that build if interrupted.
+
+Release and integration image builds may overlap within a shared **16 CPU / 80 GiB** laptop budget.
+Its limits and runner setup are documented in Premium's `doc/context/ci/self_hosted_runner_context.md`.
+CI images are artifacts, not Docker Hub releases. Image artifact retention is one day.
+
 Cloud integration tests use `https://localhost`. The workflow generates a short-lived
 localhost certificate, installs its CA in the runner's system trust store, and
 configures the server and Flutter client to use HTTPS/WSS. Public Form routes
