@@ -50,7 +50,7 @@ tests. Keep certificate verification enabled when reproducing this setup.
 The private run's fifth job cross-compiles the root Cloud tests once with `CLOUD_TEST_FEATURES`,
 alongside its four image jobs. It uses the caller's pinned CI tools commit and `RUST_TOOLCHAIN`.
 ARM64 Rust/C/C++ compilers produce `x86_64-unknown-linux-gnu` binaries; only the Ubuntu 24.04 startup
-check uses QEMU to list tests without executing their bodies. The 17 root test lanes download the
+check uses QEMU to list tests without executing their bodies. The 12 root test lanes download the
 private run's binary archive and execute their existing Rust test harnesses and filters without
 invoking a compiler. The archive includes helper executables, generated runtime files and shared
 libraries, and expires after one day.
@@ -60,12 +60,32 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
-The integration matrix has 20 jobs. Short suites share setup: root unit tests, files/Yrs,
-Redis/server-info and notifications run together; structured/custom spaces share a job; AI and
-authentication/user tests share another. SQL tests use two jobs (access and storage). Long suites,
-search, database indexing, whitelist, SCIM and LDAP keep their own stacks. Modules and tests still
-run serially within each job, with seeded account deletion last. Keep module filters and skips
-when regrouping suites so coverage and isolation are preserved.
+The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
+
+| Topic | Suites |
+| --- | --- |
+| Core APIs and utilities | Root unit tests, files/Yrs, Redis/server-info, cache, folders, MCP, mentions and notifications |
+| Workspace management | Workspace lifecycle, membership, invitations and workspace APIs |
+| Permissions and spaces | Workspace permissions, structured spaces and custom spaces |
+| Import and publishing | Document/Notion imports, page views and publishing |
+| Databases | Database tests, excluding the index test |
+| Realtime collaboration | Collab integration tests |
+| AI and authentication | AI, GoTrue, OIDC and user APIs |
+| SQL persistence | SQL core, permissions, collab and workspace persistence |
+| Shared libraries | Workspace-member package tests |
+| Search and indexing | Database index test first, then search integration tests |
+| Signup whitelist | Isolated GoTrue whitelist and system-configuration tests |
+| SCIM provisioning | SCIM tests with Authentik |
+| LDAP login | LDAP tests with OpenLDAP |
+| Search service | Search package tests |
+| Worker service | Worker package tests |
+
+Each topic has its own Docker stack. Modules and tests run serially within it; root integration
+topics finish with seeded account deletion. Database history stays separate from search to avoid
+an indexing backlog; whitelist, SCIM and LDAP retain their dedicated environments. Preserve module
+filters and skips when regrouping suites. The 15-job limit covers this integration matrix; build,
+coverage and cache-contract jobs
+have their own scheduling.
 
 The laptop keeps registry downloads, Git dependencies and the complete Cargo `target/` directory in
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
