@@ -1,0 +1,39 @@
+name: Cancel obsolete CI
+
+on:
+  pull_request_target:
+    types: [closed]
+  repository_dispatch:
+    types: [ci-pr-closed]
+  workflow_run:
+    workflows: [Webhook Receiver for Private Repos, AppFlowy-Cloud Integration Tests]
+    types: [completed]
+  # Catch late dispatches and retry cleanup if cancellation raced with job startup.
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cancel-obsolete-ci
+  cancel-in-progress: false
+
+jobs:
+  cancel:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      contains(fromJSON('["cancelled", "timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Privileged events must never execute scripts from a PR head or its artifacts.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Cancel closed-PR runs and children of cancelled attempts
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: python3 .github/scripts/ci_run_lifecycle.py --apply

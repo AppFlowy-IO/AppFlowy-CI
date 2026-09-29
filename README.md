@@ -5,7 +5,7 @@ Cloud integration images build on the ARM64 laptop through Premium's
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
 are downloaded from the private Premium run with their existing `latest-amd64` tags.
 
-Merge the Premium builder workflow before enabling this CI change. The existing
+The Premium builder workflow must be available before using laptop builds. The existing
 `ADMIN_GITHUB_TOKEN` secret needs Premium repository access with Contents read and Actions write
 (dispatch/cancel builds and download artifacts). The five runner registrations remain in Premium;
 AppFlowy-CI needs no registered runner.
@@ -23,6 +23,19 @@ current build settings are documented in Premium's `doc/context/ci/self_hosted_r
 Cloud's CI image enables test features, and CI images use the `latest-amd64` artifact tags.
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
+
+CI run titles record the source repository, PR number and parent run attempt.
+Closing or merging a PR requests cleanup through `cancel_obsolete_ci.yaml`; cancelling a webhook
+or image-request run also cancels its children, including the laptop image build. A five-minute
+schedule catches delayed dispatches and retries cleanup. Only identified PR/parent runs are cancelled;
+post-merge branch builds and release publishing continue.
+
+Both private source repositories send `ci-pr-closed` using their existing `PUBLIC_REPO_TOKEN`.
+Cleanup uses `ADMIN_GITHUB_TOKEN` with Pull requests read on the source repositories and Actions write
+on AppFlowy-CI and Cloud Premium. It executes only default-branch code. Merge the AppFlowy-CI changes
+first, then the source notification workflows. Older dispatches without the new identity cannot be
+matched safely and need manual cleanup. Cleanup jobs can themselves queue behind GitHub runner load.
+Preview decisions locally with `python3 .github/scripts/ci_run_lifecycle.py`; add `--apply` to cancel.
 
 Cloud integration tests use `https://localhost`. The workflow generates a short-lived
 localhost certificate, installs its CA in the runner's system trust store, and
