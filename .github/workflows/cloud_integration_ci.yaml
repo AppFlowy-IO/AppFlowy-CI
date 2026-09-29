@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       image_builder:
-        description: Where to build Docker images (tests always run on GitHub)
+        description: Where to build images and Cloud test binaries (tests run on GitHub)
         type: choice
         required: true
         default: self-hosted
@@ -87,7 +87,7 @@ jobs:
           printf 'builder=%s\n' "$IMAGE_BUILDER" >> "$GITHUB_OUTPUT"
 
   build_self_hosted:
-    name: Wait for self-hosted images
+    name: Wait for self-hosted images and Cloud test binaries
     needs: image_source
     if: needs.image_source.outputs.builder == 'self-hosted'
     runs-on: ubuntu-latest
@@ -104,6 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+          CI_TOOLS_SHA: ${{ github.sha }}
         run: python3 .github/scripts/request_image_build.py
 
   # The matrices below select test modules through explicit allow-lists, whose
@@ -480,8 +481,9 @@ jobs:
           retention-days: 1
 
   build_test_binaries:
-    name: Compile shared Cloud test binaries (AMD64)
+    name: Compile shared Cloud test binaries (GitHub fallback)
     needs: image_source
+    if: needs.image_source.outputs.builder == 'github-hosted'
     # Keep the binary producer and consumers on one OS release during ubuntu-latest migrations.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -650,10 +652,10 @@ jobs:
     needs: [image_source, build_test_binaries, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
     if: >-
       always() && !cancelled() && needs.image_source.result == 'success' &&
-      needs.build_test_binaries.result == 'success' &&
       ((needs.image_source.outputs.builder == 'self-hosted' &&
         needs.build_self_hosted.result == 'success') ||
        (needs.image_source.outputs.builder == 'github-hosted' &&
+        needs.build_test_binaries.result == 'success' &&
         needs.build_cloud.result == 'success' && needs.build_worker.result == 'success' &&
         needs.build_search.result == 'success' && needs.build_mcp.result == 'success'))
     timeout-minutes: 60
@@ -874,6 +876,9 @@ jobs:
         with:
           name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
           path: ${{ runner.temp }}/cloud-test-binaries
+          repository: ${{ needs.build_self_hosted.outputs.run_id && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || github.repository }}
+          run-id: ${{ needs.build_self_hosted.outputs.run_id || github.run_id }}
+          github-token: ${{ needs.build_self_hosted.outputs.run_id && secrets.ADMIN_GITHUB_TOKEN || github.token }}
 
       - name: Restore and verify shared Cloud test binaries
         if: env.CLOUD_CACHE_GROUP == 'root'

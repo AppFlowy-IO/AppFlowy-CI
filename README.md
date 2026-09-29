@@ -1,22 +1,22 @@
 # AppFlowy-CI
 
-Cloud integration images build on the ARM64 laptop through AppFlowy-Cloud-Premium's
-`build_ci_images_self_hosted.yml`; test compilation, test execution and coverage stay on GitHub runners.
+Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
+AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Tests and coverage run on GitHub runners.
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
 are downloaded from the private Cloud Premium run with their existing `latest-amd64` tags.
 
-The Cloud Premium builder workflow must be available before using laptop builds. The existing
+Merge the Cloud Premium builder's `ci_tools_sha` support before enabling this caller. The existing
 `ADMIN_GITHUB_TOKEN` secret needs Cloud Premium access with Contents read and Actions write
 (dispatch/cancel builds and download artifacts). The five runners are registered in
 `AppFlowy-IO/AppFlowy-Cloud-Premium`; AppFlowy-CI needs no registered runner.
 
 Manual runs default `image_builder` to `self-hosted`. Choose `github-hosted` to use the existing
-image build jobs when the laptop is unavailable or an older Cloud ref is unsupported. For automatic
-runs, set repository variable `CLOUD_IMAGE_BUILD_RUNNER=github-hosted` to use that fallback;
-unset it or set `self-hosted` for laptop builds. `Wait for self-hosted images` dispatches one private
-build and waits up to 330 minutes, reporting status changes and progress about once per minute.
+image and shared test build jobs when the laptop is unavailable. For automatic runs, set repository
+variable `CLOUD_IMAGE_BUILD_RUNNER=github-hosted` to use that fallback;
+unset it or set `self-hosted` for laptop builds. `Wait for self-hosted images and Cloud test binaries`
+dispatches one private build and waits up to 330 minutes, reporting progress about once per minute.
 It links that build in its job summary and attempts to cancel only that build if interrupted. The four
-`GitHub fallback` image jobs are skipped in this mode.
+`GitHub fallback` image jobs and GitHub's shared test compilation are skipped in this mode.
 
 Release and integration builds have separate workflow queues and image caches. The laptop's
 current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
@@ -24,10 +24,10 @@ Cloud's CI image enables test features, and CI images use the `latest-amd64` art
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
 
-Automatic cleanup covers only `cloud_integration_ci.yaml` and its private laptop image builds.
+Automatic cleanup covers only `cloud_integration_ci.yaml` and its private laptop builds.
 The integration run title records the Cloud PR and parent run attempt. Closing or merging that PR,
-or cancelling its parent webhook, cancels the integration run and its image build. Cancelling the
-integration run also cancels its image build. Other workflows, including AppFlowy-Premium client
+or cancelling its parent webhook, cancels the integration run and its image/test build. Cancelling the
+integration run also cancels its private build. Other workflows, including AppFlowy-Premium client
 CI, are outside this cleanup.
 
 Integration result notifications use `!cancelled()`: successful and failed runs report results,
@@ -47,21 +47,29 @@ configures the server and Flutter client to use HTTPS/WSS. Public Form routes
 reject plaintext HTTP, so changing the cloud URL back to HTTP breaks submission
 tests. Keep certificate verification enabled when reproducing this setup.
 
-`Compile shared Cloud test binaries (AMD64)` starts alongside image builds and compiles the root
-Cloud tests once with `CLOUD_TEST_FEATURES`. The 24 root test lanes download that run's binary archive
-and execute their existing Rust test harnesses and filters without invoking a compiler. The archive
-includes helper executables, generated runtime files and shared libraries, and expires after one day.
-Producer and consumers use `ubuntu-24.04`, the same source SHA and the same absolute checkout path;
-the archive helper verifies these before use. A missing or mismatched archive fails the job.
+The private run's fifth job cross-compiles the root Cloud tests once with `CLOUD_TEST_FEATURES`,
+alongside its four image jobs. It uses the caller's pinned CI tools commit and `RUST_TOOLCHAIN`.
+ARM64 Rust/C/C++ compilers produce `x86_64-unknown-linux-gnu` binaries; only the Ubuntu 24.04 startup
+check uses QEMU to list tests without executing their bodies. The 24 root test lanes download the
+private run's binary archive and execute their existing Rust test harnesses and filters without
+invoking a compiler. The archive includes helper executables, generated runtime files and shared
+libraries, and expires after one day.
+Compilation uses `/home/runner/work/AppFlowy-CI/AppFlowy-CI` inside Docker to match GitHub's checkout
+path. Consumers verify the source SHA, checkout path and Ubuntu 24.04 AMD64 runtime before use.
+A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
-Compiling jobs use two Rust caches: Cargo dependency snapshots and `sccache` with GitHub's cache v2
-API. The shared root build and the three package lanes each own a snapshot and are its only writers.
+The laptop keeps registry downloads, Git dependencies and the complete Cargo `target/` directory in
+the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
+CPU and memory without Docker resource quotas. Its cache survives runner jobs and laptop restarts.
+
+The GitHub fallback compiler and the three package lanes use Cargo dependency snapshots and
+`sccache` with GitHub's cache v2 API. Each owns a snapshot and is its only writer.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. Keep
 the pinned Rust toolchain and `CARGO_INCREMENTAL=0`; compiler caching requires incremental builds off.
 The workflow pins the sccache action and binary, retries startup once, and falls back to ordinary
-compilation if compiler-cache setup fails. Each compiling job's summary shows the exact Cargo cache hit,
+compilation if compiler-cache setup fails. Each GitHub compiling job's summary shows the Cargo cache hit,
 writer role, and compiler cache hits/misses. GitHub cache storage is shared with other workflows;
 check repository Actions cache usage if snapshots are repeatedly evicted. A new cache group or
 dependency/toolchain change needs a successful writer run before later runs can reuse its snapshot.

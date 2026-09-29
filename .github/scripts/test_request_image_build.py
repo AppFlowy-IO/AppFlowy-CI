@@ -80,6 +80,37 @@ class RequestTests(unittest.TestCase):
             "ref": "main", "inputs": {"source_sha": SHA, "request_id": REQUEST_ID},
         })
 
+    def test_same_private_run_builds_images_and_pinned_test_binaries(self):
+        tools = {"ci_tools_sha": "b" * 40, "test_features": "ai-test-enabled,sync-v2,ci-test",
+                 "test_rust_toolchain": "1.98.0"}
+        self.github.artifacts.append({"name": f"cloud-test-binaries-{SHA}", "expired": False})
+        self.assertEqual(self.request(**tools), 42)
+        self.assertEqual(len(self.github.writes), 1)
+        self.assertEqual(self.github.writes[0][2]["inputs"], {
+            "source_sha": SHA, "request_id": REQUEST_ID, **tools,
+        })
+
+    def test_test_archive_is_required_even_when_all_images_succeed(self):
+        for archive in (None, {"name": f"cloud-test-binaries-{SHA}", "expired": True},
+                        {"name": f'cloud-test-binaries-{"c" * 40}', "expired": False}):
+            with self.subTest(archive=archive):
+                self.github.artifacts = [{"name": name, "expired": False} for name in build.ARTIFACTS]
+                if archive:
+                    self.github.artifacts.append(archive)
+                with self.assertRaisesRegex(RuntimeError, "cloud-test-binaries"):
+                    self.request(ci_tools_sha="b" * 40, test_features="ci-test",
+                                 test_rust_toolchain="1.98.0")
+                self.assertFalse(self.output.exists())
+
+    def test_invalid_test_build_settings_cannot_dispatch(self):
+        valid = {"ci_tools_sha": "b" * 40, "test_features": "ci-test",
+                 "test_rust_toolchain": "1.98.0"}
+        for key, value in (("ci_tools_sha", "main"), ("test_features", ""),
+                           ("test_features", "ci-test\nother"), ("test_rust_toolchain", "stable")):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.request(**{**valid, key: value})
+        self.assertFalse(self.github.calls)
+
     def test_reuses_existing_correlated_build_without_dispatching_twice(self):
         self.github.request("POST", "example/dispatches")
         self.github.calls.clear()
