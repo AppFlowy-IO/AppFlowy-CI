@@ -30,6 +30,9 @@ or cancelling its parent webhook, cancels the integration run and its image buil
 integration run also cancels its image build. Other workflows, including AppFlowy-Premium client
 CI, are outside this cleanup.
 
+Integration result notifications use `!cancelled()`: successful and failed runs report results,
+while cancelled runs release their PR concurrency slot without waiting for a notification runner.
+
 `cancel_obsolete_ci.yaml` checks every five minutes and after parent cancellations. For prompt PR-close
 cleanup, Cloud Premium sends `ci-pr-closed` with `source_repository=AppFlowy-IO/AppFlowy-Cloud-Premium`
 using `PUBLIC_REPO_TOKEN`. Cleanup uses `ADMIN_GITHUB_TOKEN` with Cloud Pull requests read and Actions
