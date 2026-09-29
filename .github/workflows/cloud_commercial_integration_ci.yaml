@@ -150,6 +150,9 @@ jobs:
 
       - name: Replace values in .env
         run: |
+          # GoTrue owns a separate PostgreSQL pool. Keep user-deletion cascades on the same
+          # self-host storage policy as every image built by this workflow.
+          sed -i '/^GOTRUE_DATABASE_URL=/s/$/\&appflowy.storage_policy=self_hosted/' .env
           # log level
           sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=trace,appflowy_worker=trace,database=trace,indexer=trace'|' .env
           # GoTrue has a separate mailer from appflowy_cloud. Keep confirmation enabled so CI
