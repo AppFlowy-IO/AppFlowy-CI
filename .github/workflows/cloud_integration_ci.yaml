@@ -492,6 +492,9 @@ jobs:
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
+      # Restore Cargo artifacts before enabling the optional compiler wrapper so
+      # cache availability cannot change the Cargo snapshot's environment hash.
+      RUSTC_WRAPPER: ""
     strategy:
       fail-fast: false
       matrix:
@@ -500,6 +503,7 @@ jobs:
           # filters so split integration suites cannot accidentally drop unit coverage.
           - test_service: "appflowy_cloud_root_unit"
             test_modules: ""
+            cache_writer: true
           # Heavy workspace integration tests are split by Rust module path.
           # Each matrix entry still runs tests serially inside one Docker stack,
           # but independent suites can run in parallel across GitHub runners.
@@ -649,6 +653,8 @@ jobs:
               sql_test::workspace_test
           - test_service: "appflowy_cloud_member_packages"
             test_modules: ""
+            cache_group: members
+            cache_writer: true
           # Group 3: Search tests (dedicated docker instance for stable indexing)
           - test_service: "appflowy_cloud_search"
             test_modules: "search"
@@ -671,8 +677,12 @@ jobs:
             test_modules: "ldap"
           - test_service: "appflowy_search_package"
             test_modules: ""
+            cache_group: search
+            cache_writer: true
           - test_service: "appflowy_worker"
             test_modules: ""
+            cache_group: worker
+            cache_writer: true
     steps:
       - name: Checkout Private Repo
         uses: actions/checkout@v4
@@ -685,32 +695,61 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
+      # Root suites have the same Cargo features. Keep package-only configurations
+      # separate, and let one lane per group save each immutable snapshot.
+      - name: Restore Cargo dependencies
+        id: cargo_cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: cloud-integration-${{ matrix.cache_group || 'root' }}
+          save-if: ${{ matrix.cache_writer == true }}
+          cache-bin: false
+          cache-all-crates: false
+
       - name: Setup sccache
         id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
+          # Report only the server actually used for compilation. The action's
+          # post step otherwise starts a fresh server even after setup failed.
+          disable_annotations: true
         continue-on-error: true
 
       - name: Configure sccache
-        if: steps.sccache.outcome == 'success'
+        id: sccache_config
+        timeout-minutes: 2
+        env:
+          SCCACHE_SETUP_OUTCOME: ${{ steps.sccache.outcome }}
         run: |
-          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-          sccache --stop-server 2>/dev/null || true
-          export SCCACHE_GHA_ENABLED=true
-          export RUSTC_WRAPPER=
-          if timeout 10 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
-            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-            echo "sccache is available and configured"
-          else
-            sccache --stop-server 2>/dev/null || true
-            echo "sccache unavailable, proceeding without it"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          if [[ "$SCCACHE_SETUP_OUTCOME" != success ]]; then
+            echo "::warning::sccache installation failed; using the Cargo dependency cache only."
+            exit 0
+          fi
+          if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "::warning::GitHub cache v2 credentials are unavailable; compiler caching is disabled."
+            exit 0
           fi
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "."
-          shared-key: cloud-integration
-          cache-all-crates: true
+          export SCCACHE_GHA_ENABLED=true
+          timeout 5 sccache --stop-server 2>/dev/null || true
+          for attempt in 1 2; do
+            if timeout 15 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "sccache is using the GitHub Actions cache."
+              exit 0
+            fi
+            timeout 5 sccache --stop-server 2>/dev/null || true
+            if [[ "$attempt" == 1 ]]; then
+              echo "Retrying compiler cache startup in 3 seconds."
+              sleep 3
+            fi
+          done
+          echo "::warning::sccache startup failed twice; using the Cargo dependency cache only."
 
       - name: Free disk space on runner
         run: |
@@ -1045,9 +1084,39 @@ jobs:
         timeout-minutes: 5
         run: bash script/test_final_account_deletion.sh --features ai-test-enabled,sync-v2,ci-test
 
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
+      - name: Report Rust cache usage
+        if: ${{ !cancelled() }}
+        env:
+          CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
+          CACHE_WRITER: ${{ matrix.cache_writer == true }}
+          CARGO_CACHE_HIT: ${{ steps.cargo_cache.outputs.cache-hit || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache_config.outputs.enabled || 'false' }}
+        run: |
+          # Backticks in the printf formats are literal Markdown code spans.
+          # shellcheck disable=SC2016
+          {
+            printf '### Rust build cache\n\n'
+            printf -- '- Cargo cache group: `%s`\n' "$CACHE_GROUP"
+            printf -- '- Exact Cargo cache hit: `%s` (false may include a fallback restore)\n' "$CARGO_CACHE_HIT"
+            printf -- '- Cargo snapshot writer: `%s`\n' "$CACHE_WRITER"
+            printf -- '- Compiler cache enabled: `%s`\n\n' "$SCCACHE_ENABLED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$SCCACHE_ENABLED" == true ]]; then
+            if timeout 10 sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt" 2>&1; then
+              cat "$RUNNER_TEMP/sccache-stats.txt"
+              {
+                printf '```text\n'
+                cat "$RUNNER_TEMP/sccache-stats.txt"
+                printf '\n```\n'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Unable to collect compiler cache statistics."
+              printf 'Compiler cache statistics unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            printf 'Compiler caching was unavailable; see the setup warnings above.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Collect Docker logs
         if: failure()
