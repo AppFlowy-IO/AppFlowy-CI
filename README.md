@@ -1,14 +1,14 @@
 # AppFlowy-CI
 
-Cloud integration images build on the ARM64 laptop through Premium's
+Cloud integration images build on the ARM64 laptop through AppFlowy-Cloud-Premium's
 `build_ci_images_self_hosted.yml`; all test, coverage and cache jobs stay on `ubuntu-latest`.
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
-are downloaded from the private Premium run with their existing `latest-amd64` tags.
+are downloaded from the private Cloud Premium run with their existing `latest-amd64` tags.
 
-The Premium builder workflow must be available before using laptop builds. The existing
-`ADMIN_GITHUB_TOKEN` secret needs Premium repository access with Contents read and Actions write
-(dispatch/cancel builds and download artifacts). The five runner registrations remain in Premium;
-AppFlowy-CI needs no registered runner.
+The Cloud Premium builder workflow must be available before using laptop builds. The existing
+`ADMIN_GITHUB_TOKEN` secret needs Cloud Premium access with Contents read and Actions write
+(dispatch/cancel builds and download artifacts). The five runners are registered in
+`AppFlowy-IO/AppFlowy-Cloud-Premium`; AppFlowy-CI needs no registered runner.
 
 Manual runs default `image_builder` to `self-hosted`. Choose `github-hosted` to use the existing
 image build jobs when the laptop is unavailable or an older Cloud ref is unsupported. For automatic
@@ -19,22 +19,23 @@ It links that build in its job summary and attempts to cancel only that build if
 `GitHub fallback` image jobs are skipped in this mode.
 
 Release and integration builds have separate workflow queues and image caches. The laptop's
-current build settings are documented in Premium's `doc/context/ci/self_hosted_runner_context.md`.
+current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
 Cloud's CI image enables test features, and CI images use the `latest-amd64` artifact tags.
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
 
-CI run titles record the source repository, PR number and parent run attempt.
-Closing or merging a PR requests cleanup through `cancel_obsolete_ci.yaml`; cancelling a webhook
-or image-request run also cancels its children, including the laptop image build. A five-minute
-schedule catches delayed dispatches and retries cleanup. Only identified PR/parent runs are cancelled;
-post-merge branch builds and release publishing continue.
+Automatic cleanup covers only `cloud_integration_ci.yaml` and its private laptop image builds.
+The integration run title records the Cloud PR and parent run attempt. Closing or merging that PR,
+or cancelling its parent webhook, cancels the integration run and its image build. Cancelling the
+integration run also cancels its image build. Other workflows, including AppFlowy-Premium client
+CI, are outside this cleanup.
 
-Both private source repositories send `ci-pr-closed` using their existing `PUBLIC_REPO_TOKEN`.
-Cleanup uses `ADMIN_GITHUB_TOKEN` with Pull requests read on the source repositories and Actions write
-on AppFlowy-CI and Cloud Premium. It executes only default-branch code. Merge the AppFlowy-CI changes
-first, then the source notification workflows. Older dispatches without the new identity cannot be
-matched safely and need manual cleanup. Cleanup jobs can themselves queue behind GitHub runner load.
+`cancel_obsolete_ci.yaml` checks every five minutes and after parent cancellations. For prompt PR-close
+cleanup, Cloud Premium sends `ci-pr-closed` with `source_repository=AppFlowy-IO/AppFlowy-Cloud-Premium`
+using `PUBLIC_REPO_TOKEN`. Cleanup uses `ADMIN_GITHUB_TOKEN` with Cloud Pull requests read and Actions
+write on AppFlowy-CI and Cloud Premium, and executes only default-branch code. Post-merge branch
+builds and release publishing continue. Older integration dispatches without identity need manual
+cleanup; cleanup jobs can queue behind GitHub runner load.
 Preview decisions locally with `python3 .github/scripts/ci_run_lifecycle.py`; add `--apply` to cancel.
 
 Cloud integration tests use `https://localhost`. The workflow generates a short-lived
