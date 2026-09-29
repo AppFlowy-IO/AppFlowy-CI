@@ -528,6 +528,7 @@ jobs:
               workspace::mention_person_test
               workspace::nango_integration_test
               workspace::pdf_export_test
+              workspace::plan_fixture
               workspace::quick_note_test
               workspace::template_test
               workspace::workspace_crud_test
