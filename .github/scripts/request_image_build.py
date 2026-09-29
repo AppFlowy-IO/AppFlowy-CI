@@ -47,11 +47,24 @@ def find_run(request, title):
 
 
 def request_build(source_sha, request_id, request=api, wait=time.sleep,
-                  now=time.monotonic, timeout=330 * 60):
+                  now=time.monotonic, timeout=330 * 60, *, ci_tools_sha=None,
+                  test_features=None, test_rust_toolchain=None):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
         raise ValueError("Expected the AppFlowy-CI run ID and attempt")
+    inputs = {"source_sha": source_sha, "request_id": request_id}
+    required_artifacts = set(ARTIFACTS)
+    if ci_tools_sha:
+        if not re.fullmatch(r"[a-f0-9]{40}", ci_tools_sha):
+            raise ValueError("Expected an immutable AppFlowy-CI tools commit")
+        if not re.fullmatch(r"[a-zA-Z0-9,_-]+", test_features or ""):
+            raise ValueError("Expected the Cloud test Cargo features")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", test_rust_toolchain or ""):
+            raise ValueError("Expected a pinned Rust toolchain version")
+        inputs.update(ci_tools_sha=ci_tools_sha, test_features=test_features,
+                      test_rust_toolchain=test_rust_toolchain)
+        required_artifacts.add(f"cloud-test-binaries-{source_sha}")
     title = f"CI images {request_id} ({source_sha})"
     started = now()
     deadline = started + timeout
@@ -61,7 +74,7 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         if run is None:
             submitted = True
             request("POST", f"{API_ROOT}/workflows/{WORKFLOW}/dispatches", {
-                "ref": "main", "inputs": {"source_sha": source_sha, "request_id": request_id},
+                "ref": "main", "inputs": inputs,
             })
         discovery_deadline = now() + 180
         while run is None and now() < discovery_deadline:
@@ -75,7 +88,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         url = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
         print(f"Waiting for {url}", flush=True)
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-            print(f"Images for {source_sha}: [self-hosted build]({url}).", file=summary)
+            description = "Images and compiled Cloud tests" if ci_tools_sha else "Images"
+            print(f"{description} for {source_sha}: [self-hosted build]({url}).", file=summary)
         last_status = None
         last_report = started
         while True:
@@ -95,8 +109,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
             raise RuntimeError(f"Image build {run['conclusion']}: {url}")
         artifacts = request("GET", f"{API_ROOT}/runs/{run_id}/artifacts?per_page=100")
         available = {item["name"] for item in artifacts["artifacts"] if not item["expired"]}
-        if not ARTIFACTS.issubset(available):
-            raise RuntimeError(f"Image build is missing artifacts: {sorted(ARTIFACTS - available)}")
+        if not required_artifacts.issubset(available):
+            raise RuntimeError(f"Private build is missing artifacts: {sorted(required_artifacts - available)}")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"run_id={run_id}", file=output)
         return run_id
@@ -122,6 +136,9 @@ def main():
     request_build(
         os.environ["SOURCE_SHA"],
         f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
+        ci_tools_sha=os.environ.get("CI_TOOLS_SHA"),
+        test_features=os.environ.get("CLOUD_TEST_FEATURES"),
+        test_rust_toolchain=os.environ.get("RUST_TOOLCHAIN"),
     )
 
 

@@ -1,0 +1,7 @@
+# Override the application's image ignore file, which excludes its tests/ directory.
+.git
+**/target
+**/node_modules
+.env
+.env.*
+ci-tools

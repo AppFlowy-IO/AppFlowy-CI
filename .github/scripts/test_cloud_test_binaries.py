@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -54,7 +55,9 @@ ci-test = []
 fn main() {
     let out = env::var("OUT_DIR").unwrap();
     fs::write(format!("{out}/fixture.txt"), "runtime fixture").unwrap();
-    assert!(Command::new("cc").args(["-shared", "-fPIC", "native.c", "-o",
+    let target = env::var("TARGET").unwrap().replace('-', "_");
+    let compiler = env::var(format!("CC_{target}")).unwrap_or_else(|_| "cc".to_owned());
+    assert!(Command::new(compiler).args(["-shared", "-fPIC", "native.c", "-o",
         &format!("{out}/libfixture.so")]).status().unwrap().success());
     println!("cargo:rustc-link-search=native={out}");
     println!("cargo:rustc-link-lib=dylib=fixture");
@@ -180,6 +183,17 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
         self.assertIn("test binary_unit ... ok", result.stdout)
         self.assertNotIn("Running precompiled main", result.stdout)
 
+    def test_target_runtime_verification_only_lists_tests(self):
+        marker = self.workspace / "final-test-ran"
+        marker.unlink(missing_ok=True)
+        result = self.helper("verify", "--archive", str(self.archive), "--source-sha",
+                             self.manifest["source_sha"], env=self.run_env)
+        self.assertIn("Verified startup of 4 test executables", result.stdout)
+        self.assertFalse(marker.exists())
+        result = self.helper("verify", "--source-sha", self.manifest["source_sha"], env=self.run_env)
+        self.assertIn("Verified startup of 4 test executables", result.stdout)
+        self.assertFalse(marker.exists())
+
     def test_explicit_standalone_target(self):
         result = self.run_tests("--test", "separate", "--", "--test-threads=1")
         self.assertIn("test separate_target ... ok", result.stdout)
@@ -272,6 +286,29 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
 
 
 class SharedBuildWorkflowTest(unittest.TestCase):
+    def matrix_will_run(self, builder, **results):
+        needs = {}
+        for job in WORKFLOW["jobs"]["test"]["needs"]:
+            unused = ((job == "build_self_hosted" and builder == "github-hosted")
+                      or (job.startswith("build_") and job != "build_self_hosted"
+                          and builder == "self-hosted"))
+            needs[job] = SimpleNamespace(result=results.get(job, "skipped" if unused else "success"))
+        needs["image_source"].outputs = SimpleNamespace(builder=builder)
+        expression = WORKFLOW["jobs"]["test"]["if"]
+        expression = expression.replace("always()", "True").replace("!cancelled()", "True")
+        expression = expression.replace("&&", "and").replace("||", "or")
+        return eval(expression, {"__builtins__": {}}, {"needs": SimpleNamespace(**needs)})
+
+    def test_unused_github_compilation_does_not_skip_self_hosted_tests(self):
+        self.assertTrue(self.matrix_will_run("self-hosted"))
+        self.assertTrue(self.matrix_will_run("github-hosted"))
+        for builder, job in (("self-hosted", "build_self_hosted"),
+                             ("github-hosted", "build_test_binaries"),
+                             ("github-hosted", "build_cloud")):
+            for result in ("failure", "skipped", "cancelled"):
+                with self.subTest(builder=builder, job=job, result=result):
+                    self.assertFalse(self.matrix_will_run(builder, **{job: result}))
+
     def test_shared_compilation_can_overlap_image_builds(self):
         jobs = WORKFLOW["jobs"]
         self.assertEqual(jobs["build_test_binaries"]["needs"], "image_source")
@@ -279,6 +316,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         self.assertEqual(jobs["test"]["runs-on"], "ubuntu-24.04")
         self.assertIn("build_test_binaries", jobs["test"]["needs"])
         self.assertIn("needs.build_test_binaries.result == 'success'", jobs["test"]["if"])
+        self.assertEqual(jobs["build_test_binaries"]["if"],
+                         "needs.image_source.outputs.builder == 'github-hosted'")
 
     def test_consumers_download_the_producers_source_specific_artifact(self):
         upload = step("build_test_binaries", "Upload shared Cloud test binaries")["with"]
@@ -286,6 +325,27 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         self.assertEqual(upload["name"], download["name"])
         self.assertIn("needs.image_source.outputs.sha", upload["name"])
         self.assertTrue(upload["overwrite"])  # A full rerun replaces this run's archive.
+        images = step("test", "Download Docker Images")["with"]
+        for key in ("repository", "run-id", "github-token"):
+            self.assertEqual(download[key], images[key])
+
+    def test_cross_build_rejects_host_architecture_executables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "binary"
+            header = bytearray(20)
+            header[:6] = b"\x7fELF\x02\x01"
+            header[18:20] = b"\x3e\x00"
+            binary.write_bytes(header)
+            binaries.verify_amd64_executable(binary)
+            header[18:20] = b"\xb7\x00"  # EM_AARCH64
+            binary.write_bytes(header)
+            with self.assertRaisesRegex(ValueError, "AMD64 Linux"):
+                binaries.verify_amd64_executable(binary)
+
+    def test_docker_source_revision_requires_an_immutable_commit(self):
+        for revision in ("main", "a" * 39, "b" * 40 + "\n"):
+            with self.subTest(revision=revision), self.assertRaises(ValueError):
+                binaries.source_revision(revision)
 
     def test_package_lanes_still_use_cargo_and_their_original_package_selections(self):
         lanes = [lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
