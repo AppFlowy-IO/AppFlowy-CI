@@ -1,5 +1,7 @@
 """Test the private build handoff without dispatching GitHub workflows."""
 
+from contextlib import redirect_stdout
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -83,6 +85,23 @@ class RequestTests(unittest.TestCase):
         self.github.calls.clear()
         self.assertEqual(self.request(), 42)
         self.assertFalse(self.github.writes)
+
+    def test_long_wait_reports_progress_without_dispatching_another_build(self):
+        self.github.conclusion = None
+
+        def wait(seconds):
+            self.github.wait(seconds)
+            if self.github.elapsed >= 90:
+                self.github.conclusion = "success"
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(self.request(wait=wait), 42)
+        log = output.getvalue()
+        self.assertIn("Private image build 42: queued", log)
+        self.assertGreaterEqual(log.count("Private image build 42: in_progress"), 2)
+        self.assertIn("Private image build 42: completed", log)
+        self.assertEqual(len(self.github.writes), 1)
 
     def test_failed_build_does_not_start_tests_or_cancel_a_completed_run(self):
         self.github.conclusion = "failure"
