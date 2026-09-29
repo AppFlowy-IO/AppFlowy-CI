@@ -1,9 +1,4 @@
 name: Mobile-CI
-run-name: >-
-  [ci source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
-  pr=${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || 'none' }}
-  parent=${{ github.event.client_payload.parent_run_id && format('{0}-{1}', github.event.client_payload.parent_run_id, github.event.client_payload.parent_run_attempt) || 'none' }}]
-  ${{ github.workflow }}
 
 on:
   repository_dispatch:

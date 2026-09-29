@@ -1,8 +1,6 @@
-name: Cancel obsolete CI
+name: Cancel obsolete Cloud integration CI
 
 on:
-  pull_request_target:
-    types: [closed]
   repository_dispatch:
     types: [ci-pr-closed]
   workflow_run:
@@ -23,8 +21,10 @@ concurrency:
 jobs:
   cancel:
     if: >-
-      github.event_name != 'workflow_run' ||
-      contains(fromJSON('["cancelled", "timed_out"]'), github.event.workflow_run.conclusion)
+      (github.event_name != 'repository_dispatch' ||
+       github.event.client_payload.source_repository == 'AppFlowy-IO/AppFlowy-Cloud-Premium') &&
+      (github.event_name != 'workflow_run' ||
+       contains(fromJSON('["cancelled", "timed_out"]'), github.event.workflow_run.conclusion))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -33,7 +33,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Cancel closed-PR runs and children of cancelled attempts
+      - name: Cancel obsolete Cloud integration runs and their laptop image builds
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: python3 .github/scripts/ci_run_lifecycle.py --apply

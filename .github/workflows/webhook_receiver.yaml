@@ -1,9 +1,4 @@
 name: Webhook Receiver for Private Repos
-run-name: >-
-  [ci source=${{ github.event.action == 'cloud-premium-webhook' && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || format('AppFlowy-IO/{0}', inputs.source_repo || 'AppFlowy-Premium') }}
-  pr=${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || 'none' }}
-  parent=${{ github.event.client_payload.parent_run_id && format('{0}-{1}', github.event.client_payload.parent_run_id, github.event.client_payload.parent_run_attempt) || 'none' }}]
-  ${{ github.workflow }}
 
 on:
   repository_dispatch:
@@ -45,7 +40,6 @@ jobs:
   dispatch-workflows:
     runs-on: ubuntu-latest
     outputs:
-      active: ${{ steps.lifecycle.outputs.active }}
       flutter_run_url: ${{ steps.get_run_urls.outputs.flutter_run_url }}
       rust_run_url: ${{ steps.get_run_urls.outputs.rust_run_url }}
       mobile_run_url: ${{ steps.get_run_urls.outputs.mobile_run_url }}
@@ -61,11 +55,6 @@ jobs:
       integration_run_url: ${{ steps.get_run_urls.outputs.integration_run_url }}
       commercial_run_url: ${{ steps.get_run_urls.outputs.commercial_run_url }}
     steps:
-      - name: Checkout trusted CI lifecycle tools
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
       - name: Parse event data
         id: parse
         run: |
@@ -95,14 +84,6 @@ jobs:
 
           echo "execution_id=exec-$(date +%s)-${{ github.run_id }}" >> $GITHUB_OUTPUT
 
-      - name: Check whether the source PR is still open
-        id: lifecycle
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          SOURCE_REPOSITORY: AppFlowy-IO/${{ steps.parse.outputs.source_repo }}
-          PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
-        run: python3 .github/scripts/ci_run_lifecycle.py --check-pr
-
       - name: Display event information
         run: |
           echo "Source Repository: ${{ steps.parse.outputs.source_repo }}"
@@ -113,7 +94,7 @@ jobs:
           echo "Execution ID: ${{ steps.parse.outputs.execution_id }}"
 
       - name: Trigger Flutter CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'flutter')
+        if: contains(steps.parse.outputs.workflows, 'flutter')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -124,13 +105,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "flutter"
             }
 
       - name: Trigger Rust CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'rust') && steps.parse.outputs.source_repo == 'AppFlowy-Premium'
+        if: contains(steps.parse.outputs.workflows, 'rust') && steps.parse.outputs.source_repo == 'AppFlowy-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -141,13 +120,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "rust"
             }
 
       - name: Trigger Mobile CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'mobile')
+        if: contains(steps.parse.outputs.workflows, 'mobile')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -158,13 +135,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "mobile"
             }
 
       - name: Trigger iOS CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'ios')
+        if: contains(steps.parse.outputs.workflows, 'ios')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -175,13 +150,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "ios"
             }
 
       - name: Trigger Rust Coverage
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'rust_coverage')
+        if: contains(steps.parse.outputs.workflows, 'rust_coverage')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -192,13 +165,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "rust_coverage"
             }
 
       - name: Trigger Docker CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'docker')
+        if: contains(steps.parse.outputs.workflows, 'docker')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -209,13 +180,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "docker"
             }
 
       - name: Trigger Commit Lint
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'commit_lint')
+        if: contains(steps.parse.outputs.workflows, 'commit_lint')
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -226,13 +195,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "commit_lint"
             }
 
       - name: Trigger Backend CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'backend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'backend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -243,13 +210,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "backend"
             }
 
       - name: Trigger Frontend CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'frontend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'frontend') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -260,13 +225,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "frontend"
             }
 
       - name: Trigger E2E CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'e2e') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'e2e') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -277,13 +240,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "e2e"
             }
 
       - name: Trigger Cloud Docker CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'cloud_docker') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'cloud_docker') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -294,13 +255,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "cloud_docker"
             }
 
       - name: Trigger Rustlint CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'rustlint') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'rustlint') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -311,13 +270,11 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "rustlint"
             }
 
       - name: Trigger Integration CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'integration') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'integration') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -334,7 +291,7 @@ jobs:
             }
 
       - name: Trigger CommercialIntegration CI
-        if: steps.lifecycle.outputs.active == 'true' && contains(steps.parse.outputs.workflows, 'commercial') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
+        if: contains(steps.parse.outputs.workflows, 'commercial') && steps.parse.outputs.source_repo == 'AppFlowy-Cloud-Premium'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
@@ -345,23 +302,156 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
-              "parent_run_id": "${{ github.run_id }}",
-              "parent_run_attempt": "${{ github.run_attempt }}",
               "workflow_type": "commercial"
             }
 
-      - name: Find the workflows dispatched by this exact attempt
-        if: steps.lifecycle.outputs.active == 'true'
+      - name: Wait for workflows to start and get run URLs
         id: get_run_urls
         env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           WORKFLOWS: ${{ steps.parse.outputs.workflows }}
-        run: python3 .github/scripts/ci_run_lifecycle.py --find-children
+        run: |
+          echo "⏳ Waiting for workflows to start and fetching run URLs..."
+
+
+          declare -A workflow_files=(
+            ["flutter"]="flutter_ci.yaml"
+            ["rust"]="rust_ci.yaml"
+            ["mobile"]="mobile_ci.yml"
+            ["ios"]="ios_ci.yaml"
+            ["rust_coverage"]="rust_coverage.yml"
+            ["docker"]="docker_ci.yml"
+            ["commit_lint"]="commit_lint.yml"
+            ["backend"]="cloud_backend_ci.yaml"
+            ["frontend"]="cloud_frontend_ci.yaml"
+            ["e2e"]="cloud_e2e_ci.yaml"
+            ["cloud_docker"]="cloud_docker_ci.yaml"
+            ["rustlint"]="cloud_rustlint_ci.yaml"
+            ["integration"]="cloud_integration_ci.yaml"
+            ["commercial"]="cloud_commercial_integration_ci.yaml"
+          )
+
+
+          IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
+
+
+          sleep 10
+
+
+          flutter_run_url=""
+          rust_run_url=""
+          mobile_run_url=""
+          ios_run_url=""
+          rust_coverage_run_url=""
+          docker_run_url=""
+          commit_lint_run_url=""
+          backend_run_url=""
+          frontend_run_url=""
+          e2e_run_url=""
+          cloud_docker_run_url=""
+          rustlint_run_url=""
+          integration_run_url=""
+          commercial_run_url=""
+
+          for workflow in "${WORKFLOW_ARRAY[@]}"; do
+            workflow_file="${workflow_files[$workflow]}"
+            if [ -n "$workflow_file" ]; then
+              echo "Fetching latest run for workflow: $workflow_file"
+
+
+              response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
+                "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/workflows/$workflow_file/runs?per_page=5")
+
+
+              for i in {0..4}; do
+                run_event=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].event // "null"')
+                run_created=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].created_at // "null"')
+                run_url=$(echo "$response" | jq -r --arg i "$i" '.workflow_runs[$i | tonumber].html_url // "null"')
+
+                if [ "$run_event" = "null" ]; then
+                  break
+                fi
+
+
+                if [ "$run_event" = "repository_dispatch" ]; then
+                  run_created_timestamp=$(date -d "$run_created" +%s 2>/dev/null || echo "0")
+                  current_timestamp=$(date +%s)
+                  time_diff=$((current_timestamp - run_created_timestamp))
+
+
+                  if [ $time_diff -le 300 ]; then
+                    case $workflow in
+                      "flutter")
+                        flutter_run_url="$run_url"
+                        ;;
+                      "rust")
+                        rust_run_url="$run_url"
+                        ;;
+                      "mobile")
+                        mobile_run_url="$run_url"
+                        ;;
+                      "ios")
+                        ios_run_url="$run_url"
+                        ;;
+                      "rust_coverage")
+                        rust_coverage_run_url="$run_url"
+                        ;;
+                      "docker")
+                        docker_run_url="$run_url"
+                        ;;
+                      "commit_lint")
+                        commit_lint_run_url="$run_url"
+                        ;;
+                      "backend")
+                        backend_run_url="$run_url"
+                        ;;
+                      "frontend")
+                        frontend_run_url="$run_url"
+                        ;;
+                      "e2e")
+                        e2e_run_url="$run_url"
+                        ;;
+                      "cloud_docker")
+                        cloud_docker_run_url="$run_url"
+                        ;;
+                      "rustlint")
+                        rustlint_run_url="$run_url"
+                        ;;
+                      "integration")
+                        integration_run_url="$run_url"
+                        ;;
+                      "commercial")
+                        commercial_run_url="$run_url"
+                        ;;
+                    esac
+                    echo "Found run URL for $workflow: $run_url"
+                    break
+                  fi
+                fi
+              done
+            fi
+          done
+
+
+          echo "flutter_run_url=$flutter_run_url" >> $GITHUB_OUTPUT
+          echo "rust_run_url=$rust_run_url" >> $GITHUB_OUTPUT
+          echo "mobile_run_url=$mobile_run_url" >> $GITHUB_OUTPUT
+          echo "ios_run_url=$ios_run_url" >> $GITHUB_OUTPUT
+          echo "rust_coverage_run_url=$rust_coverage_run_url" >> $GITHUB_OUTPUT
+          echo "docker_run_url=$docker_run_url" >> $GITHUB_OUTPUT
+          echo "commit_lint_run_url=$commit_lint_run_url" >> $GITHUB_OUTPUT
+          echo "backend_run_url=$backend_run_url" >> $GITHUB_OUTPUT
+          echo "frontend_run_url=$frontend_run_url" >> $GITHUB_OUTPUT
+          echo "e2e_run_url=$e2e_run_url" >> $GITHUB_OUTPUT
+          echo "cloud_docker_run_url=$cloud_docker_run_url" >> $GITHUB_OUTPUT
+          echo "rustlint_run_url=$rustlint_run_url" >> $GITHUB_OUTPUT
+          echo "integration_run_url=$integration_run_url" >> $GITHUB_OUTPUT
+          echo "commercial_run_url=$commercial_run_url" >> $GITHUB_OUTPUT
 
   create-pr-comment:
     runs-on: ubuntu-latest
     needs: [dispatch-workflows]
-    if: needs.dispatch-workflows.outputs.active == 'true' && (github.event.client_payload.pr_number || github.event.inputs.pr_number)
+    if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
       - name: Parse event data
         id: parse
@@ -609,7 +699,7 @@ jobs:
   auto-approve-pr:
     runs-on: ubuntu-latest
     needs: [dispatch-workflows, create-pr-comment]
-    if: needs.dispatch-workflows.outputs.active == 'true' && (github.event.client_payload.pr_number || github.event.inputs.pr_number)
+    if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
       - name: Parse event data
         id: parse

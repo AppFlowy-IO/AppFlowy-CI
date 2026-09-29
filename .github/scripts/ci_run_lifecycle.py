@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cancel CI runs whose source PR closed or whose exact parent attempt was cancelled."""
+"""Cancel obsolete Cloud integration runs and their private laptop image builds."""
 
 import argparse
 from functools import cache
@@ -14,29 +14,18 @@ from urllib.parse import urlencode
 
 CI_REPO = "AppFlowy-IO/AppFlowy-CI"
 CLOUD_REPO = "AppFlowy-IO/AppFlowy-Cloud-Premium"
-CLIENT_REPO = "AppFlowy-IO/AppFlowy-Premium"
-SOURCES = {CI_REPO, CLOUD_REPO, CLIENT_REPO}
 ACTIVE = ("queued", "in_progress", "pending", "waiting", "requested")
 CANCELLED = {"cancelled", "timed_out"}
-# Limit cleanup to CI workflows, never Docker release workflows.
-WORKFLOWS = {
-    "webhook_receiver.yaml": SOURCES - {CI_REPO},
-    "workflow_checks.yaml": {CI_REPO},
-    **{name: {CI_REPO, CLIENT_REPO} for name in (
-        "flutter_ci.yaml", "ios_ci.yaml", "rust_ci.yaml",
-    )},
-    **{name: {CLIENT_REPO} for name in ("mobile_ci.yml", "rust_coverage.yml")},
-    **{name: {CLOUD_REPO} for name in (
-        "cloud_backend_ci.yaml", "cloud_commercial_integration_ci.yaml",
-        "cloud_docker_ci.yaml", "cloud_e2e_ci.yaml", "cloud_frontend_ci.yaml",
-        "cloud_integration_ci.yaml", "cloud_rustlint_ci.yaml",
-    )},
-}
+# This is the only public workflow that requests laptop image builds. Older
+# client/workflow-check titles may still carry metadata; they are out of scope.
+INTEGRATION_WORKFLOW = "cloud_integration_ci.yaml"
 IDENTITY = re.compile(
     r"^\[ci source=(AppFlowy-IO/[A-Za-z-]+) pr=(none|[1-9][0-9]*) "
     r"parent=(none|[1-9][0-9]*-[1-9][0-9]*)\] "
 )
 IMAGE_REQUEST = re.compile(r"CI images ([1-9][0-9]*)-([1-9][0-9]*) \([a-f0-9]{40}\)")
+# #42 dispatchers check out default-branch scripts, including on retries. Retain
+# their read-only lookup interface without enrolling these workflows in cleanup.
 CHILD_WORKFLOWS = {
     "flutter": "flutter_ci.yaml", "rust": "rust_ci.yaml", "mobile": "mobile_ci.yml",
     "ios": "ios_ci.yaml", "rust_coverage": "rust_coverage.yml",
@@ -65,12 +54,10 @@ def api(method, path):
 def identity(run):
     workflow = Path(run["path"]).name
     match = IDENTITY.match(run.get("display_title", ""))
-    if not match or match[1] not in WORKFLOWS.get(workflow, set()):
+    if workflow != INTEGRATION_WORKFLOW or not match or match[1] != CLOUD_REPO:
         return None
     source, pr, parent = match.groups()
-    if run["event"] == "pull_request" and source != CI_REPO:
-        return None
-    if run["event"] not in {"pull_request", "repository_dispatch", "workflow_dispatch"}:
+    if run["event"] not in {"repository_dispatch", "workflow_dispatch"}:
         return None
     return source, int(pr) if pr != "none" else None, (
         tuple(map(int, parent.split("-"))) if parent != "none" else None
@@ -95,13 +82,13 @@ def active_runs(repo, request):
 
 
 def pr_is_open(source, number, request=api):
-    if source not in SOURCES or not re.fullmatch(r"[1-9][0-9]*", str(number)):
-        raise ValueError("Expected an allowed source repository and positive PR number")
+    if source != CLOUD_REPO or not re.fullmatch(r"[1-9][0-9]*", str(number)):
+        raise ValueError("Expected the Cloud source repository and a positive PR number")
     return request("GET", f"repos/{source}/pulls/{number}")["state"] == "open"
 
 
 def find_children(names, parent, request=api, wait=time.sleep, now=time.monotonic):
-    """Find children by the dispatcher's run ID and attempt, never their start order."""
+    """Serve old dispatchers; only integration still requires parent metadata."""
     expected = {CHILD_WORKFLOWS[name]: name for name in names}
     started = request(
         "GET", f"repos/{CI_REPO}/actions/runs/{parent[0]}/attempts/{parent[1]}",
@@ -109,6 +96,7 @@ def find_children(names, parent, request=api, wait=time.sleep, now=time.monotoni
     deadline = now() + 180
     while True:
         found = {}
+        restored = {}
         page = 1
         while True:
             query = urlencode({
@@ -117,15 +105,23 @@ def find_children(names, parent, request=api, wait=time.sleep, now=time.monotoni
             })
             runs = request("GET", f"repos/{CI_REPO}/actions/runs?{query}")["workflow_runs"]
             for run in runs:
-                name = expected.get(Path(run["path"]).name)
-                info = identity(run)
-                if name and info and info[2] == parent:
+                workflow = Path(run["path"]).name
+                name = expected.get(workflow)
+                if not name:
+                    continue
+                match = IDENTITY.match(run.get("display_title", ""))
+                if match and match[3] == f"{parent[0]}-{parent[1]}":
                     if name in found and found[name] != run["id"]:
                         raise RuntimeError(f"Multiple {name} runs for parent attempt {parent}")
                     found[name] = run["id"]
+                elif not match and workflow != INTEGRATION_WORKFLOW:
+                    # Reverted workflows no longer have parent metadata. Use
+                    # their former newest-run lookup for these old callers.
+                    restored.setdefault(name, run["id"])
             if len(runs) < 100:
                 break
             page += 1
+        found = restored | found
         if len(found) == len(expected):
             return found
         if now() >= deadline:
@@ -144,10 +140,12 @@ def cleanup(request=api, *, apply=False):
         return not pr_is_open(source, number, request)
 
     @cache
-    def parent_cancelled(run_id, attempt):
-        parent = request(
+    def parent_run(run_id, attempt):
+        return request(
             "GET", f"repos/{CI_REPO}/actions/runs/{run_id}/attempts/{attempt}",
         )
+
+    def parent_cancelled(parent):
         return parent["status"] == "completed" and parent["conclusion"] in CANCELLED
 
     def cancel(repo, run, reason):
@@ -187,7 +185,7 @@ def cleanup(request=api, *, apply=False):
         try:
             info = identity(run)
             if info and info[2] and (
-                info[2] in cancelled or parent_cancelled(*info[2])
+                info[2] in cancelled or parent_cancelled(parent_run(*info[2]))
             ):
                 cancel(CI_REPO, run, f"parent attempt {info[2][0]}-{info[2][1]} was cancelled")
         except (ApiError, subprocess.TimeoutExpired) as error:
@@ -201,8 +199,16 @@ def cleanup(request=api, *, apply=False):
             continue
         parent = tuple(map(int, match.groups()))
         try:
-            if parent in cancelled or parent_cancelled(*parent):
-                cancel(CLOUD_REPO, run, f"requesting CI attempt {parent[0]}-{parent[1]} was cancelled")
+            # Also scope already-finished requesters by workflow. A cancelled
+            # client run must never authorize a private image cancellation.
+            if parent not in cancelled:
+                requester = parent_run(*parent)
+                if (
+                    Path(requester["path"]).name != INTEGRATION_WORKFLOW
+                    or not parent_cancelled(requester)
+                ):
+                    continue
+            cancel(CLOUD_REPO, run, f"requesting CI attempt {parent[0]}-{parent[1]} was cancelled")
         except (ApiError, subprocess.TimeoutExpired) as error:
             errors.append(str(error))
     if errors:
@@ -214,16 +220,14 @@ def cleanup(request=api, *, apply=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Cancel runs; default is a dry run")
-    parser.add_argument("--check-pr", action="store_true", help="Gate new dispatches on PR state")
-    parser.add_argument("--find-children", action="store_true", help="Find this dispatcher's children")
+    parser.add_argument("--check-pr", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--find-children", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.check_pr:
-        number = os.environ.get("PR_NUMBER", "")
-        active = not number or pr_is_open(os.environ["SOURCE_REPOSITORY"], number)
+        # The restored webhook has no PR gate. Keep queued #42 dispatchers
+        # working without looking up unrelated repositories' PRs.
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            print(f"active={str(active).lower()}", file=output)
-        if not active:
-            print(f"PR #{number} is closed; no child workflows will be dispatched.")
+            print("active=true", file=output)
     elif args.find_children:
         found = find_children(
             os.environ["WORKFLOWS"].split(","),
