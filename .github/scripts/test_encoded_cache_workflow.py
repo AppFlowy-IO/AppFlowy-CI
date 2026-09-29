@@ -159,7 +159,7 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
     def test_notification_waits_for_every_gate_and_reports_aggregated_result(self):
         job = self.jobs["notify-webhook"]
         self.assertTrue(set(REPORTED_JOBS).issubset(job["needs"]))
-        self.assertEqual(job["if"], "always()")
+        self.assertEqual(job["if"], "${{ !cancelled() }}")
         result = step_by_id(job, "result")
         self.assertEqual(result["env"]["NEEDS_JSON"], "${{ toJSON(needs) }}")
         dispatch = next(

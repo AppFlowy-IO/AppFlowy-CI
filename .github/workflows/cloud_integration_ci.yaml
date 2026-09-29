@@ -1089,7 +1089,9 @@ jobs:
     name: Notify Webhook
     runs-on: ubuntu-latest
     needs: [image_source, build_self_hosted, verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
-    if: always()
+    # Report failures and skipped dependencies, but let cancelled runs release
+    # their PR concurrency slot without waiting for a notification runner.
+    if: ${{ !cancelled() }}
     steps:
       - name: Aggregate integration results
         id: result
