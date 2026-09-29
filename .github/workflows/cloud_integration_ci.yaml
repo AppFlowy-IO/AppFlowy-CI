@@ -9,6 +9,14 @@ on:
         description: Branch or commit to test (e.g. refs/pull/123/head)
         required: true
         type: string
+      image_builder:
+        description: Where to build Docker images (tests always run on GitHub)
+        type: choice
+        required: true
+        default: self-hosted
+        options:
+          - self-hosted
+          - github-hosted
       pr_number:
         description: PR number (optional, for concurrency grouping)
         required: false
@@ -44,11 +52,60 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  image_source:
+    name: Resolve Cloud source and image builder
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      builder: ${{ steps.source.outputs.builder }}
+    steps:
+      - name: Checkout requested Cloud ref
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          persist-credentials: false
+      - name: Pin the source for images and tests
+        id: source
+        env:
+          IMAGE_BUILDER: ${{ inputs.image_builder || vars.CLOUD_IMAGE_BUILD_RUNNER || 'self-hosted' }}
+        run: |
+          case "$IMAGE_BUILDER" in
+            self-hosted|github-hosted) ;;
+            *) echo 'Unsupported CLOUD_IMAGE_BUILD_RUNNER'; exit 1 ;;
+          esac
+          source_sha="$(git rev-parse --verify HEAD)"
+          printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          printf 'builder=%s\n' "$IMAGE_BUILDER" >> "$GITHUB_OUTPUT"
+
+  build_self_hosted:
+    name: Build images on the laptop
+    needs: image_source
+    if: needs.image_source.outputs.builder == 'self-hosted'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      run_id: ${{ steps.images.outputs.run_id }}
+    steps:
+      - name: Checkout CI tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Request images from the private runner repository
+        id: images
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+        run: python3 .github/scripts/request_image_build.py
+
   # The matrices below select test modules through explicit allow-lists, whose
   # failure mode is silence: a new test module nobody adds simply never runs.
   # This job fails naming any test-bearing module missing from the matrices.
   verify_test_module_coverage:
     name: Verify test module coverage
+    needs: image_source
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -64,7 +121,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
           path: appflowy-cloud-premium
 
       - name: Detect encoded cache suite
@@ -103,7 +160,7 @@ jobs:
 
   cache-contracts:
     name: Parallel cache and snapshot contracts
-    needs: [verify_test_module_coverage]
+    needs: [verify_test_module_coverage, image_source]
     if: needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -133,7 +190,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
@@ -151,7 +208,7 @@ jobs:
 
   cache-observability:
     name: Cache dashboard and CI configuration
-    needs: [verify_test_module_coverage]
+    needs: [verify_test_module_coverage, image_source]
     if: needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -163,7 +220,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
           persist-credentials: false
       - name: Install pinned Prometheus evaluator
         run: |
@@ -184,6 +241,8 @@ jobs:
         run: python3 script/test_encoded_cache_compose.py
 
   build_cloud:
+    needs: image_source
+    if: needs.image_source.outputs.builder == 'github-hosted'
     name: Build appflowy_cloud Image
     runs-on: ubuntu-latest
     steps:
@@ -192,7 +251,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
 
       - name: Free disk space on runner
         run: |
@@ -244,6 +303,8 @@ jobs:
           retention-days: 1
 
   build_worker:
+    needs: image_source
+    if: needs.image_source.outputs.builder == 'github-hosted'
     name: Build appflowy_worker Image
     runs-on: ubuntu-latest
     steps:
@@ -252,7 +313,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
 
       - name: Free disk space on runner
         run: |
@@ -299,6 +360,8 @@ jobs:
           retention-days: 1
 
   build_search:
+    needs: image_source
+    if: needs.image_source.outputs.builder == 'github-hosted'
     name: Build appflowy_search Image
     runs-on: ubuntu-latest
     steps:
@@ -307,7 +370,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
 
       - name: Free disk space on runner
         run: |
@@ -354,6 +417,8 @@ jobs:
           retention-days: 1
 
   build_mcp:
+    needs: image_source
+    if: needs.image_source.outputs.builder == 'github-hosted'
     name: Build appflowy_mcp Image
     runs-on: ubuntu-latest
     steps:
@@ -362,7 +427,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
 
       - name: Free disk space on runner
         run: |
@@ -411,7 +476,14 @@ jobs:
   test:
     name: Integration Tests (${{ matrix.test_service }})
     runs-on: ubuntu-latest
-    needs: [build_cloud, build_worker, build_search, build_mcp]
+    needs: [image_source, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
+    if: >-
+      always() && !cancelled() && needs.image_source.result == 'success' &&
+      ((needs.image_source.outputs.builder == 'self-hosted' &&
+        needs.build_self_hosted.result == 'success') ||
+       (needs.image_source.outputs.builder == 'github-hosted' &&
+        needs.build_cloud.result == 'success' && needs.build_worker.result == 'success' &&
+        needs.build_search.result == 'success' && needs.build_mcp.result == 'success'))
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
@@ -601,7 +673,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.image_source.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -652,6 +724,9 @@ jobs:
         with:
           pattern: docker-image-*
           merge-multiple: true
+          repository: ${{ needs.build_self_hosted.outputs.run_id && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || github.repository }}
+          run-id: ${{ needs.build_self_hosted.outputs.run_id || github.run_id }}
+          github-token: ${{ needs.build_self_hosted.outputs.run_id && secrets.ADMIN_GITHUB_TOKEN || github.token }}
 
       - name: Load Docker Images
         run: |
@@ -1007,7 +1082,7 @@ jobs:
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
+    needs: [image_source, build_self_hosted, verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, test, cache-contracts, cache-observability]
     if: always()
     steps:
       - name: Aggregate integration results

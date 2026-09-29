@@ -19,6 +19,8 @@ SUITE_FILES = (
 )
 CACHE_JOBS = ("cache-contracts", "cache-observability")
 REPORTED_JOBS = (
+    "image_source",
+    "build_self_hosted",
     "verify_test_module_coverage",
     "build_cloud",
     "build_worker",
@@ -187,11 +189,17 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         self.assertEqual(self.aggregate({job: "skipped" for job in CACHE_JOBS}), "success")
 
     def test_setup_and_build_failures_cannot_be_hidden_by_skipped_tests(self):
-        for job in REPORTED_JOBS[:5]:
+        for job in REPORTED_JOBS[:7]:
             with self.subTest(job=job):
                 self.assertEqual(
                     self.aggregate({job: "failure", "test": "skipped"}), "failure"
                 )
+
+    def test_unused_image_builder_does_not_fail_the_selected_builder(self):
+        for skipped in (("build_self_hosted",),
+                        ("build_cloud", "build_worker", "build_search", "build_mcp")):
+            with self.subTest(skipped=skipped):
+                self.assertEqual(self.aggregate({job: "skipped" for job in skipped}), "success")
 
     def test_cancellation_is_reported_unless_another_gate_failed(self):
         self.assertEqual(self.aggregate({"cache-contracts": "cancelled"}), "cancelled")
