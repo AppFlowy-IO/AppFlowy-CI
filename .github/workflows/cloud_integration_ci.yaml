@@ -107,9 +107,10 @@ jobs:
           CI_TOOLS_SHA: ${{ github.sha }}
         run: python3 .github/scripts/request_image_build.py
 
-  # The matrices below select test modules through explicit allow-lists, whose
-  # failure mode is silence: a new test module nobody adds simply never runs.
-  # This job fails naming any test-bearing module missing from the matrices.
+  # The matrices below select test modules and standalone targets through
+  # explicit allow-lists (or the deliberate wildcard target lane). Their
+  # failure mode is silence: a new test nobody adds simply never runs. This
+  # job fails naming any test-bearing module or target missing from the matrix.
   verify_test_module_coverage:
     name: Verify test module coverage
     needs: image_source
@@ -490,6 +491,7 @@ jobs:
     env:
       CLOUD_CACHE_GROUP: root
       CLOUD_CACHE_WRITER: 'true'
+      CLOUD_RUN_ROOT: 'true'
       CLOUD_COMPILE_TESTS: 'true'
       RUSTC_WRAPPER: ''
     steps:
@@ -502,7 +504,7 @@ jobs:
           persist-credentials: false
       - &cloud_ci_tools
         name: Checkout CI tools
-        if: env.CLOUD_CACHE_GROUP == 'root'
+        if: env.CLOUD_RUN_ROOT == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -663,7 +665,8 @@ jobs:
       MINIO_DATA_DIR: /tmp/minio-data
       CLOUD_CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
       CLOUD_CACHE_WRITER: ${{ matrix.cache_writer == true }}
-      CLOUD_COMPILE_TESTS: ${{ matrix.cache_group != '' }}
+      CLOUD_RUN_ROOT: ${{ (matrix.cache_group || 'root') == 'root' || matrix.test_package_search == true || matrix.test_targets == '*' }}
+      CLOUD_COMPILE_TESTS: ${{ matrix.cache_group != '' || matrix.test_package_search == true || matrix.test_targets == '*' }}
       # Restore Cargo artifacts before enabling the optional compiler wrapper so
       # cache availability cannot change the Cargo snapshot's environment hash.
       RUSTC_WRAPPER: ""
@@ -754,7 +757,9 @@ jobs:
           - test_service: "appflowy_cloud_database"
             topic: "Databases"
             test_modules: "database"
-            test_skips: "database::database_index_test"
+            test_skips: >-
+              database::database_index_test
+              database::database_history_test::search_restore
           - test_service: "appflowy_cloud_collab"
             topic: "Realtime collaboration"
             test_modules: "collab"
@@ -813,11 +818,20 @@ jobs:
             test_modules: ""
             cache_group: members
             cache_writer: true
-          # Run database indexing first on a fresh stack, then search. Database
-          # history and restore suites must not join this topic.
+          # Run database indexing and restore-search first on a fresh stack, then
+          # the root search modules and appflowy-search package tests. Keeping
+          # both selectors in one topic ensures the indexer and service stay
+          # visible together in the Actions UI while retaining a dedicated
+          # Cargo cache for the package tests.
           - test_service: "appflowy_cloud_search"
-            topic: "Search and indexing"
-            test_modules: "database::database_index_test search"
+            topic: "Search"
+            test_modules: >-
+              database::database_index_test
+              database::database_history_test::search_restore
+              search
+            test_package_search: true
+            cache_group: search
+            cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
           - test_service: "appflowy_cloud_whitelist"
             topic: "Signup whitelist"
@@ -827,22 +841,18 @@ jobs:
               user::admin_user_deletion_whitelist_test
               user::sign_up
               workspace::admin_system_config_test
-          # SCIM directory-sync end-to-end (drives the real Authentik IdP
-          # from docker-compose-ci.yml). The cloud image is the default build, so
-          # SCIM is available with no seat limit and no license.
-          - test_service: "appflowy_cloud_scim"
-            topic: "SCIM provisioning"
-            test_modules: "scim"
-          # LDAP login + SCIM-interop end-to-end against the compose
-          # openldap service (profile `ldap`, seeded from script/ldap/seed.ldif).
-          - test_service: "appflowy_cloud_ldap"
-            topic: "LDAP login"
-            test_modules: "ldap"
-          - test_service: "appflowy_search_package"
-            topic: "Search service"
+          # SCIM and LDAP share one stack and one Actions topic. Both compose
+          # profiles are enabled and the suites run serially with their
+          # service-specific environment variables.
+          - test_service: "appflowy_cloud_auth"
+            topic: "Auth"
+            test_modules: "scim ldap"
+          # Every standalone [[test]] target in the Cloud package is discovered
+          # from Cargo metadata and run from the shared precompiled archive.
+          - test_service: "appflowy_cloud_standalone_targets"
+            topic: "Standalone HTTP targets"
             test_modules: ""
-            cache_group: search
-            cache_writer: true
+            test_targets: "*"
           - test_service: "appflowy_worker"
             topic: "Worker service"
             test_modules: ""
@@ -865,7 +875,7 @@ jobs:
       - *cloud_free_disk
 
       - name: Download shared Cloud test binaries
-        if: env.CLOUD_CACHE_GROUP == 'root'
+        if: env.CLOUD_RUN_ROOT == 'true'
         uses: actions/download-artifact@v4
         with:
           name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
@@ -875,7 +885,7 @@ jobs:
           github-token: ${{ needs.build_self_hosted.outputs.run_id && secrets.ADMIN_GITHUB_TOKEN || github.token }}
 
       - name: Restore and verify shared Cloud test binaries
-        if: env.CLOUD_CACHE_GROUP == 'root'
+        if: env.CLOUD_RUN_ROOT == 'true'
         run: |
           python3 ci-tools/.github/scripts/cloud_test_binaries.py restore \
             --archive "$RUNNER_TEMP/cloud-test-binaries/cloud-tests.tar.gz"
@@ -1008,10 +1018,8 @@ jobs:
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
           # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
           export APPFLOWY_AI_VERSION=0.13.2-amd64
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
-          fi
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ldap"
           fi
 
@@ -1040,14 +1048,14 @@ jobs:
           echo "Health check timeout after 300 seconds - proceeding anyway"
 
       - name: Wait for Authentik
-        if: matrix.test_service == 'appflowy_cloud_scim'
+        if: matrix.test_service == 'appflowy_cloud_auth'
         run: |
           echo "Waiting for Authentik..."
           timeout 300 bash -c 'until curl -fsS http://localhost:9010/-/health/ready/ >/dev/null; do sleep 3; done'
           echo "Authentik ready."
 
       - name: Wait for OpenLDAP
-        if: matrix.test_service == 'appflowy_cloud_ldap'
+        if: matrix.test_service == 'appflowy_cloud_auth'
         run: |
           echo "Waiting for OpenLDAP..."
           timeout 180 bash -c 'until docker compose -f docker-compose-ci.yml --profile ldap exec -T openldap \
@@ -1098,10 +1106,12 @@ jobs:
         env:
           RUN_ROOT_UNIT_TESTS: ${{ matrix.test_root_unit == true }}
           TEST_SKIPS: ${{ matrix.test_skips }}
+          TEST_TARGETS: ${{ matrix.test_targets }}
+          RUN_SEARCH_PACKAGE: ${{ matrix.test_package_search == true }}
         run: |
           set -e
           cargo_command=(cargo)
-          if [[ "$CLOUD_CACHE_GROUP" == root ]]; then
+          if [[ "$CLOUD_RUN_ROOT" == true ]]; then
             cargo_command=(python3 ci-tools/.github/scripts/cloud_test_binaries.py run)
           fi
           echo "Running tests for ${{ matrix.test_service }}"
@@ -1111,10 +1121,24 @@ jobs:
               --features "$CLOUD_TEST_FEATURES" --lib --bins \
               -- --skip stress_test --skip commercial_test --skip whitelist --test-threads=1
           fi
-          if [ "${{ matrix.test_service }}" = "appflowy_search_package" ]; then
-            echo "==> Testing appflowy-search package"
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
-              -p appflowy-search -- --test-threads=1
+          if [[ "${TEST_TARGETS:-}" == "*" ]]; then
+            echo "==> Discovering standalone Cloud test targets"
+            mapfile -t targets < <(
+              cargo metadata --locked --no-deps --format-version=1 |
+                python3 -c 'import json, sys; data=json.load(sys.stdin); print(*[target["name"] for package in data["packages"] if package["name"] == "appflowy-cloud" for target in package["targets"] if "test" in target["kind"] and target["name"] != "main"], sep="\n")'
+            )
+            test "${#targets[@]}" -gt 0
+            for target in "${targets[@]}"; do
+              echo "==> Testing standalone target: ${target}"
+              if [[ "$target" == hosted_plan_limits ]]; then
+                APPFLOWY_TEST_HOSTED_PLAN_LIMITS=true \
+                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+                  --features "$CLOUD_TEST_FEATURES" --test "$target" -- --test-threads=1
+              else
+                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+                  --features "$CLOUD_TEST_FEATURES" --test "$target" -- --test-threads=1
+              fi
+            done
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_member_packages" ]; then
             # The former appflowy-collaborate umbrella was split into focused
             # libraries. Keep their moved unit and integration tests in this
@@ -1138,6 +1162,17 @@ jobs:
               -p collab \
               -p collab-rt-entity \
               -p appflowy-proto \
+              -p appflowy-cloud-forms \
+              -p appflowy-cloud-workspace-support \
+              -p appflowy-cloud-workspace \
+              -p appflowy-cloud-admin \
+              -p appflowy-cloud-collab \
+              -p appflowy-cloud-workspace-access \
+              -p appflowy-cloud-pages \
+              -p appflowy-cloud-publishing \
+              -p appflowy-cloud-database-api \
+              -p appflowy-cloud-directory \
+              -p appflowy-cloud-history \
               -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
@@ -1153,7 +1188,16 @@ jobs:
                 --features "$CLOUD_TEST_FEATURES" "${module}::" \
                 -- --skip stress_test --skip commercial_test --test-threads=1
             done
-          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
+            # Authentik-backed SCIM and OpenLDAP-backed login share the stack,
+            # but keep their endpoint configuration and test processes separate.
+            echo "==> SCIM directory-sync end-to-end (Authentik)"
+            SCIM_URL_FOR_AUTHENTIK=http://appflowy_cloud:8000/scim/v2 \
+            AUTHENTIK_HEALTH_URL=http://localhost:9010/-/health/ready/ \
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+              --features "$CLOUD_TEST_FEATURES" "scim::" \
+              -- --test-threads=1 --nocapture
+
             # The cloud container dials the directory over the compose network;
             # the test process reaches OpenLDAP through its published port. LDAP
             # login requests target appflowy-cloud's published port directly so
@@ -1167,18 +1211,6 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               --features "$CLOUD_TEST_FEATURES" "ldap::" \
               -- --skip stress_test --skip commercial_test --test-threads=1
-          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
-            # SCIM end-to-end against the real Authentik IdP (from docker-compose-ci.yml).
-            # Authentik (in docker) reaches the cloud over the compose network; the
-            # test (on the runner) reaches Authentik's health port and drives it via
-            # `docker exec`. The cloud image is the default build, so SCIM is available
-            # with no seat limit and no license.
-            echo "==> SCIM directory-sync end-to-end (Authentik)"
-            SCIM_URL_FOR_AUTHENTIK=http://appflowy_cloud:8000/scim/v2 \
-            AUTHENTIK_HEALTH_URL=http://localhost:9010/-/health/ready/ \
-            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
-              --features "$CLOUD_TEST_FEATURES" "scim::" \
-              -- --test-threads=1 --nocapture
           else
             # Run root crate integration tests module by module.
             # `${module}::` makes the filter a Rust path prefix rather than a
@@ -1197,6 +1229,12 @@ jobs:
                 -- --skip stress_test --skip commercial_test --skip whitelist \
                 "${skip_args[@]}" --test-threads=1
             done
+          fi
+
+          if [[ "${RUN_SEARCH_PACKAGE:-false}" == true ]]; then
+            echo "==> Testing appflowy-search package"
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
+              -p appflowy-search -- --test-threads=1
           fi
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
@@ -1225,11 +1263,9 @@ jobs:
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs ai > appflowy_ai_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs gotrue > gotrue_logs.txt 2>&1 || true
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_scim" ]; then
+          if [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
             docker compose -f docker-compose-ci.yml --profile authentik \
               logs authentik-db authentik-server authentik-worker > authentik_logs.txt 2>&1 || true
-          fi
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_ldap" ]; then
             docker compose -f docker-compose-ci.yml --profile ldap \
               logs openldap > openldap_logs.txt 2>&1 || true
           fi

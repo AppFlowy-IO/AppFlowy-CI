@@ -60,7 +60,7 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
-The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
+The integration matrix has 14 jobs, with `max-parallel: 15`. Actions displays each job's topic:
 
 | Topic | Suites |
 | --- | --- |
@@ -72,20 +72,20 @@ The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays ea
 | Realtime collaboration | Collab integration tests |
 | AI and authentication | AI, GoTrue, OIDC and user APIs |
 | SQL persistence | SQL core, permissions, collab and workspace persistence |
-| Shared libraries | Workspace-member package tests |
-| Search and indexing | Database index test first, then search integration tests |
+| Shared libraries | Workspace-member and extracted Cloud package tests |
+| Search | Database index and restore-search tests, root search integration tests, and the `appflowy-search` package |
 | Signup whitelist | Isolated GoTrue whitelist and system-configuration tests |
-| SCIM provisioning | SCIM tests with Authentik |
-| LDAP login | LDAP tests with OpenLDAP |
-| Search service | Search package tests |
+| Auth | SCIM tests with Authentik and LDAP tests with OpenLDAP |
+| Standalone HTTP targets | Every non-`main` Cloud Cargo integration target, including hosted-plan and migration fixtures |
 | Worker service | Worker package tests |
 
 Each topic has its own Docker stack. Modules and tests run serially within it; root integration
-topics finish with seeded account deletion. Database history stays separate from search to avoid
-an indexing backlog; whitelist, SCIM and LDAP retain their dedicated environments. Preserve module
-filters and skips when regrouping suites. The 15-job limit covers this integration matrix; build,
-coverage and cache-contract jobs
-have their own scheduling.
+topics finish with seeded account deletion. Database history and restore-search run on the Search
+stack before the other search modules, while the Databases topic skips those filters to avoid an
+indexing backlog. Auth enables both Authentik and OpenLDAP profiles and runs SCIM and LDAP serially.
+The standalone topic discovers every non-`main` Cargo test target, and the coverage gate requires a
+new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
+room for workflow setup, coverage and cache-contract jobs.
 
 The laptop keeps registry downloads, Git dependencies and the complete Cargo `target/` directory in
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
@@ -108,8 +108,8 @@ python3 -B -m unittest discover -s .github/scripts
 ```
 
 The Cloud test-matrix coverage gate recognizes standard Rust, Tokio, and SQLx
-test attributes. New test-bearing modules must be assigned to an integration or
-commercial matrix entry, including modules containing only `#[sqlx::test]` cases.
+test attributes. New test-bearing modules and standalone `tests/*.rs` targets must be assigned to
+an integration or commercial matrix entry, including modules containing only `#[sqlx::test]` cases.
 Run the coverage-checker regressions with Python 3:
 
 ```sh

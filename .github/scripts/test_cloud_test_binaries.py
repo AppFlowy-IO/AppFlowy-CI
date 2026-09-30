@@ -158,7 +158,7 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
             executable.chmod(0o755)
         cls.run_env = {**os.environ, "PATH": f'{cls.no_compilers}:{os.environ["PATH"]}',
                        "GITHUB_WORKSPACE": str(cls.workspace), "CLOUD_TEST_FEATURES": FEATURES,
-                       "CLOUD_CACHE_GROUP": "root", "CI": "true"}
+                       "CLOUD_CACHE_GROUP": "root", "CLOUD_RUN_ROOT": "true", "CI": "true"}
 
     @classmethod
     def call(cls, command, *, env=None, check=True):
@@ -420,12 +420,16 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                     script = script.replace("${{ matrix.test_modules }}", lane["test_modules"])
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
                                             env={**os.environ, "PATH": f'{root}:{os.environ["PATH"]}',
-                                                 "CLOUD_CACHE_GROUP": lane["cache_group"]},
+                                                 "CLOUD_CACHE_GROUP": lane["cache_group"],
+                                                 "CLOUD_RUN_ROOT": "false",
+                                                 "RUN_SEARCH_PACKAGE": str(lane.get("test_package_search", False)).lower()},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    expected = {"worker": "appflowy-worker", "search": "appflowy-search",
-                                "members": "workspace-folder"}[lane["cache_group"]]
-                    self.assertIn(f"-p\n{expected}\n", result.stdout)
+                    if lane.get("test_package_search"):
+                        self.assertIn("-p\nappflowy-search\n", result.stdout)
+                    else:
+                        expected = {"worker": "appflowy-worker", "members": "workspace-folder"}[lane["cache_group"]]
+                        self.assertIn(f"-p\n{expected}\n", result.stdout)
                     self.assertIn("--test-threads=1", result.stdout)
 
 
