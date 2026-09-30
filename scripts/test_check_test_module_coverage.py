@@ -25,10 +25,11 @@ class TestModuleCoverage(unittest.TestCase):
     self.sample.write_text("#[sqlx::test(migrations = false)]\nasync fn sample() {}\n")
     self.workflow = self.root / "workflow.yaml"
 
-  def run_checker(self, modules):
+  def run_checker(self, modules, targets=""):
     self.workflow.write_text(
       "jobs:\n  tests:\n    strategy:\n      matrix:\n        include:\n"
       f"          - test_modules: '{modules}'\n"
+      f"            test_targets: '{targets}'\n"
     )
     return subprocess.run(
       [sys.executable, str(pathlib.Path(coverage.__file__).resolve()),
@@ -66,6 +67,28 @@ class TestModuleCoverage(unittest.TestCase):
     result = self.run_checker("")
     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
     self.assertIn("sql_test::sample", result.stdout)
+
+  def test_path_module_in_standalone_target_requires_target_selection(self):
+    (self.tests / "hosted_plan_limits.rs").write_text(
+      '#[path = "sql_test/sample.rs"]\nmod hosted_workspace_plan_test;\n'
+    )
+    result = self.run_checker("sql_test workspace::hosted_workspace_plan_test")
+    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+    self.assertIn("--test hosted_plan_limits", result.stdout)
+    for targets in ("hosted_plan_limits", "*"):
+      result = self.run_checker("sql_test", targets)
+      self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+  def test_new_standalone_target_is_not_covered_by_another_target(self):
+    (self.tests / "new_regression.rs").write_text("#[test]\nfn regression() {}\n")
+    result = self.run_checker("sql_test", "hosted_plan_limits")
+    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+    self.assertIn("--test new_regression", result.stdout)
+
+  def test_standalone_helper_without_tests_needs_no_selection(self):
+    (self.tests / "helper.rs").write_text("fn setup() {}\n")
+    result = self.run_checker("sql_test")
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
