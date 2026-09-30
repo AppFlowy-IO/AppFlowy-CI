@@ -90,6 +90,25 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       self.assertTrue(any(SEARCH_RESTORE in command for command in commands))
       self.assertTrue(any("-p\tappflowy-search\t" in command for command in commands))
 
+  def test_permission_and_space_suites_are_partitioned_without_drops(self):
+    lanes = [
+      lane for lane in self.lanes
+      if lane["test_service"] in {
+        "appflowy_cloud_workspace_permissions",
+        "appflowy_cloud_workspace_permissions_2",
+      }
+    ]
+    self.assertEqual(
+      {lane["topic"] for lane in lanes},
+      {"Permissions and spaces", "Permissions and spaces 2"},
+    )
+    modules = " ".join(lane.get("test_modules", "") for lane in lanes).split()
+    self.assertEqual(len(modules), len(set(modules)))
+    self.assertIn("workspace::permissions::realtime_enforcement_test", modules)
+    self.assertIn("workspace::permissions::share_management", modules)
+    self.assertIn("workspace::permissions::page_access", modules)
+    self.assertIn("workspace::custom_space_test", modules)
+
   def test_standalone_target_topic_is_wildcard_and_uses_archive_runner(self):
     standalone = self.lane("appflowy_cloud_standalone_targets")
     self.assertEqual(standalone["test_targets"], "*")
