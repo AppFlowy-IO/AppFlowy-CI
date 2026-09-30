@@ -766,53 +766,14 @@ jobs:
           - test_service: "appflowy_cloud_api"
             topic: "AI and authentication"
             test_modules: "ai_test gotrue oidc user"
-          # Preserve explicit SQL filters, including the permission differential
-          # and share-union equivalence gates, within one persistence topic.
+          # Select the whole `sql_test` tree so a new SQL test module runs without
+          # a workflow change. `sql_test::whitelist_test` is excluded here by
+          # `--skip whitelist` and runs in the Signup whitelist topic.
           - test_service: "appflowy_cloud_sql"
             topic: "SQL persistence"
             test_modules: >-
-              sql_test::admin_guest_status_test
-              sql_test::admin_user_test
-              sql_test::chat_test
-              sql_test::guest_limit_test
-              sql_test::mcp_database_access_test
-              sql_test::permission_mapping_test
-              sql_test::spam_signal_test
-              sql_test::spam_test
-              sql_test::user_test
+              sql_test
               test_pg_pool
-              sql_test::database_row_permission_fact_test
-              sql_test::exact_view_acl_fence_test
-              sql_test::permission_differential_test
-              sql_test::permission_generation_test
-              sql_test::permission_resident_staleness_test
-              sql_test::permission_share_union_test
-              sql_test::realtime_collab_owner_test
-              sql_test::space_acl_seed_test
-              sql_test::space_user_delete_test
-              sql_test::collab_db_ops_test
-              sql_test::collab_embed_test
-              sql_test::collab_history_graph_test
-              sql_test::collab_restore_state_test
-              sql_test::content_graph_test
-              sql_test::content_processing_test
-              sql_test::database_duplicate_upload_test
-              sql_test::document_reference_test
-              sql_test::parsed_content_test
-              sql_test::pg_direct_write_test
-              sql_test::folder_db_ops_test
-              sql_test::folder_read_test
-              sql_test::form_share_lifecycle_trigger_test
-              sql_test::guest_workspace_test
-              sql_test::publish_blob_ref_test
-              sql_test::publish_test
-              sql_test::quick_note_projection_test
-              sql_test::recent_views_test
-              sql_test::s3_cleanup_test
-              sql_test::workspace_database_backfill_test
-              sql_test::workspace_database_listing_test
-              sql_test::workspace_database_sync_test
-              sql_test::workspace_test
           - test_service: "appflowy_cloud_member_packages"
             topic: "Shared libraries"
             test_modules: ""
