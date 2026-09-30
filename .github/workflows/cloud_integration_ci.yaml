@@ -731,18 +731,33 @@ jobs:
               workspace::workspace_import_test
               workspace::workspace_reorder_test
               workspace::workspace_settings_test
+          # Permission and space suites are split into two balanced stacks. The
+          # largest permission trees stay isolated from the space lifecycle
+          # suites so one long matrix lane cannot serialize all access checks.
           - test_service: "appflowy_cloud_workspace_permissions"
             topic: "Permissions and spaces"
             test_modules: >-
               workspace::private_space_migration_test
               workspace::space_permission_test
               workspace::space_policy_mutation_test
+              workspace::permissions::realtime_enforcement_test
+              workspace::permissions::share_management
+          - test_service: "appflowy_cloud_workspace_permissions_2"
+            topic: "Permissions and spaces 2"
+            test_modules: >-
               workspace::structured_space_creation_test
               workspace::structured_space_update_test
               workspace::custom_space_test
               workspace::prd_space_acceptance_test
               workspace::space_group_permission_test
-              workspace::permissions
+              workspace::permissions::cache
+              workspace::permissions::full_sync_enforcement_test
+              workspace::permissions::full_sync_new_row_test
+              workspace::permissions::guest_lifecycle
+              workspace::permissions::object_permission_api_test
+              workspace::permissions::page_access
+              workspace::permissions::realtime_optimization_proof_test
+              workspace::permissions::shared_folder
           - test_service: "appflowy_cloud_workspace_content"
             topic: "Import and publishing"
             test_modules: >-

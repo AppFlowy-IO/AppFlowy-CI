@@ -60,13 +60,14 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
-The integration matrix has 14 jobs, with `max-parallel: 15`. Actions displays each job's topic:
+The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
 
 | Topic | Suites |
 | --- | --- |
 | Core APIs and utilities | Root unit tests, files/Yrs, Redis/server-info, cache, folders, MCP, mentions and notifications |
 | Workspace management | Workspace lifecycle, membership, invitations and workspace APIs |
-| Permissions and spaces | Workspace permissions, structured spaces and custom spaces |
+| Permissions and spaces | Private-space migration, space ACLs, permission enforcement and sharing |
+| Permissions and spaces 2 | Structured-space lifecycle, custom/PRD spaces, group permissions and supporting access suites |
 | Import and publishing | Document/Notion imports, page views and publishing |
 | Databases | Database tests, excluding the index test |
 | Realtime collaboration | Collab integration tests |
