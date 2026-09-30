@@ -790,6 +790,7 @@ jobs:
               sql_test::realtime_collab_owner_test
               sql_test::space_acl_seed_test
               sql_test::space_user_delete_test
+              sql_test::gotrue_user_delete_test
               sql_test::collab_db_ops_test
               sql_test::collab_embed_test
               sql_test::collab_history_graph_test
