@@ -804,7 +804,16 @@ jobs:
             echo "Building the self-hosted Cloud image for Timeline tests"
             docker compose -f docker-compose-ci.yml build appflowy_cloud
           fi
-          docker compose -f docker-compose-ci.yml up -d
+          # The database-history scenarios require this capability in the actual
+          # container. A value in .env alone is not forwarded by older server
+          # compose files, so keep the override local to the Flutter test stack.
+          cat > docker-compose-flutter-ci.yml <<'YAML'
+          services:
+            appflowy_cloud:
+              environment:
+                APPFLOWY_DATABASE_HISTORY_ENABLED: "${{ matrix.cloud_test_suite == 'database' && 'true' || 'false' }}"
+          YAML
+          docker compose -f docker-compose-ci.yml -f docker-compose-flutter-ci.yml up -d
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
@@ -822,6 +831,29 @@ jobs:
           done
           echo "::error::Cloud HTTPS health check timed out"
           exit 1
+
+      - name: Verify database history capability
+        if: matrix.cloud_test_suite == 'database'
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          # Database history is advertised only to supported desktop clients.
+          curl --fail --show-error --silent \
+            -H 'client-version: 0.14.6' -H 'x-platform: linux' \
+            "$APPFLOWY_CLOUD_URL/api/server-info" > /tmp/database-server-info.json
+          python3 - <<'PY'
+          import json
+
+          with open('/tmp/database-server-info.json', encoding='utf-8') as handle:
+              payload = json.load(handle)
+          server_info = payload.get('data', payload)
+          if server_info.get('enable_database_history') is not True:
+              raise SystemExit(
+                  'Database tests require history support; check the Cloud image, '
+                  'APPFLOWY_DATABASE_HISTORY_ENABLED, APPFLOWY_PAGE_HISTORY_ENABLE, '
+                  'and database blob storage'
+              )
+          print('Database history capability is enabled')
+          PY
 
       - name: Verify self-hosted Cloud for Timeline tests
         if: matrix.cloud_test_suite == 'timeline'
