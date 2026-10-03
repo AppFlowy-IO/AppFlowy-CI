@@ -47,11 +47,12 @@ def run(run_id, *, source=lifecycle.CLOUD_REPO, pr=123, parent=None,
     }
 
 
-def image(run_id, parent, *, attempt=1, **kwargs):
+def image(run_id, parent, *, attempt=1, pr_number=None, **kwargs):
     result = run(
         run_id, workflow="build_ci_images_self_hosted.yml", event="workflow_dispatch", **kwargs,
     )
-    result["display_title"] = f"CI images {parent}-{attempt} ({'a' * 40})"
+    suffix = f" [PR #{pr_number}]" if pr_number else ""
+    result["display_title"] = f"CI images {parent}-{attempt} ({'a' * 40}){suffix}"
     return result
 
 
@@ -111,7 +112,7 @@ class CleanupTests(unittest.TestCase):
         self.api.runs[lifecycle.CI_REPO] = [
             run(1), run(2, status="in_progress"), run(3, status="pending"),
         ]
-        self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1)]
+        self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1, pr_number=123)]
         self.assertEqual(self.cleanup(), [
             (lifecycle.CI_REPO, 1), (lifecycle.CI_REPO, 2), (lifecycle.CI_REPO, 3),
             (lifecycle.CLOUD_REPO, 10),

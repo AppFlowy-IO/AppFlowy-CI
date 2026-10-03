@@ -4,6 +4,9 @@ Cloud integration images and shared Cloud test binaries build on the ARM64 lapto
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Tests and coverage run on GitHub runners.
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
 are downloaded from the private Cloud Premium run with their existing `latest-amd64` tags.
+For pull-request runs, the private run title includes the source PR number as
+`CI images <run>-<attempt> (<sha>) [PR #<number>]`, while the parent AppFlowy-CI title keeps the
+same number for correlation. Older image requests without a PR input retain the original title.
 
 Merge the Cloud Premium builder's `ci_tools_sha` support before enabling this caller. The existing
 `ADMIN_GITHUB_TOKEN` secret needs Cloud Premium access with Contents read and Actions write
