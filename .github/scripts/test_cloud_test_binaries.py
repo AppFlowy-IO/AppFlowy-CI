@@ -55,6 +55,9 @@ ci-test = []
 fn main() {
     let out = env::var("OUT_DIR").unwrap();
     fs::write(format!("{out}/fixture.txt"), "runtime fixture").unwrap();
+    for suffix in [".a", ".d", ".o", ".rlib", ".rmeta"] {
+        fs::write(format!("{out}/unused{suffix}"), "compiler output").unwrap();
+    }
     let target = env::var("TARGET").unwrap().replace('-', "_");
     let compiler = env::var(format!("CC_{target}")).unwrap_or_else(|_| "cc".to_owned());
     assert!(Command::new(compiler).args(["-shared", "-fPIC", "native.c", "-o",
@@ -185,6 +188,18 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
         self.assertTrue(any(name.startswith("target/cloud-test-runtime/libstd-") for name in names))
         self.assertFalse(any(name.endswith((".rlib", ".rmeta", ".o")) for name in names))
         self.assertEqual(len(self.manifest["tests"]), 4)  # lib, bin and two integration targets
+
+    def test_archive_elf_files_are_stripped_without_debug_sections(self):
+        if not shutil.which("readelf"):
+            self.skipTest("readelf is required to inspect ELF sections")
+        elf_files = [path for path in (self.workspace / "target").rglob("*")
+                     if path.is_file() and binaries.is_elf(path)]
+        self.assertTrue(elf_files)
+        for path in elf_files:
+            result = subprocess.run(["readelf", "--section-headers", str(path)],
+                                    check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            self.assertNotRegex(result.stdout, r"\.debug_", path)
 
     def test_module_filters_skips_assets_and_helper_binary_without_cargo(self):
         result = self.run_tests("workspace::", "--", "--skip", "skipped_case", "--test-threads=1")

@@ -17,12 +17,14 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 
 MANIFEST = Path("target/cloud-test-binaries.json")
 RUNTIME = Path("target/cloud-test-runtime")
 CROSS_TARGET = "x86_64-unknown-linux-gnu"
 AMD64_RUNNER = ["Linux", "x86_64", "ubuntu", "24.04"]
+COMPILER_INTERMEDIATE_SUFFIXES = (".a", ".d", ".o", ".rlib", ".rmeta")
 
 
 def command_output(*command):
@@ -65,6 +67,55 @@ def verify_amd64_executable(path):
     # ELF64, little endian, e_machine=EM_X86_64. Catch accidentally archived host binaries.
     if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\x3e\x00":
         raise ValueError(f"Expected an AMD64 Linux executable: {path}")
+
+
+def strip_tool(target):
+    """Return a strip tool that can process the archive's target ELF files."""
+    candidates = (["x86_64-linux-gnu-strip", "strip"]
+                  if target == CROSS_TARGET else ["strip"])
+    for candidate in candidates:
+        if shutil.which(candidate):
+            return candidate
+    raise ValueError(f"No ELF strip tool is available for target {target or 'host'}")
+
+
+def is_elf(path):
+    try:
+        with path.open("rb") as executable:
+            return executable.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def is_runtime_asset(path):
+    """Keep build-script outputs that can be read at runtime, not compiler intermediates."""
+    return not path.name.endswith(COMPILER_INTERMEDIATE_SUFFIXES)
+
+
+def archive_files(bundle, files, archive_parent, target):
+    """Add runtime files after removing debug sections from temporary ELF copies."""
+    tool = None
+    stripped_count = 0
+    original_bytes = 0
+    stripped_bytes = 0
+    with tempfile.TemporaryDirectory(prefix=".cloud-test-strip-", dir=archive_parent) as staging:
+        staged = Path(staging) / "payload"
+        for relative, path in sorted(files.items()):
+            input_path = path
+            if is_elf(path):
+                if tool is None:
+                    tool = strip_tool(target)
+                shutil.copy2(path, staged)
+                subprocess.run([tool, "--strip-debug", "--remove-section=.debug_gdb_scripts",
+                                str(staged)], check=True,
+                               stdout=subprocess.DEVNULL)
+                input_path = staged
+                stripped_count += 1
+                original_bytes += path.stat().st_size
+                stripped_bytes += staged.stat().st_size
+            bundle.add(input_path, arcname=relative, recursive=False)
+    print(f"Stripped debug sections from {stripped_count} ELF files "
+          f"({original_bytes:,} -> {stripped_bytes:,} bytes)")
 
 
 def build(archive, feature_names, target=None, source_sha=None):
@@ -137,7 +188,7 @@ def build(archive, feature_names, target=None, source_sha=None):
             out_dir = Path(message["out_dir"])
             if message["package_id"] in members and out_dir.is_relative_to(build_dir):
                 for path in out_dir.rglob("*"):
-                    if path.is_file():
+                    if path.is_file() and is_runtime_asset(path):
                         add_file(path)
                 if message["package_id"] == package["id"]:
                     runtime_env["OUT_DIR"] = str(out_dir)
@@ -178,8 +229,7 @@ def build(archive, feature_names, target=None, source_sha=None):
         info.size = len(content)
         info.mode = 0o644
         bundle.addfile(info, io.BytesIO(content))
-        for relative, path in sorted(files.items()):
-            bundle.add(path, arcname=relative, recursive=False)
+        archive_files(bundle, files, archive.parent, target)
     print(f"Archived {len(tests)} test executables: {archive} ({archive.stat().st_size:,} bytes)")
 
 

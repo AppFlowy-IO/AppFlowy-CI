@@ -7,7 +7,8 @@ RUN test "$(dpkg --print-architecture)" = arm64 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 clang libclang-dev lld protobuf-compiler pkg-config \
-        g++-x86-64-linux-gnu libssl-dev:arm64 libssl-dev:amd64 \
+        binutils-x86-64-linux-gnu g++-x86-64-linux-gnu \
+        libssl-dev:arm64 libssl-dev:amd64 \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add x86_64-unknown-linux-gnu \
     && ln -s /usr/bin/ld.lld /usr/local/bin/x86_64-linux-gnu-ld.lld
@@ -33,8 +34,10 @@ COPY --from=ci-tools /cloud_test_binaries.py /ci-tools/cloud_test_binaries.py
 COPY . .
 ARG SOURCE_SHA
 ARG TEST_FEATURES=ai-test-enabled,sync-v2,ci-test
-# Retain complete Cargo outputs locally, including linked test binaries. Keep
-# this builder/cache separate from image builds and serialize access to each mount.
+# Retain complete Cargo outputs locally, including linked test binaries. The
+# archive helper strips debug sections from temporary copies before transfer;
+# this builder/cache remains complete for reuse. Keep it separate from image
+# builds and serialize access to each mount.
 RUN --mount=type=cache,id=cloud-tests-target,target=/home/runner/work/AppFlowy-CI/AppFlowy-CI/target,sharing=locked \
     --mount=type=cache,id=cloud-tests-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cloud-tests-git,target=/usr/local/cargo/git,sharing=locked \
