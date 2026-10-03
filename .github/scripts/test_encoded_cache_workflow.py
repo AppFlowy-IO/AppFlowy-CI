@@ -27,6 +27,7 @@ REPORTED_JOBS = (
     "build_worker",
     "build_search",
     "build_mcp",
+    "image_build_gate",
     "test",
     *CACHE_JOBS,
 )
@@ -113,10 +114,12 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
                 if isinstance(dependencies, str):
                     dependencies = [dependencies]
                 self.assertIn("verify_test_module_coverage", dependencies)
+                self.assertIn("image_build_gate", dependencies)
                 self.assertIn(
                     "needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'",
                     job["if"],
                 )
+                self.assertIn("needs.image_build_gate.result == 'success'", job["if"])
                 checkout = next(
                     step for step in job["steps"]
                     if step.get("with", {}).get("repository")
@@ -142,6 +145,20 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         )
         self.assertNotIn("continue-on-error", runner)
         self.assertNotIn("|| true", runner["run"])
+
+    def test_image_gate_requires_the_selected_builder_and_all_fallback_jobs(self):
+        gate = self.jobs["image_build_gate"]
+        self.assertEqual(
+            set(gate["needs"]),
+            {
+                "image_source", "build_test_binaries", "build_self_hosted", "build_cloud",
+                "build_worker", "build_search", "build_mcp",
+            },
+        )
+        self.assertIn("needs.build_self_hosted.result == 'success'", gate["if"])
+        for job in ("build_test_binaries", "build_cloud", "build_worker", "build_search", "build_mcp"):
+            with self.subTest(job=job):
+                self.assertIn(f"needs.{job}.result == 'success'", gate["if"])
 
     def test_observability_runs_both_checks_with_verified_prometheus(self):
         job = self.jobs["cache-observability"]
