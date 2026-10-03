@@ -23,7 +23,12 @@ IDENTITY = re.compile(
     r"^\[ci source=(AppFlowy-IO/[A-Za-z-]+) pr=(none|[1-9][0-9]*) "
     r"parent=(none|[1-9][0-9]*-[1-9][0-9]*)\] "
 )
-IMAGE_REQUEST = re.compile(r"CI images ([1-9][0-9]*)-([1-9][0-9]*) \([a-f0-9]{40}\)")
+# The PR suffix is display-only. Keep it optional so cleanup can still identify
+# image runs dispatched by older AppFlowy-CI revisions.
+IMAGE_REQUEST = re.compile(
+    r"CI images ([1-9][0-9]*)-([1-9][0-9]*) \([a-f0-9]{40}\)"
+    r"(?: \[PR #[1-9][0-9]*\])?"
+)
 # #42 dispatchers check out default-branch scripts, including on retries. Retain
 # their read-only lookup interface without enrolling these workflows in cleanup.
 CHILD_WORKFLOWS = {

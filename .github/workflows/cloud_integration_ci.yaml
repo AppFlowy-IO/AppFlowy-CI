@@ -105,6 +105,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
           CI_TOOLS_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
         run: python3 .github/scripts/request_image_build.py
 
   # The matrices below select test modules and standalone targets through

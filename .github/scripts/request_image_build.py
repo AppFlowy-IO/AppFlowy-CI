@@ -48,12 +48,16 @@ def find_run(request, title):
 
 def request_build(source_sha, request_id, request=api, wait=time.sleep,
                   now=time.monotonic, timeout=330 * 60, *, ci_tools_sha=None,
-                  test_features=None, test_rust_toolchain=None):
+                  test_features=None, test_rust_toolchain=None, pr_number=None):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
         raise ValueError("Expected the AppFlowy-CI run ID and attempt")
     inputs = {"source_sha": source_sha, "request_id": request_id}
+    if pr_number:
+        if not re.fullmatch(r"[1-9][0-9]*", pr_number):
+            raise ValueError("Expected a positive Cloud pull request number")
+        inputs["pr_number"] = pr_number
     required_artifacts = set(ARTIFACTS)
     if ci_tools_sha:
         if not re.fullmatch(r"[a-f0-9]{40}", ci_tools_sha):
@@ -66,6 +70,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
                       test_rust_toolchain=test_rust_toolchain)
         required_artifacts.add(f"cloud-test-binaries-{source_sha}")
     title = f"CI images {request_id} ({source_sha})"
+    if pr_number:
+        title += f" [PR #{pr_number}]"
     started = now()
     deadline = started + timeout
     run = find_run(request, title)
@@ -89,7 +95,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         print(f"Waiting for {url}", flush=True)
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             description = "Images and compiled Cloud tests" if ci_tools_sha else "Images"
-            print(f"{description} for {source_sha}: [self-hosted build]({url}).", file=summary)
+            pr_label = f" for PR #{pr_number}" if pr_number else ""
+            print(f"{description}{pr_label} for {source_sha}: [self-hosted build]({url}).", file=summary)
         last_status = None
         last_report = started
         while True:
@@ -139,6 +146,7 @@ def main():
         ci_tools_sha=os.environ.get("CI_TOOLS_SHA"),
         test_features=os.environ.get("CLOUD_TEST_FEATURES"),
         test_rust_toolchain=os.environ.get("RUST_TOOLCHAIN"),
+        pr_number=os.environ.get("PR_NUMBER") or None,
     )
 
 

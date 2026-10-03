@@ -27,9 +27,11 @@ class FakeGitHub:
     def request(self, method, path, payload=None):
         self.calls.append((method, path, payload))
         if method == "POST" and path.endswith("/dispatches"):
+            pr_number = (payload or {}).get("inputs", {}).get("pr_number")
+            suffix = f" [PR #{pr_number}]" if pr_number else ""
             self.run = {
                 "id": 42, "status": "queued", "conclusion": None,
-                "display_title": f"CI images {REQUEST_ID} ({SHA})",
+                "display_title": f"CI images {REQUEST_ID} ({SHA}){suffix}",
             }
         elif method == "POST" and path.endswith("/cancel"):
             return None
@@ -89,6 +91,14 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(self.github.writes[0][2]["inputs"], {
             "source_sha": SHA, "request_id": REQUEST_ID, **tools,
         })
+
+    def test_pr_number_is_forwarded_and_added_to_private_run_title(self):
+        self.assertEqual(self.request(pr_number="1190"), 42)
+        self.assertEqual(self.github.writes[0][2]["inputs"], {
+            "source_sha": SHA, "request_id": REQUEST_ID, "pr_number": "1190",
+        })
+        summary = Path(os.environ["GITHUB_STEP_SUMMARY"]).read_text()
+        self.assertIn("for PR #1190", summary)
 
     def test_test_archive_is_required_even_when_all_images_succeed(self):
         for archive in (None, {"name": f"cloud-test-binaries-{SHA}", "expired": True},
@@ -165,9 +175,14 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(self.github.writes[-1][:2], ("POST", f"{build.API_ROOT}/runs/42/cancel"))
 
     def test_invalid_refs_cannot_dispatch_a_build(self):
-        for sha, request_id in (("main", REQUEST_ID), (SHA, "untrusted\ninput")):
-            with self.subTest(sha=sha, request_id=request_id), self.assertRaises(ValueError):
-                build.request_build(sha, request_id, request=self.github.request)
+        for sha, request_id, pr_number in (
+            ("main", REQUEST_ID, None), (SHA, "untrusted\ninput", None),
+            (SHA, REQUEST_ID, "0"), (SHA, REQUEST_ID, "1190\nother"),
+        ):
+            with self.subTest(sha=sha, request_id=request_id, pr_number=pr_number), \
+                    self.assertRaises(ValueError):
+                build.request_build(sha, request_id, pr_number=pr_number,
+                                    request=self.github.request)
         self.assertFalse(self.github.calls)
 
     def test_ambiguous_dispatch_is_not_retried(self):
