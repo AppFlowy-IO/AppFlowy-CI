@@ -97,8 +97,10 @@ CPU and memory without Docker resource quotas. Its cache survives runner jobs an
 
 The GitHub fallback compiler and the three package lanes use Cargo dependency snapshots and
 `sccache` with GitHub's cache v2 API. Each owns a snapshot and is its only writer.
-Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. Keep
-the pinned Rust toolchain and `CARGO_INCREMENTAL=0`; compiler caching requires incremental builds off.
+Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. The
+workflow disables dev/test debug symbols and does not persist the root compiler's `target/`
+snapshot; `sccache` retains reusable compiler outputs instead. Keep the pinned Rust toolchain and
+`CARGO_INCREMENTAL=0`; compiler caching requires incremental builds off.
 The workflow pins the sccache action and binary, retries startup once, and falls back to ordinary
 compilation if compiler-cache setup fails. Each GitHub compiling job's summary shows the Cargo cache hit,
 writer role, and compiler cache hits/misses. GitHub cache storage is shared with other workflows;

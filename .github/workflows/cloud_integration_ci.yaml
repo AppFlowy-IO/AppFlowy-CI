@@ -56,6 +56,10 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: true
   # Disable incremental compilation in CI (faster clean builds)
   CARGO_INCREMENTAL: "0"
+  # Integration tests do not need debugger symbols. Keeping them out of test
+  # artifacts substantially lowers the peak target/ size on GitHub runners.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   image_source:
@@ -568,6 +572,9 @@ jobs:
           workspaces: "."
           shared-key: cloud-integration-${{ env.CLOUD_CACHE_GROUP }}
           save-if: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
+          # The root compiler uses sccache for compiler outputs. Do not restore
+          # or upload its much larger target snapshot on the fallback runner.
+          cache-target: ${{ env.CLOUD_CACHE_GROUP != 'root' }}
           cache-bin: false
           cache-all-crates: false
 
