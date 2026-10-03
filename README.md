@@ -129,8 +129,10 @@ remain supported.
 
 The Cloud integration workflow also runs the encoded-collab cache contracts and cache dashboard
 checks from the requested private Cloud ref. These jobs use disposable PostgreSQL, private Redis
-and S3 fixtures, and four Rust test threads; they do not wait for the application images. The Rust
-runner first builds the ordinary indexing library, then runs the selected cache and Worker tests.
+and S3 fixtures, and four Rust test threads. They start only after the selected image builder and
+shared test-binary gate succeeds, and are skipped when image construction is cancelled or fails, so
+they cannot keep a failed image request running. The Rust runner first builds the ordinary indexing
+library, then runs the selected cache and Worker tests.
 The dashboard job validates Prometheus queries and both CI Compose cache configurations.
 
 Older Cloud refs with none of `script/test_encoded_cache.sh`,
