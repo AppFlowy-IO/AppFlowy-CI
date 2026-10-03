@@ -29,9 +29,10 @@ source commit. Artifact retention is one day.
 
 Automatic cleanup covers only `cloud_integration_ci.yaml` and its private laptop builds.
 The integration run title records the Cloud PR and parent run attempt. Closing or merging that PR,
-or cancelling its parent webhook, cancels the integration run and its image/test build. Cancelling the
-integration run also cancels its private build. Other workflows, including AppFlowy-Premium client
-CI, are outside this cleanup.
+including a post-merge push build whose commit is associated with the PR, cancels the integration run
+and its image/test build. Direct branch pushes without an associated PR remain active. Cancelling the
+integration run also cancels its private build. Other workflows, including AppFlowy-Premium client CI,
+are outside this cleanup.
 
 Integration result notifications use `!cancelled()`: successful and failed runs report results,
 while cancelled runs release their PR concurrency slot without waiting for a notification runner.
