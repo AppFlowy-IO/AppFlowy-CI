@@ -343,48 +343,40 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         self.assertEqual(step("test", "Run Tests")["env"]["RUN_ROOT_UNIT_TESTS"],
                          "${{ matrix.test_root_unit == true }}")
 
-    def matrix_will_run(self, builder, **results):
+    def matrix_will_run(self, **results):
         needs = {}
         for job in WORKFLOW["jobs"]["test"]["needs"]:
-            unused = ((job == "build_self_hosted" and builder == "github-hosted")
-                      or (job.startswith("build_") and job != "build_self_hosted"
-                          and builder == "self-hosted"))
-            needs[job] = SimpleNamespace(result=results.get(job, "skipped" if unused else "success"))
-        needs["image_source"].outputs = SimpleNamespace(builder=builder)
+            needs[job] = SimpleNamespace(result=results.get(job, "success"))
         expression = WORKFLOW["jobs"]["test"]["if"]
         expression = expression.replace("always()", "True").replace("!cancelled()", "True")
         expression = expression.replace("&&", "and").replace("||", "or")
         return eval(expression, {"__builtins__": {}}, {"needs": SimpleNamespace(**needs)})
 
-    def test_unused_github_compilation_does_not_skip_self_hosted_tests(self):
-        self.assertTrue(self.matrix_will_run("self-hosted"))
-        self.assertTrue(self.matrix_will_run("github-hosted"))
-        for builder, job in (("self-hosted", "build_self_hosted"),
-                             ("github-hosted", "build_test_binaries"),
-                             ("github-hosted", "build_cloud")):
-            for result in ("failure", "skipped", "cancelled"):
-                with self.subTest(builder=builder, job=job, result=result):
-                    self.assertFalse(self.matrix_will_run(builder, **{job: result}))
-
-    def test_shared_compilation_can_overlap_image_builds(self):
+    def test_private_self_hosted_build_is_required_before_tests(self):
         jobs = WORKFLOW["jobs"]
-        self.assertEqual(jobs["build_test_binaries"]["needs"], "image_source")
-        self.assertEqual(jobs["build_test_binaries"]["runs-on"], jobs["test"]["runs-on"])
+        self.assertTrue(self.matrix_will_run())
+        for result in ("failure", "skipped", "cancelled"):
+            with self.subTest(result=result):
+                self.assertFalse(self.matrix_will_run(build_self_hosted=result))
+        self.assertEqual(jobs["test"]["needs"], ["image_source", "build_self_hosted"])
+        self.assertIn("needs.build_self_hosted.result == 'success'", jobs["test"]["if"])
+        for removed in ("build_test_binaries", "build_cloud", "build_worker", "build_search", "build_mcp"):
+            self.assertNotIn(removed, jobs)
+
+    def test_shared_archive_is_consumed_from_private_build(self):
+        jobs = WORKFLOW["jobs"]
         self.assertEqual(jobs["test"]["runs-on"], "ubuntu-24.04")
-        self.assertIn("build_test_binaries", jobs["test"]["needs"])
-        self.assertIn("needs.build_test_binaries.result == 'success'", jobs["test"]["if"])
-        self.assertEqual(jobs["build_test_binaries"]["if"],
-                         "needs.image_source.outputs.builder == 'github-hosted'")
+        self.assertNotIn("build_test_binaries", jobs)
 
     def test_consumers_download_the_producers_source_specific_artifact(self):
-        upload = step("build_test_binaries", "Upload shared Cloud test binaries")["with"]
         download = step("test", "Download shared Cloud test binaries")["with"]
-        self.assertEqual(upload["name"], download["name"])
-        self.assertIn("needs.image_source.outputs.sha", upload["name"])
-        self.assertTrue(upload["overwrite"])  # A full rerun replaces this run's archive.
         images = step("test", "Download Docker Images")["with"]
         for key in ("repository", "run-id", "github-token"):
             self.assertEqual(download[key], images[key])
+        self.assertEqual(download["repository"], "AppFlowy-IO/AppFlowy-Cloud-Premium")
+        self.assertEqual(download["run-id"], "${{ needs.build_self_hosted.outputs.run_id }}")
+        self.assertEqual(download["github-token"], "${{ secrets.ADMIN_GITHUB_TOKEN }}")
+        self.assertIn("needs.image_source.outputs.sha", download["name"])
 
     def test_cross_build_rejects_host_architecture_executables(self):
         with tempfile.TemporaryDirectory() as directory:

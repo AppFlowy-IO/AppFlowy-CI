@@ -13,13 +13,12 @@ Merge the Cloud Premium builder's `ci_tools_sha` support before enabling this ca
 (dispatch/cancel builds and download artifacts). The five runners are registered in
 `AppFlowy-IO/AppFlowy-Cloud-Premium`; AppFlowy-CI needs no registered runner.
 
-Manual runs default `image_builder` to `self-hosted`. Choose `github-hosted` to use the existing
-image and shared test build jobs when the laptop is unavailable. For automatic runs, set repository
-variable `CLOUD_IMAGE_BUILD_RUNNER=github-hosted` to use that fallback;
-unset it or set `self-hosted` for laptop builds. `Wait for self-hosted images and Cloud test binaries`
-dispatches one private build and waits up to 330 minutes, reporting progress about once per minute.
-It links that build in its job summary and attempts to cancel only that build if interrupted. The four
-`GitHub fallback` image jobs and GitHub's shared test compilation are skipped in this mode.
+Every integration run uses the private ARM64 self-hosted build. The workflow dispatches one private
+build and waits up to 330 minutes, reporting progress about once per minute. It links that build in
+its job summary and attempts to cancel only that build if interrupted. If no self-hosted runner is
+available, the build remains queued or fails; it never silently moves compilation to a GitHub-hosted
+runner. The integration test matrix and its package-only Rust lanes still run on GitHub-hosted
+runners after the private images and shared Cloud test binaries are ready.
 
 Release and integration builds have separate workflow queues and image caches. The laptop's
 current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
@@ -95,8 +94,8 @@ The laptop keeps registry downloads, Git dependencies and the complete Cargo `ta
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
 CPU and memory without Docker resource quotas. Its cache survives runner jobs and laptop restarts.
 
-The GitHub fallback compiler and the three package lanes use Cargo dependency snapshots and
-`sccache` with GitHub's cache v2 API. Each owns a snapshot and is its only writer.
+The three package lanes use Cargo dependency snapshots and `sccache` with GitHub's cache v2 API.
+Each owns a snapshot and is its only writer.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. The
 workflow disables dev/test debug symbols and does not persist the root compiler's `target/`
 snapshot; `sccache` retains reusable compiler outputs instead. Keep the pinned Rust toolchain and

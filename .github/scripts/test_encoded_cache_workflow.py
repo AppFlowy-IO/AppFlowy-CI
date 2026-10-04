@@ -20,13 +20,8 @@ SUITE_FILES = (
 CACHE_JOBS = ("cache-contracts", "cache-observability")
 REPORTED_JOBS = (
     "image_source",
-    "build_test_binaries",
     "build_self_hosted",
     "verify_test_module_coverage",
-    "build_cloud",
-    "build_worker",
-    "build_search",
-    "build_mcp",
     "image_build_gate",
     "test",
     *CACHE_JOBS,
@@ -146,19 +141,18 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", runner)
         self.assertNotIn("|| true", runner["run"])
 
-    def test_image_gate_requires_the_selected_builder_and_all_fallback_jobs(self):
+    def test_image_gate_requires_the_private_self_hosted_build(self):
         gate = self.jobs["image_build_gate"]
-        self.assertEqual(
-            set(gate["needs"]),
-            {
-                "image_source", "build_test_binaries", "build_self_hosted", "build_cloud",
-                "build_worker", "build_search", "build_mcp",
-            },
-        )
+        self.assertEqual(set(gate["needs"]), {"image_source", "build_self_hosted"})
         self.assertIn("needs.build_self_hosted.result == 'success'", gate["if"])
+        self.assertNotIn("builder", self.jobs["image_source"].get("outputs", {}))
         for job in ("build_test_binaries", "build_cloud", "build_worker", "build_search", "build_mcp"):
             with self.subTest(job=job):
-                self.assertIn(f"needs.{job}.result == 'success'", gate["if"])
+                self.assertNotIn(job, self.jobs)
+        workflow_text = WORKFLOW.read_text()
+        self.assertNotIn("image_builder", workflow_text)
+        self.assertNotIn("CLOUD_IMAGE_BUILD_RUNNER", workflow_text)
+        self.assertNotIn("github-hosted", workflow_text)
 
     def test_observability_runs_both_checks_with_verified_prometheus(self):
         job = self.jobs["cache-observability"]
@@ -203,25 +197,19 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertEqual(self.aggregate({job: "failure"}), "failure")
 
-    def test_shared_binary_build_failure_cannot_report_success_for_skipped_tests(self):
-        self.assertEqual(self.aggregate({"build_test_binaries": "failure", "test": "skipped"}),
+    def test_private_build_failure_cannot_report_success_for_skipped_tests(self):
+        self.assertEqual(self.aggregate({"build_self_hosted": "failure", "test": "skipped"}),
                          "failure")
 
     def test_absent_legacy_suite_does_not_fail_successful_integration_tests(self):
         self.assertEqual(self.aggregate({job: "skipped" for job in CACHE_JOBS}), "success")
 
     def test_setup_and_build_failures_cannot_be_hidden_by_skipped_tests(self):
-        for job in REPORTED_JOBS[:7]:
+        for job in REPORTED_JOBS[:4]:
             with self.subTest(job=job):
                 self.assertEqual(
                     self.aggregate({job: "failure", "test": "skipped"}), "failure"
                 )
-
-    def test_unused_image_builder_does_not_fail_the_selected_builder(self):
-        for skipped in (("build_self_hosted",),
-                        ("build_cloud", "build_worker", "build_search", "build_mcp")):
-            with self.subTest(skipped=skipped):
-                self.assertEqual(self.aggregate({job: "skipped" for job in skipped}), "success")
 
     def test_cancellation_is_reported_unless_another_gate_failed(self):
         self.assertEqual(self.aggregate({"cache-contracts": "cancelled"}), "cancelled")

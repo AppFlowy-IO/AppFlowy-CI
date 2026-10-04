@@ -14,14 +14,6 @@ on:
         description: Branch or commit to test (e.g. refs/pull/123/head)
         required: true
         type: string
-      image_builder:
-        description: Where to build images and Cloud test binaries (tests run on GitHub)
-        type: choice
-        required: true
-        default: self-hosted
-        options:
-          - self-hosted
-          - github-hosted
       pr_number:
         description: PR number (optional, for concurrency grouping)
         required: false
@@ -63,12 +55,11 @@ env:
 
 jobs:
   image_source:
-    name: Resolve Cloud source and image builder
+    name: Resolve Cloud source
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.source.outputs.sha }}
-      builder: ${{ steps.source.outputs.builder }}
     steps:
       - name: Checkout requested Cloud ref
         uses: actions/checkout@v4
@@ -77,23 +68,15 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
           persist-credentials: false
-      - name: Pin the source for images and tests
+      - name: Pin the source commit
         id: source
-        env:
-          IMAGE_BUILDER: ${{ inputs.image_builder || vars.CLOUD_IMAGE_BUILD_RUNNER || 'self-hosted' }}
         run: |
-          case "$IMAGE_BUILDER" in
-            self-hosted|github-hosted) ;;
-            *) echo 'Unsupported CLOUD_IMAGE_BUILD_RUNNER'; exit 1 ;;
-          esac
           source_sha="$(git rev-parse --verify HEAD)"
           printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
-          printf 'builder=%s\n' "$IMAGE_BUILDER" >> "$GITHUB_OUTPUT"
 
   build_self_hosted:
     name: Wait for self-hosted images and Cloud test binaries
     needs: image_source
-    if: needs.image_source.outputs.builder == 'self-hosted'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     outputs:
@@ -259,440 +242,27 @@ jobs:
       - name: Verify both CI stacks activate all cache tiers
         run: python3 script/test_encoded_cache_compose.py
 
-  build_cloud:
-    needs: image_source
-    if: needs.image_source.outputs.builder == 'github-hosted'
-    name: Build appflowy_cloud Image (GitHub fallback)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Private Repo
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ needs.image_source.outputs.sha }}
-
-      - name: Free disk space on runner
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          docker builder prune -af || true
-          docker image prune -af || true
-
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Prepare env for Docker build
-        run: cp deploy.env .env
-
-      # NOTE: the cloud `Dockerfile` ignores PROFILE and always builds --release, so
-      # test-only server code must sit behind the `ci-test` cargo feature rather than
-      # `debug_assertions`. FEATURES below must stay in sync with the `--features`
-      # passed to `cargo test`, or those tests call endpoints that 404.
-      - name: Build Docker Image (cached)
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose-ci.yml
-          targets: appflowy_cloud
-          load: true
-          set: |
-            *.platform=linux/amd64
-            *.cache-from=type=gha,scope=cloud-integration-cloud
-            *.cache-to=type=gha,scope=cloud-integration-cloud,mode=max
-            *.args.BUILDKIT_INLINE_CACHE=1
-            *.args.BUILDKIT_MULTI_PLATFORM=0
-            *.args.PROFILE=debug
-            *.args.APP_VERSION=0.9.999
-            *.args.FEATURES=test-mailer,ci-test
-
-      - name: Save Docker Image
-        run: docker save appflowyinc/appflowy_cloud_premium:latest-amd64 | gzip > appflowy_cloud.tar.gz
-
-      - name: Upload Docker Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-cloud
-          path: appflowy_cloud.tar.gz
-          retention-days: 1
-
-  build_worker:
-    needs: image_source
-    if: needs.image_source.outputs.builder == 'github-hosted'
-    name: Build appflowy_worker Image (GitHub fallback)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Private Repo
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ needs.image_source.outputs.sha }}
-
-      - name: Free disk space on runner
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          docker builder prune -af || true
-          docker image prune -af || true
-
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Prepare env for Docker build
-        run: cp deploy.env .env
-
-      - name: Build Docker Image (cached)
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose-ci.yml
-          targets: appflowy_worker
-          load: true
-          set: |
-            *.platform=linux/amd64
-            *.cache-from=type=gha,scope=cloud-integration-worker
-            *.cache-to=type=gha,scope=cloud-integration-worker,mode=max
-            *.args.BUILDKIT_INLINE_CACHE=1
-            *.args.BUILDKIT_MULTI_PLATFORM=0
-            *.args.PROFILE=debug
-            *.args.APP_VERSION=0.9.999
-
-      - name: Save Docker Image
-        run: docker save appflowyinc/appflowy_worker_premium:latest-amd64 | gzip > appflowy_worker.tar.gz
-
-      - name: Upload Docker Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-worker
-          path: appflowy_worker.tar.gz
-          retention-days: 1
-
-  build_search:
-    needs: image_source
-    if: needs.image_source.outputs.builder == 'github-hosted'
-    name: Build appflowy_search Image (GitHub fallback)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Private Repo
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ needs.image_source.outputs.sha }}
-
-      - name: Free disk space on runner
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          docker builder prune -af || true
-          docker image prune -af || true
-
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Prepare env for Docker build
-        run: cp deploy.env .env
-
-      - name: Build Docker Image (cached)
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose-ci.yml
-          targets: appflowy_search
-          load: true
-          set: |
-            *.platform=linux/amd64
-            *.cache-from=type=gha,scope=cloud-integration-search
-            *.cache-to=type=gha,scope=cloud-integration-search,mode=max
-            *.args.BUILDKIT_INLINE_CACHE=1
-            *.args.BUILDKIT_MULTI_PLATFORM=0
-            *.args.PROFILE=debug
-            *.args.APP_VERSION=0.9.999
-
-      - name: Save Docker Image
-        run: docker save appflowyinc/appflowy_search_premium:latest-amd64 | gzip > appflowy_search.tar.gz
-
-      - name: Upload Docker Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-search
-          path: appflowy_search.tar.gz
-          retention-days: 1
-
-  build_mcp:
-    needs: image_source
-    if: needs.image_source.outputs.builder == 'github-hosted'
-    name: Build appflowy_mcp Image (GitHub fallback)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Private Repo
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ needs.image_source.outputs.sha }}
-
-      - name: Free disk space on runner
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          docker builder prune -af || true
-          docker image prune -af || true
-
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Prepare env for Docker build
-        run: cp deploy.env .env
-
-      - name: Build Docker Image (cached)
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose-ci.yml
-          targets: appflowy_mcp
-          load: true
-          set: |
-            *.platform=linux/amd64
-            *.cache-from=type=gha,scope=cloud-integration-mcp
-            *.cache-to=type=gha,scope=cloud-integration-mcp,mode=max
-            *.args.BUILDKIT_INLINE_CACHE=1
-            *.args.BUILDKIT_MULTI_PLATFORM=0
-            *.args.PROFILE=debug
-            *.args.APP_VERSION=0.9.999
-
-      - name: Save Docker Image
-        run: docker save appflowyinc/appflowy_mcp_premium:latest-amd64 | gzip > appflowy_mcp.tar.gz
-
-      - name: Upload Docker Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-mcp
-          path: appflowy_mcp.tar.gz
-          retention-days: 1
-
   image_build_gate:
-    name: Confirm image builds completed
-    needs: [image_source, build_test_binaries, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
+    name: Confirm self-hosted image build completed
+    needs: [image_source, build_self_hosted]
     if: >-
-      always() && !cancelled() && needs.image_source.result == 'success' &&
-      ((needs.image_source.outputs.builder == 'self-hosted' &&
-        needs.build_self_hosted.result == 'success') ||
-       (needs.image_source.outputs.builder == 'github-hosted' &&
-        needs.build_test_binaries.result == 'success' &&
-        needs.build_cloud.result == 'success' &&
-        needs.build_worker.result == 'success' &&
-        needs.build_search.result == 'success' &&
-        needs.build_mcp.result == 'success'))
+      always() && !cancelled() &&
+      needs.image_source.result == 'success' &&
+      needs.build_self_hosted.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Record successful image build gate
-        run: echo 'Selected image builder and shared test binaries completed successfully.'
-
-  build_test_binaries:
-    name: Compile shared Cloud test binaries (GitHub fallback)
-    needs: image_source
-    if: needs.image_source.outputs.builder == 'github-hosted'
-    # Keep the binary producer and consumers on one OS release during ubuntu-latest migrations.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      CLOUD_CACHE_GROUP: root
-      CLOUD_CACHE_WRITER: 'true'
-      CLOUD_RUN_ROOT: 'true'
-      CLOUD_COMPILE_TESTS: 'true'
-      RUSTC_WRAPPER: ''
-    steps:
-      - name: Checkout Private Repo
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ needs.image_source.outputs.sha }}
-          persist-credentials: false
-      - &cloud_ci_tools
-        name: Checkout CI tools
-        if: env.CLOUD_RUN_ROOT == 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: ci-tools
-          persist-credentials: false
-
-      - &cloud_free_disk
-        name: Free disk space on runner
-        run: |
-          echo "Disk usage before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/ghc
-          docker builder prune -af || true
-          docker image prune -af || true
-          echo "Disk usage after cleanup:"
-          df -h
-
-      - &cloud_rust_toolchain
-        if: env.CLOUD_COMPILE_TESTS == 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      # Root suites have the same Cargo features. Keep package-only configurations
-      # separate, and let one lane per group save each immutable snapshot.
-      - &cloud_cargo_cache
-        name: Restore Cargo dependencies
-        if: env.CLOUD_COMPILE_TESTS == 'true'
-        id: cargo_cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "."
-          shared-key: cloud-integration-${{ env.CLOUD_CACHE_GROUP }}
-          save-if: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
-          # The root compiler uses sccache for compiler outputs. Do not restore
-          # or upload its much larger target snapshot on the fallback runner.
-          cache-target: ${{ env.CLOUD_CACHE_GROUP != 'root' }}
-          cache-bin: false
-          cache-all-crates: false
-
-      - &cloud_sccache
-        name: Setup sccache
-        if: env.CLOUD_COMPILE_TESTS == 'true'
-        id: sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: v0.18.0
-          # Report only the server actually used for compilation. The action's
-          # post step otherwise starts a fresh server even after setup failed.
-          disable_annotations: true
-        continue-on-error: true
-
-      - &cloud_sccache_config
-        name: Configure sccache
-        if: env.CLOUD_COMPILE_TESTS == 'true'
-        id: sccache_config
-        timeout-minutes: 2
-        env:
-          SCCACHE_SETUP_OUTCOME: ${{ steps.sccache.outcome }}
-        run: |
-          echo "enabled=false" >> "$GITHUB_OUTPUT"
-          if [[ "$SCCACHE_SETUP_OUTCOME" != success ]]; then
-            echo "::warning::sccache installation failed; using the Cargo dependency cache only."
-            exit 0
-          fi
-          if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "::warning::GitHub cache v2 credentials are unavailable; compiler caching is disabled."
-            exit 0
-          fi
-
-          export SCCACHE_GHA_ENABLED=true
-          timeout 5 sccache --stop-server 2>/dev/null || true
-          for attempt in 1 2; do
-            if timeout 15 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
-              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-              echo "enabled=true" >> "$GITHUB_OUTPUT"
-              echo "sccache is using the GitHub Actions cache."
-              exit 0
-            fi
-            timeout 5 sccache --stop-server 2>/dev/null || true
-            if [[ "$attempt" == 1 ]]; then
-              echo "Retrying compiler cache startup in 3 seconds."
-              sleep 3
-            fi
-          done
-          echo "::warning::sccache startup failed twice; using the Cargo dependency cache only."
-
-      - name: Install test build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libclang-dev libssl-dev pkg-config
-
-      - name: Compile and archive Cloud test executables
-        run: |
-          python3 ci-tools/.github/scripts/cloud_test_binaries.py build \
-            --features "$CLOUD_TEST_FEATURES" --archive "$RUNNER_TEMP/cloud-tests.tar.gz"
-
-      - name: Upload shared Cloud test binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
-          path: ${{ runner.temp }}/cloud-tests.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-          overwrite: true
-
-      - &cloud_cache_report
-        name: Report Rust cache usage
-        if: ${{ !cancelled() && env.CLOUD_COMPILE_TESTS == 'true' }}
-        env:
-          CACHE_GROUP: ${{ env.CLOUD_CACHE_GROUP }}
-          CACHE_WRITER: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
-          CARGO_CACHE_HIT: ${{ steps.cargo_cache.outputs.cache-hit || 'false' }}
-          SCCACHE_ENABLED: ${{ steps.sccache_config.outputs.enabled || 'false' }}
-        run: |
-          # Backticks in the printf formats are literal Markdown code spans.
-          # shellcheck disable=SC2016
-          {
-            printf '### Rust build cache\n\n'
-            printf -- '- Cargo cache group: `%s`\n' "$CACHE_GROUP"
-            printf -- '- Exact Cargo cache hit: `%s` (false may include a fallback restore)\n' "$CARGO_CACHE_HIT"
-            printf -- '- Cargo snapshot writer: `%s`\n' "$CACHE_WRITER"
-            printf -- '- Compiler cache enabled: `%s`\n\n' "$SCCACHE_ENABLED"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [[ "$SCCACHE_ENABLED" == true ]]; then
-            if timeout 10 sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt" 2>&1; then
-              cat "$RUNNER_TEMP/sccache-stats.txt"
-              {
-                printf '```text\n'
-                cat "$RUNNER_TEMP/sccache-stats.txt"
-                printf '\n```\n'
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::warning::Unable to collect compiler cache statistics."
-              printf 'Compiler cache statistics unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            printf 'Compiler caching was unavailable; see the setup warnings above.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Record successful self-hosted image build gate
+        run: echo 'Self-hosted images and shared Cloud test binaries completed successfully.'
 
   test:
     name: Integration Tests (${{ matrix.topic }})
     runs-on: ubuntu-24.04
-    needs: [image_source, build_test_binaries, build_self_hosted, build_cloud, build_worker, build_search, build_mcp]
+    needs: [image_source, build_self_hosted]
     if: >-
-      always() && !cancelled() && needs.image_source.result == 'success' &&
-      ((needs.image_source.outputs.builder == 'self-hosted' &&
-        needs.build_self_hosted.result == 'success') ||
-       (needs.image_source.outputs.builder == 'github-hosted' &&
-        needs.build_test_binaries.result == 'success' &&
-        needs.build_cloud.result == 'success' && needs.build_worker.result == 'success' &&
-        needs.build_search.result == 'success' && needs.build_mcp.result == 'success'))
+      always() && !cancelled() &&
+      needs.image_source.result == 'success' &&
+      needs.build_self_hosted.result == 'success'
     timeout-minutes: 60
     env:
       MINIO_DATA_DIR: /tmp/minio-data
@@ -875,13 +445,96 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
 
-      - *cloud_ci_tools
-      - *cloud_rust_toolchain
-      - *cloud_cargo_cache
-      - *cloud_sccache
-      - *cloud_sccache_config
+      - &cloud_ci_tools
+        name: Checkout CI tools
+        if: env.CLOUD_RUN_ROOT == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+      - &cloud_rust_toolchain
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
-      - *cloud_free_disk
+      # Root suites have the same Cargo features. Keep package-only configurations
+      # separate, and let one lane per group save each immutable snapshot.
+      - &cloud_cargo_cache
+        name: Restore Cargo dependencies
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: cargo_cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: cloud-integration-${{ env.CLOUD_CACHE_GROUP }}
+          save-if: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
+          # The root compiler uses sccache for compiler outputs. Do not restore
+          # or upload its much larger target snapshot for the root test lanes.
+          cache-target: ${{ env.CLOUD_CACHE_GROUP != 'root' }}
+          cache-bin: false
+          cache-all-crates: false
+      - &cloud_sccache
+        name: Setup sccache
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
+          # Report only the server actually used for compilation. The action's
+          # post step otherwise starts a fresh server even after setup failed.
+          disable_annotations: true
+        continue-on-error: true
+      - &cloud_sccache_config
+        name: Configure sccache
+        if: env.CLOUD_COMPILE_TESTS == 'true'
+        id: sccache_config
+        timeout-minutes: 2
+        env:
+          SCCACHE_SETUP_OUTCOME: ${{ steps.sccache.outcome }}
+        run: |
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          if [[ "$SCCACHE_SETUP_OUTCOME" != success ]]; then
+            echo "::warning::sccache installation failed; using the Cargo dependency cache only."
+            exit 0
+          fi
+          if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "::warning::GitHub cache v2 credentials are unavailable; compiler caching is disabled."
+            exit 0
+          fi
+
+          export SCCACHE_GHA_ENABLED=true
+          timeout 5 sccache --stop-server 2>/dev/null || true
+          for attempt in 1 2; do
+            if timeout 15 sccache --start-server 2>&1 && timeout 5 sccache --show-stats 2>&1; then
+              echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+              echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "sccache is using the GitHub Actions cache."
+              exit 0
+            fi
+            timeout 5 sccache --stop-server 2>/dev/null || true
+            if [[ "$attempt" == 1 ]]; then
+              echo "Retrying compiler cache startup in 3 seconds."
+              sleep 3
+            fi
+          done
+          echo "::warning::sccache startup failed twice; using the Cargo dependency cache only."
+
+      - &cloud_free_disk
+        name: Free disk space on runner
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /opt/ghc
+          docker builder prune -af || true
+          docker image prune -af || true
+          echo "Disk usage after cleanup:"
+          df -h
 
       - name: Download shared Cloud test binaries
         if: env.CLOUD_RUN_ROOT == 'true'
@@ -889,9 +542,9 @@ jobs:
         with:
           name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
           path: ${{ runner.temp }}/cloud-test-binaries
-          repository: ${{ needs.build_self_hosted.outputs.run_id && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || github.repository }}
-          run-id: ${{ needs.build_self_hosted.outputs.run_id || github.run_id }}
-          github-token: ${{ needs.build_self_hosted.outputs.run_id && secrets.ADMIN_GITHUB_TOKEN || github.token }}
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.build_self_hosted.outputs.run_id }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Restore and verify shared Cloud test binaries
         if: env.CLOUD_RUN_ROOT == 'true'
@@ -905,9 +558,9 @@ jobs:
         with:
           pattern: docker-image-*
           merge-multiple: true
-          repository: ${{ needs.build_self_hosted.outputs.run_id && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || github.repository }}
-          run-id: ${{ needs.build_self_hosted.outputs.run_id || github.run_id }}
-          github-token: ${{ needs.build_self_hosted.outputs.run_id && secrets.ADMIN_GITHUB_TOKEN || github.token }}
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.build_self_hosted.outputs.run_id }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Load Docker Images
         run: |
@@ -1260,7 +913,40 @@ jobs:
           export -f cargo
           bash script/test_final_account_deletion.sh --features "$CLOUD_TEST_FEATURES"
 
-      - *cloud_cache_report
+      - &cloud_cache_report
+        name: Report Rust cache usage
+        if: ${{ !cancelled() && env.CLOUD_COMPILE_TESTS == 'true' }}
+        env:
+          CACHE_GROUP: ${{ env.CLOUD_CACHE_GROUP }}
+          CACHE_WRITER: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
+          CARGO_CACHE_HIT: ${{ steps.cargo_cache.outputs.cache-hit || 'false' }}
+          SCCACHE_ENABLED: ${{ steps.sccache_config.outputs.enabled || 'false' }}
+        run: |
+          # Backticks in the printf formats are literal Markdown code spans.
+          # shellcheck disable=SC2016
+          {
+            printf '### Rust build cache\n\n'
+            printf -- '- Cargo cache group: `%s`\n' "$CACHE_GROUP"
+            printf -- '- Exact Cargo cache hit: `%s` (false may include a fallback restore)\n' "$CARGO_CACHE_HIT"
+            printf -- '- Cargo snapshot writer: `%s`\n' "$CACHE_WRITER"
+            printf -- '- Compiler cache enabled: `%s`\n\n' "$SCCACHE_ENABLED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$SCCACHE_ENABLED" == true ]]; then
+            if timeout 10 sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt" 2>&1; then
+              cat "$RUNNER_TEMP/sccache-stats.txt"
+              {
+                printf '```text\n'
+                cat "$RUNNER_TEMP/sccache-stats.txt"
+                printf '\n```\n'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Unable to collect compiler cache statistics."
+              printf 'Compiler cache statistics unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            printf 'Compiler caching was unavailable; see the setup warnings above.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Collect Docker logs
         if: failure()
@@ -1299,7 +985,7 @@ jobs:
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [image_source, build_test_binaries, build_self_hosted, verify_test_module_coverage, build_cloud, build_worker, build_search, build_mcp, image_build_gate, test, cache-contracts, cache-observability]
+    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability]
     # Report failures and skipped dependencies, but let cancelled runs release
     # their PR concurrency slot without waiting for a notification runner.
     if: ${{ !cancelled() }}
