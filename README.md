@@ -1,7 +1,8 @@
 # AppFlowy-CI
 
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
-AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Tests and coverage run on GitHub runners.
+AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
+run on GitHub runners; the Backup topic uses the private isolated VM for restore qualification.
 The requested Cloud ref resolves to one SHA for both images and tests. Four AMD64 image artifacts
 are downloaded from the private Cloud Premium run with their existing `latest-amd64` tags.
 For pull-request runs, the private run title includes the source PR number as
@@ -89,6 +90,38 @@ indexing backlog. Auth enables both Authentik and OpenLDAP profiles and runs SCI
 The standalone topic discovers every non-`main` Cargo test target, and the coverage gate requires a
 new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
 room for workflow setup, coverage and cache-contract jobs.
+
+**Backup** is an additional integration topic with a dedicated private deployment. After the
+shared image/test-binary build finishes, the public `Integration Tests (Backup)` job dispatches
+Cloud Premium's existing `backup-release-tests.yml` with `suite=ci`, the immutable source SHA,
+and the public run/attempt ID. It waits for the private result and includes failures in the
+integration notification. The existing self-hosted runners belong only to Cloud Premium, so the
+public job is a lightweight GitHub-hosted waiter; no additional public runner registration is needed.
+
+Cloud owns the Backup integration tests and their fixtures under its root `tests/backup/`
+directory. The private lane executes the source-owned `script/ci/test_backup.sh`, including the
+Rust harness, live PostgreSQL 16 integration tests, engine/retry tests, and a complete deployment
+built from that source. `docker-compose-backup.yml` runs Cloud, Worker, Search, MCP, GoTrue and
+Backup with their supporting services. It verifies original and redacted backup/export/restore, online edits,
+permissions, and restored search freshness. The ordinary hosted image artifacts cannot substitute
+for this stack: restore qualification builds each service's self-hosted policy. Large-database,
+Legacy physical recovery, pinned real-data and browser qualification remain separate lanes.
+
+The exact source checkout determines capability: neither the Compose file nor test entrypoint means
+an explicit skip for an older Cloud ref; either file missing from an otherwise present suite fails
+source resolution. Feature branches dispatch their own workflow definition. Pull-request refs resolve
+to their private head branch; a raw commit uses the default-branch workflow definition and still
+checks out that exact commit. Before dispatching raw commits, merge the private workflow's `ci` input
+support into Cloud main. Unsupported workflow inputs fail the public job rather than claiming tests
+passed.
+
+Backup restore verification and cleanup continue if a newer public run cancels its predecessor.
+The requester never cancels the private Backup run, and the obsolete-CI cleanup only cancels image
+builds. The private workflow keeps non-cancelling concurrency and bounded fixture cleanup. Its raw
+JSON/log evidence remains in the **private** repository because fixtures contain generated credentials
+and may contain source data. Public summaries link the private run/artifact and record identifiers;
+they do not download or republish the evidence. The waiter requires a successful private run and an
+unexpired `backup-integration-<run>-<attempt>` evidence artifact before reporting success.
 
 The laptop keeps registry downloads, Git dependencies and the complete Cargo `target/` directory in
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available

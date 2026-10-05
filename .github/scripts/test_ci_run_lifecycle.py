@@ -169,6 +169,16 @@ class CleanupTests(unittest.TestCase):
         self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1)]
         self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1), (lifecycle.CLOUD_REPO, 10)])
 
+    def test_backup_restore_survives_parent_cancellation_and_pr_close(self):
+        self.api.parents[(9, 1)] = {"status": "completed", "conclusion": "cancelled"}
+        self.api.runs[lifecycle.CI_REPO] = [run(1, parent=(9, 1))]
+        backup = run(11, workflow="backup-release-tests.yml", event="workflow_dispatch",
+                     status="in_progress")
+        backup["display_title"] = f"CI backup 1-1 ({'a' * 40})"
+        self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1), backup]
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1), (lifecycle.CLOUD_REPO, 10)])
+        self.assertFalse(any("runs/11" in path for path in self.api.cancellations))
+
     def test_cancelled_attempt_does_not_cancel_retry(self):
         self.api.parents[(9, 1)] = {"status": "completed", "conclusion": "cancelled"}
         self.api.parents[(9, 2)] = {

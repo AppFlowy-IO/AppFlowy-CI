@@ -60,6 +60,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.source.outputs.sha }}
+      ref: ${{ steps.source.outputs.ref }}
+      backup_available: ${{ steps.backup.outputs.enabled }}
     steps:
       - name: Checkout requested Cloud ref
         uses: actions/checkout@v4
@@ -70,9 +72,36 @@ jobs:
           persist-credentials: false
       - name: Pin the source commit
         id: source
+        env:
+          SOURCE_REF: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
         run: |
           source_sha="$(git rev-parse --verify HEAD)"
           printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          # Do not allow a malformed ref to inject another job output.
+          [[ -n "$SOURCE_REF" && "$SOURCE_REF" != *$'\n'* && "$SOURCE_REF" != *$'\r'* ]]
+          printf 'ref=%s\n' "$SOURCE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Backup integration capability
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(docker-compose-backup.yml script/ci/test_backup.sh)
+          present=0
+          for file in "${files[@]}"; do
+            if [[ -f "$file" ]]; then
+              present=$((present + 1))
+            fi
+          done
+          if (( present == 0 )); then
+            echo '::notice::This Cloud ref predates the Backup integration stack; skipping Backup.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          elif (( present == ${#files[@]} )); then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Incomplete Backup integration stack: docker-compose-backup.yml and script/ci/test_backup.sh must both exist.'
+            exit 1
+          fi
 
   build_self_hosted:
     name: Wait for self-hosted images and Cloud test binaries
@@ -982,10 +1011,36 @@ jobs:
             openldap_logs.txt
           retention-days: 1
 
+  backup:
+    name: Integration Tests (Backup)
+    needs: [image_source, build_self_hosted]
+    if: >-
+      always() && !cancelled() &&
+      needs.image_source.result == 'success' &&
+      needs.image_source.outputs.backup_available == 'true' &&
+      needs.build_self_hosted.result == 'success'
+    # The isolated ARM64 VM belongs to Cloud Premium, not this public repository.
+    # Wait for the shared compiler jobs before asking it to build the self-hosted
+    # Backup stack. Hosted Cloud images do not exercise restore service policies.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout CI tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run exact-source Backup tests on the isolated private runner
+        id: qualification
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+          SOURCE_REF: ${{ needs.image_source.outputs.ref }}
+        run: python3 .github/scripts/request_backup_tests.py
+
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability]
+    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, backup, cache-contracts, cache-observability]
     # Report failures and skipped dependencies, but let cancelled runs release
     # their PR concurrency slot without waiting for a notification runner.
     if: ${{ !cancelled() }}
