@@ -711,6 +711,8 @@ jobs:
     env:
       MINIO_DATA_DIR: /tmp/minio-data
       APPFLOWY_CLOUD_URL: https://localhost
+      # Only this job's disposable Compose database; never infer a developer database.
+      APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
 
     steps:
       - name: Checkout AppFlowy-Cloud-Premium code
@@ -797,10 +799,10 @@ jobs:
           echo "Pulling and starting containers..."
           docker compose -f docker-compose-ci.yml pull
           if [ "${{ matrix.cloud_test_suite }}" = "timeline" ]; then
-            # Timeline creation is Pro-gated on hosted release builds. Build this
-            # suite's Cloud image from the checked-out source with the self-hosted
-            # deployment feature so fresh Free workspaces can exercise creation.
-            export APPFLOWY_CLOUD_BUILD_FEATURES="disposable-email-domains,self-host-af,commercial-ci,ci-test"
+            # Timeline scenarios use a seeded account and exercise creation on
+            # self-hosted Cloud, where it does not require a hosted Pro plan.
+            # Build that deployment from the checked-out server source.
+            export APPFLOWY_CLOUD_BUILD_FEATURES="self-host-af,commercial-ci,ci-test"
             echo "Building the self-hosted Cloud image for Timeline tests"
             docker compose -f docker-compose-ci.yml build appflowy_cloud
           fi
@@ -928,6 +930,11 @@ jobs:
           find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
           pkg-config --modversion mpv || true
           pkg-config --modversion epoxy || true
+
+      - name: Install workspace plan fixture client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
 
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         # Leave time inside the 60-minute job limit to upload partial results.

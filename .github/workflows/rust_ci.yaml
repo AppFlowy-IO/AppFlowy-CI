@@ -97,6 +97,9 @@ jobs:
   test:
     name: Tests (${{ matrix.test_group }})
     runs-on: ubuntu-latest
+    env:
+      # Matches the disposable Compose PostgreSQL exposed to this host runner.
+      APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
     strategy:
       fail-fast: false
       matrix:
@@ -291,6 +294,11 @@ jobs:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: cargo check --workspace --no-default-features --features="dart"
 
+      - name: Install workspace plan fixture client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
       - name: Run Tests
         working-directory: frontend/rust-lib
         env:
@@ -310,6 +318,11 @@ jobs:
               --no-default-features --features="dart" \
               -- --skip local_ai_test --test-threads=2
           else
+            if [ "${{ matrix.test_group }}" = "integration_group1" ]; then
+              cargo test -p event-integration-test --lib \
+                --no-default-features --features="dart" workspace_plan::tests \
+                -- --include-ignored
+            fi
             # Run integration tests module by module
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
