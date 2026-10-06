@@ -191,7 +191,8 @@ jobs:
       needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true' &&
       needs.image_build_gate.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Cold package builds can exceed an hour before the Worker suites execute.
+    timeout-minutes: 120
     env:
       DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
       SQLX_OFFLINE: 'true'
