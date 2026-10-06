@@ -29,6 +29,9 @@ class WorkspacePlanFixtureWorkflowTest(unittest.TestCase):
                              if step.get("name", "").startswith(test_name))
                 self.assertLess(setup, tests)
                 self.assertIn("postgresql-client", job["steps"][setup]["run"])
+                if filename == "rust_ci.yaml":
+                    self.assertIn("workspace_plan::tests", job["steps"][tests]["run"])
+                    self.assertIn("--include-ignored", job["steps"][tests]["run"])
 
 
 if __name__ == "__main__":

@@ -318,6 +318,11 @@ jobs:
               --no-default-features --features="dart" \
               -- --skip local_ai_test --test-threads=2
           else
+            if [ "${{ matrix.test_group }}" = "integration_group1" ]; then
+              cargo test -p event-integration-test --lib \
+                --no-default-features --features="dart" workspace_plan::tests \
+                -- --include-ignored
+            fi
             # Run integration tests module by module
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
