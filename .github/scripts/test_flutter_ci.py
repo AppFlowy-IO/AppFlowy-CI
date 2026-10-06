@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -245,9 +246,15 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             script for script in run_scripts if "APPFLOWY_CLOUD_BUILD_FEATURES" in script
         )
         self.assertIn('matrix.cloud_test_suite', timeline_build)
-        self.assertIn("self-host-af", timeline_build)
-        self.assertIn("commercial-ci", timeline_build)
-        self.assertIn("ci-test", timeline_build)
+        feature_export = next(
+            line.strip() for line in timeline_build.splitlines()
+            if line.strip().startswith("export APPFLOWY_CLOUD_BUILD_FEATURES=")
+        )
+        features = shlex.split(feature_export)[1].split("=", 1)[1].split(",")
+        # Cloud removed disposable-email-domains when registration domain
+        # restrictions became unconditional. Extra obsolete features fail the
+        # release build before any Timeline scenario can run.
+        self.assertEqual(set(features), {"self-host-af", "commercial-ci", "ci-test"})
 
         verification = next(
             step for step in self.cloud["steps"]
