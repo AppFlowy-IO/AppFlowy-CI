@@ -711,6 +711,8 @@ jobs:
     env:
       MINIO_DATA_DIR: /tmp/minio-data
       APPFLOWY_CLOUD_URL: https://localhost
+      # Only this job's disposable Compose database; never infer a developer database.
+      APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
 
     steps:
       - name: Checkout AppFlowy-Cloud-Premium code
@@ -928,6 +930,11 @@ jobs:
           find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
           pkg-config --modversion mpv || true
           pkg-config --modversion epoxy || true
+
+      - name: Install workspace plan fixture client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
 
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         # Leave time inside the 60-minute job limit to upload partial results.

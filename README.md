@@ -177,3 +177,9 @@ the final integration notification. Regression checks for this wiring are includ
 
 When migrating an existing Cloud branch to these jobs, land the CI workflow change before
 removing that branch's `.github/workflows/encoded-cache.yml` scheduler.
+
+Desktop's Flutter and Rust hosted member fixtures receive `APPFLOWY_TEST_DATABASE_URL`
+for the job's disposable Compose PostgreSQL and use `psql` to provision a paid plan
+only for their newly created workspace. This keeps multi-member permission tests
+compatible with hosted Free-plan limits. Local runs must explicitly provide their
+disposable test database; the fixtures do not infer developer database settings.
