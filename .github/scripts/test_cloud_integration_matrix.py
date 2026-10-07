@@ -117,6 +117,25 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     coverage = (REPO / "scripts/check_test_module_coverage.py").read_text()
     self.assertIn('parse_covered_tokens(args.workflow, "test_targets")', coverage)
 
+  def test_search_admission_has_redis_without_application_consumers(self):
+    steps = self.job["steps"]
+    start = next(step for step in steps if step.get("name") == "Start Search admission test Redis")
+    install = next(step for step in steps if step.get("name") == "Install isolated test Redis")
+    for step in (start, install):
+      self.assertIn("matrix.test_service == 'appflowy_worker'", step["if"])
+      self.assertIn("matrix.test_service == 'appflowy_cloud_member_packages'", step["if"])
+      self.assertIn("matrix.test_package_search == true", step["if"])
+    self.assertIn("--publish 127.0.0.1::6379", start["run"])
+    self.assertIn("APPFLOWY_TEST_REDIS_URL=redis://127.0.0.1:$fixture_port", start["run"])
+    self.assertIn('>> "$GITHUB_ENV"', start["run"])
+    self.assertLess(steps.index(start), next(i for i, step in enumerate(steps)
+                                          if step.get("name") == "Run Tests"))
+    cleanup = next(step for step in steps if step.get("name") == "Stop Search admission test Redis")
+    self.assertEqual(cleanup["if"], "always()")
+    self.assertIn('docker rm --force --volumes "$SEARCH_ADMISSION_REDIS_CONTAINER"', cleanup["run"])
+    self.assertIn("-p appflowy-mcp", render_run_tests(self.lane("appflowy_cloud_member_packages")))
+    self.assertIn("-p server-infra", render_run_tests(self.lane("appflowy_cloud_member_packages")))
+
 
 if __name__ == "__main__":
   unittest.main()

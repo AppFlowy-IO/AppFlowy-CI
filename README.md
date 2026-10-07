@@ -63,6 +63,14 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
+The Search, Worker and Shared libraries lanes start a separate Redis on a random loopback port
+and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,
+so they cannot drain admission-test streams and hide unexpected enqueueing. An always-run step
+removes this fixture, including failed jobs. Shared libraries also runs the MCP and generic Redis
+worker package regressions.
+Search mutation/recovery fixtures create their own empty databases through Cloud's history-aware
+migration runner; an explicitly supplied migrated template is only a local optimization.
+
 The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
 
 | Topic | Suites |
