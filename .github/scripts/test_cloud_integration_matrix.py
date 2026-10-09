@@ -90,6 +90,111 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       self.assertTrue(any(SEARCH_RESTORE in command for command in commands))
       self.assertTrue(any("-p\tappflowy-search\t" in command for command in commands))
 
+  def run_member_packages(self, *, contracts=("scim", "mcp"), counts=None,
+                          ignored=(), execution_exit=0):
+    prefixes = {
+      "scim": "api::scim::tests::",
+      "status": "biz::directory::status::tests::",
+      "mcp": "workspace_token::tests::",
+    }
+    counts = counts if counts is not None else {"scim": 52, "status": 12, "mcp": 3}
+    with tempfile.TemporaryDirectory() as directory:
+      project = Path(directory)
+      for contract, relative in {
+        "scim": "libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs",
+        "mcp": "libs/appflowy-mcp-core/src/workspace_token.rs",
+      }.items():
+        if contract in contracts:
+          source = project / relative
+          source.parent.mkdir(parents=True, exist_ok=True)
+          source.touch()
+      (project / "all-tests").write_text("".join(
+        f"{prefixes[suite]}case_{index}: test\n"
+        for suite, count in counts.items() for index in range(count)
+      ))
+      (project / "ignored-tests").write_text("".join(
+        f"{prefixes[suite]}case_0: test\n" for suite in ignored
+      ))
+      run = render_run_tests(self.lane("appflowy_cloud_member_packages"))
+      fake_cargo = r'''cargo() {
+        printf '%s\t' "$@" >> cargo-calls
+        printf '\n' >> cargo-calls
+        if [[ " $* " == *" --list "* ]]; then
+          if [[ " $* " == *" --ignored "* ]]; then
+            cat ignored-tests
+          else
+            cat all-tests
+          fi
+        else
+          return "$TEST_EXECUTION_EXIT"
+        fi
+      }
+      ''' + run
+      result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", fake_cargo],
+        cwd=project,
+        env={
+          **os.environ,
+          "CLOUD_RUN_ROOT": "false",
+          "RUN_ROOT_UNIT_TESTS": "false",
+          "RUN_SEARCH_PACKAGE": "false",
+          "TEST_TARGETS": "",
+          "TEST_SKIPS": "",
+          "TEST_EXECUTION_EXIT": str(execution_exit),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+      )
+      calls = (project / "cargo-calls").read_text().splitlines()
+      return result, [command.rstrip("\t").split("\t") for command in calls]
+
+  def test_managed_user_guards_and_execution_share_unfiltered_packages(self):
+    result, commands = self.run_member_packages()
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(len(commands), 3)
+    packages = commands[-1][2:-2]
+    self.assertEqual(commands[-1][-2:], ["--", "--test-threads=1"])
+    self.assertEqual(commands[0][2:-3], packages)
+    self.assertEqual(commands[1][2:-4], packages)
+    self.assertEqual(commands[0][-3:], ["--lib", "--", "--list"])
+    self.assertEqual(commands[1][-4:], ["--lib", "--", "--ignored", "--list"])
+    self.assertTrue(all(packages[i] == "-p" for i in range(0, len(packages), 2)))
+    self.assertIn("appflowy-cloud-directory", packages)
+    self.assertIn("appflowy-mcp-core", packages)
+    self.assertIn("appflowy-mcp", packages)
+    self.assertIn("52 selected, 0 ignored", result.stdout)
+    self.assertIn("12 selected, 0 ignored", result.stdout)
+    self.assertIn("3 selected, 0 ignored", result.stdout)
+
+  def test_managed_user_guards_allow_old_sources_and_independent_features(self):
+    for contracts, counts in [
+      ((), {}),
+      (("scim",), {"scim": 53, "status": 12}),
+      (("mcp",), {"mcp": 4}),
+    ]:
+      with self.subTest(contracts=contracts):
+        result, commands = self.run_member_packages(contracts=contracts, counts=counts)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(commands), 3 if contracts else 1)
+        self.assertIn("appflowy-mcp-core", commands[-1])
+        self.assertEqual(commands[-1][-2:], ["--", "--test-threads=1"])
+
+  def test_managed_user_guards_reject_missing_or_ignored_cases(self):
+    for suite, minimum in {"scim": 52, "status": 12, "mcp": 3}.items():
+      for selected, ignored in [(0, ()), (minimum - 1, ()), (minimum, (suite,))]:
+        with self.subTest(suite=suite, selected=selected, ignored=ignored):
+          counts = {"scim": 52, "status": 12, "mcp": 3, suite: selected}
+          result, commands = self.run_member_packages(counts=counts, ignored=ignored)
+          self.assertNotEqual(result.returncode, 0)
+          self.assertIn("::error::Required SCIM/MCP regression coverage", result.stdout)
+          self.assertEqual(len(commands), 2, "Do not continue after a coverage guard fails")
+
+  def test_member_package_test_failures_fail_the_job(self):
+    result, commands = self.run_member_packages(execution_exit=42)
+    self.assertEqual(result.returncode, 42)
+    self.assertEqual(len(commands), 3)
+
   def test_permission_and_space_suites_are_partitioned_without_drops(self):
     lanes = [
       lane for lane in self.lanes

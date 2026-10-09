@@ -71,6 +71,20 @@ worker package regressions.
 Search mutation/recovery fixtures create their own empty databases through Cloud's history-aware
 migration runner; an explicitly supplied migrated template is only a local optimization.
 
+Shared libraries runs the full `appflowy-cloud-directory` and `appflowy-mcp-core` package tests,
+including SCIM protocol, group-status SQL and workspace-bound MCP token regressions. When the
+managed-user production modules are present in the selected Cloud revision, inventory guards
+require at least 52 SCIM protocol, 12 group-status and 3 MCP token tests, with none ignored.
+Older Cloud revisions still run their full package suites without guards for missing features.
+The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
+These native package tests use the same resolved Cloud SHA as that run's images and root tests.
+
+Automatic repository dispatch uses this repository's default-branch workflow. A CI pull request
+must merge before its coverage changes apply to ordinary Cloud PR runs; it may merge before the
+managed-user server changes because the new count guards are source-gated. Cloud dispatches a
+branch name, which this workflow resolves once: verify the resolved source SHA matches the Cloud
+PR head when reviewing results. The CI workflow/tools SHA is the public run's `github.sha`.
+
 The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
 
 | Topic | Suites |

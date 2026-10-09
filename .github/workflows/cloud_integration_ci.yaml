@@ -860,38 +860,78 @@ jobs:
             # libraries. Keep their moved unit and integration tests in this
             # service-backed lane so removing the umbrella does not reduce coverage.
             echo "==> Testing workspace member packages"
+            member_packages=(
+              -p workspace-folder
+              -p collab-storage
+              -p database-blob
+              -p collab-access
+              -p collab-indexing
+              -p collab-snapshot
+              -p collab-history
+              -p collab-realtime
+              -p collab-realtime-server
+              -p indexer
+              -p collab-stream
+              -p database
+              -p server-infra
+              -p workspace-permission
+              -p pdf-exporter
+              -p collab
+              -p collab-rt-entity
+              -p appflowy-proto
+              -p appflowy-cloud-forms
+              -p appflowy-cloud-workspace-support
+              -p appflowy-cloud-workspace
+              -p appflowy-cloud-admin
+              -p appflowy-cloud-collab
+              -p appflowy-cloud-workspace-access
+              -p appflowy-cloud-pages
+              -p appflowy-cloud-publishing
+              -p appflowy-cloud-database-api
+              -p appflowy-cloud-directory
+              -p appflowy-cloud-history
+              -p appflowy-mcp
+              -p appflowy-mcp-core
+            )
+            # Guard new SCIM/MCP contracts only when their production modules
+            # exist, so this CI revision also supports older Cloud source refs.
+            # Use the same package selection for listing and execution to avoid
+            # recompiling a different feature graph just to count tests.
+            scim_contract=libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs
+            mcp_contract=libs/appflowy-mcp-core/src/workspace_token.rs
+            if [[ -f "$scim_contract" || -f "$mcp_contract" ]]; then
+              test_inventory=$(mktemp -d)
+              trap 'rm -rf "$test_inventory"' EXIT
+              "${cargo_command[@]}" test --locked "${member_packages[@]}" --lib \
+                -- --list > "$test_inventory/all"
+              "${cargo_command[@]}" test --locked "${member_packages[@]}" --lib \
+                -- --ignored --list > "$test_inventory/ignored"
+              require_tests() {
+                local prefix="$1" minimum="$2" selected ignored
+                selected=$(awk -v prefix="$prefix" \
+                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
+                  "$test_inventory/all")
+                ignored=$(awk -v prefix="$prefix" \
+                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
+                  "$test_inventory/ignored")
+                echo "==> $prefix: $selected selected, $ignored ignored (minimum $minimum)"
+                if [[ "$selected" -lt "$minimum" || "$ignored" -ne 0 ]]; then
+                  echo "::error::Required SCIM/MCP regression coverage is missing or ignored: $prefix"
+                  return 1
+                fi
+              }
+              if [[ -f "$scim_contract" ]]; then
+                require_tests 'api::scim::' 52
+                require_tests 'biz::directory::status::tests::' 12
+              fi
+              if [[ -f "$mcp_contract" ]]; then
+                require_tests 'workspace_token::tests::' 3
+              fi
+            else
+              echo "==> Older Cloud source: running package tests without managed-user count guards"
+            fi
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
-              -p workspace-folder \
-              -p collab-storage \
-              -p database-blob \
-              -p collab-access \
-              -p collab-indexing \
-              -p collab-snapshot \
-              -p collab-history \
-              -p collab-realtime \
-              -p collab-realtime-server \
-              -p indexer \
-              -p collab-stream \
-              -p database \
-              -p server-infra \
-              -p workspace-permission \
-              -p pdf-exporter \
-              -p collab \
-              -p collab-rt-entity \
-              -p appflowy-proto \
-              -p appflowy-cloud-forms \
-              -p appflowy-cloud-workspace-support \
-              -p appflowy-cloud-workspace \
-              -p appflowy-cloud-admin \
-              -p appflowy-cloud-collab \
-              -p appflowy-cloud-workspace-access \
-              -p appflowy-cloud-pages \
-              -p appflowy-cloud-publishing \
-              -p appflowy-cloud-database-api \
-              -p appflowy-cloud-directory \
-              -p appflowy-cloud-history \
-              -p appflowy-mcp \
-              -- --test-threads=1
+              "${member_packages[@]}" -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-worker -- --test-threads=1
