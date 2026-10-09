@@ -655,43 +655,41 @@ jobs:
         run: cargo make pub_get
 
       - name: Run Flutter unit tests
+        timeout-minutes: 45
+        shell: bash
         run: |
           cd frontend
 
-          set +eo pipefail
+          UNIT_TEST_TASK=dart_unit_test_no_build
           if [ "$RUNNER_OS" == "macOS" ]; then
-            cargo make dart_unit_test > /tmp/test_output.txt 2>&1
-          elif [ "$RUNNER_OS" == "Linux" ]; then
-            cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
+            UNIT_TEST_TASK=dart_unit_test
           fi
-          TEST_EXIT=$?
+
+          set +e
+          cargo make "$UNIT_TEST_TASK" 2>&1 | tee /tmp/unit-test-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
           set -eo pipefail
 
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
-
           if [ $TEST_EXIT -eq 0 ]; then
-            echo "✅ All $PASS_COUNT tests passed"
+            echo "✅ Unit test tasks passed"
           else
-            echo "❌ $FAIL_COUNT test(s) failed, $PASS_COUNT test(s) passed"
+            echo "❌ Unit test tasks failed (exit $TEST_EXIT)"
           fi
-
-          echo ""
-          echo "::group::Failed tests (click to expand)"
-          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
-          echo "::endgroup::"
-
-          echo ""
-          echo "::group::All logs (click to expand)"
-          cat /tmp/test_output.txt
-          echo "::endgroup::"
 
           exit $TEST_EXIT
         env:
           DISABLE_EVENT_LOG: true
           DISABLE_CI_TEST_LOG: "true"
+
+      - name: Upload unit test output
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-output-${{ matrix.os }}-${{ github.run_id }}
+          path: /tmp/unit-test-output.txt
+          if-no-files-found: warn
+          retention-days: 7
 
   cloud_integration_test:
     name: Cloud integration test (${{ matrix.cloud_test_suite }})

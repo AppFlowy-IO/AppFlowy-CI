@@ -108,6 +108,88 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
         self.assertFalse(self.desktop["strategy"]["fail-fast"])
 
 
+class UnitRunnerWorkflowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["unit_test"]
+        cls.test_step = next(
+            step for step in cls.job["steps"]
+            if step.get("name") == "Run Flutter unit tests"
+        )
+
+    def execution_script(self, directory, stub):
+        (Path(directory) / "frontend").mkdir()
+        return stub + self.test_step["run"].replace(
+            "/tmp/unit-test-output.txt", str(Path(directory) / "output.txt"),
+        )
+
+    def test_streaming_preserves_task_selection_and_failure_exit_status(self):
+        for runner_os, task in [
+            ("Linux", "dart_unit_test_no_build"),
+            ("Windows", "dart_unit_test_no_build"),
+            ("macOS", "dart_unit_test"),
+        ]:
+            for exit_code in [0, 42]:
+                with self.subTest(os=runner_os, exit_code=exit_code):
+                    with tempfile.TemporaryDirectory() as directory:
+                        script = self.execution_script(
+                            directory,
+                            'cargo() { echo "$*"; echo "test progress" >&2; '
+                            'return "$STUB_EXIT"; }\n',
+                        )
+                        result = subprocess.run(
+                            ["bash", "-e", "-o", "pipefail", "-c", script],
+                            cwd=directory,
+                            env={**os.environ, "RUNNER_OS": runner_os,
+                                 "STUB_EXIT": str(exit_code)},
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        self.assertEqual(result.returncode, exit_code, result.stderr)
+                        self.assertIn(f"make {task}", result.stdout)
+                        self.assertEqual(
+                            (Path(directory) / "output.txt").read_text(),
+                            f"make {task}\ntest progress\n",
+                        )
+
+    def test_progress_and_partial_log_exist_while_test_is_still_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.execution_script(
+                directory,
+                'cargo() { echo "test has started"; read -r release; }\n',
+            )
+            process = subprocess.Popen(
+                ["bash", "-e", "-o", "pipefail", "-c", script],
+                cwd=directory,
+                env={**os.environ, "RUNNER_OS": "Linux"},
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                readable, _, _ = select.select([process.stdout], [], [], 3)
+                self.assertTrue(readable, "Unit test progress was buffered")
+                self.assertEqual(process.stdout.readline().strip(), "test has started")
+                self.assertIsNone(process.poll())
+                self.assertEqual(
+                    (Path(directory) / "output.txt").read_text(), "test has started\n",
+                )
+            finally:
+                process.communicate(input="finish\n", timeout=5)
+            self.assertEqual(process.returncode, 0)
+
+    def test_timeout_leaves_budget_for_always_uploading_partial_logs(self):
+        upload = next(
+            step for step in self.job["steps"]
+            if step.get("name") == "Upload unit test output"
+        )
+        self.assertEqual(self.test_step["timeout-minutes"], 45)
+        self.assertLess(
+            self.test_step["timeout-minutes"] + upload["timeout-minutes"],
+            self.job["timeout-minutes"],
+        )
+        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["with"]["path"], "/tmp/unit-test-output.txt")
+
+
 class CloudRunnerWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
