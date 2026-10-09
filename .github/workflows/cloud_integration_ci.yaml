@@ -921,7 +921,8 @@ jobs:
                 fi
               }
               if [[ -f "$scim_contract" ]]; then
-                require_tests 'api::scim::' 52
+                require_tests 'api::scim::' 51
+                require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1
                 require_tests 'biz::directory::status::tests::' 12
               fi
               if [[ -f "$mcp_contract" ]]; then

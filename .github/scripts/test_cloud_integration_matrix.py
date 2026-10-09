@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/cloud_integration_ci.yaml"
 SEARCH_INDEX = "database::database_index_test"
 SEARCH_RESTORE = "database::database_history_test::search_restore"
+SCIM_GROUP_POLICY = "biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit"
 
 
 def render_run_tests(lane):
@@ -97,7 +98,10 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       "status": "biz::directory::status::tests::",
       "mcp": "workspace_token::tests::",
     }
-    counts = counts if counts is not None else {"scim": 52, "status": 12, "mcp": 3}
+    counts = counts if counts is not None else {"scim": 51, "group": 1, "status": 12, "mcp": 3}
+    def case_name(suite, index):
+      return SCIM_GROUP_POLICY if suite == "group" else f"{prefixes[suite]}case_{index}"
+
     with tempfile.TemporaryDirectory() as directory:
       project = Path(directory)
       for contract, relative in {
@@ -109,11 +113,11 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           source.parent.mkdir(parents=True, exist_ok=True)
           source.touch()
       (project / "all-tests").write_text("".join(
-        f"{prefixes[suite]}case_{index}: test\n"
+        f"{case_name(suite, index)}: test\n"
         for suite, count in counts.items() for index in range(count)
       ))
       (project / "ignored-tests").write_text("".join(
-        f"{prefixes[suite]}case_0: test\n" for suite in ignored
+        f"{case_name(suite, 0)}: test\n" for suite in ignored
       ))
       run = render_run_tests(self.lane("appflowy_cloud_member_packages"))
       fake_cargo = r'''cargo() {
@@ -163,14 +167,15 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn("appflowy-cloud-directory", packages)
     self.assertIn("appflowy-mcp-core", packages)
     self.assertIn("appflowy-mcp", packages)
-    self.assertIn("52 selected, 0 ignored", result.stdout)
+    self.assertIn("api::scim::: 51 selected, 0 ignored", result.stdout)
+    self.assertIn(f"{SCIM_GROUP_POLICY}: 1 selected, 0 ignored", result.stdout)
     self.assertIn("12 selected, 0 ignored", result.stdout)
     self.assertIn("3 selected, 0 ignored", result.stdout)
 
   def test_managed_user_guards_allow_old_sources_and_independent_features(self):
     for contracts, counts in [
       ((), {}),
-      (("scim",), {"scim": 53, "status": 12}),
+      (("scim",), {"scim": 52, "group": 1, "status": 12}),
       (("mcp",), {"mcp": 4}),
     ]:
       with self.subTest(contracts=contracts):
@@ -181,10 +186,10 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         self.assertEqual(commands[-1][-2:], ["--", "--test-threads=1"])
 
   def test_managed_user_guards_reject_missing_or_ignored_cases(self):
-    for suite, minimum in {"scim": 52, "status": 12, "mcp": 3}.items():
+    for suite, minimum in {"scim": 51, "group": 1, "status": 12, "mcp": 3}.items():
       for selected, ignored in [(0, ()), (minimum - 1, ()), (minimum, (suite,))]:
         with self.subTest(suite=suite, selected=selected, ignored=ignored):
-          counts = {"scim": 52, "status": 12, "mcp": 3, suite: selected}
+          counts = {"scim": 51, "group": 1, "status": 12, "mcp": 3, suite: selected}
           result, commands = self.run_member_packages(counts=counts, ignored=ignored)
           self.assertNotEqual(result.returncode, 0)
           self.assertIn("::error::Required SCIM/MCP regression coverage", result.stdout)
