@@ -181,7 +181,13 @@ class UnitRunnerWorkflowTest(unittest.TestCase):
             step for step in self.job["steps"]
             if step.get("name") == "Upload unit test output"
         )
-        self.assertEqual(self.test_step["timeout-minutes"], 45)
+        # The complete unit command has taken over 51 minutes in CI; a
+        # 45-minute step would cancel it before it can finish.
+        self.assertGreaterEqual(self.test_step["timeout-minutes"], 60)
+        self.assertGreaterEqual(
+            self.job["timeout-minutes"] - self.test_step["timeout-minutes"],
+            15,
+        )
         self.assertLess(
             self.test_step["timeout-minutes"] + upload["timeout-minutes"],
             self.job["timeout-minutes"],

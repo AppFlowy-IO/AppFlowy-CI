@@ -575,7 +575,7 @@ jobs:
             flutter_profile: development-linux-x86_64
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout private repository
@@ -655,7 +655,9 @@ jobs:
         run: cargo make pub_get
 
       - name: Run Flutter unit tests
-        timeout-minutes: 45
+        # The full suite has exceeded 51 minutes; retain time for setup and
+        # partial-log upload while keeping a bounded test deadline.
+        timeout-minutes: 75
         shell: bash
         run: |
           cd frontend
