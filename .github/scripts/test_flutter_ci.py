@@ -108,6 +108,138 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
         self.assertFalse(self.desktop["strategy"]["fail-fast"])
 
 
+class UnitRunnerWorkflowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["unit_test"]
+        cls.step = next(
+            step for step in cls.job["steps"]
+            if step.get("name") == "Run Flutter unit tests"
+        )
+
+    def test_every_shard_runs_and_keeps_its_logs_after_failure(self):
+        count = int(self.step["env"]["APPFLOWY_DART_TEST_TOTAL_SHARDS"])
+        self.assertEqual(self.job["strategy"]["matrix"]["shard"], list(range(count)))
+        self.assertEqual(
+            self.step["env"]["APPFLOWY_DART_TEST_SHARD_INDEX"], "${{ matrix.shard }}",
+        )
+        self.assertFalse(self.job["strategy"]["fail-fast"])
+        upload = next(
+            step for step in self.job["steps"]
+            if step.get("name") == "Upload unit test output"
+        )
+        self.assertEqual(upload["if"], "always()")
+        self.assertIn("${{ matrix.shard }}", upload["with"]["name"])
+        self.assertIn("/tmp/unit-test-events.jsonl", upload["with"]["path"])
+        self.assertLess(self.step["timeout-minutes"], self.job["timeout-minutes"])
+
+    def test_streaming_logs_preserves_the_test_exit_status(self):
+        for platform in ["Linux", "macOS", "Windows"]:
+            for code in [0, 1, 17]:
+                with self.subTest(platform=platform, code=code), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    test_dir = root / "frontend/appflowy_flutter/test"
+                    test_dir.mkdir(parents=True)
+                    (test_dir / "example_test.dart").touch()
+                    log = root / "output.txt"
+                    script = (
+                        'cargo() { return 0; }\n'
+                        'flutter() { printf "%s\\n" "$STUB_OUTPUT"; return "$STUB_EXIT"; }\n'
+                        + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+                    )
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", script],
+                        cwd=root,
+                        env={**os.environ, "RUNNER_OS": platform, "STUB_EXIT": str(code),
+                             "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                             "APPFLOWY_DART_TEST_SHARD_INDEX": "0",
+                             "STUB_OUTPUT": "unit-test diagnostic"},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    self.assertEqual(log.read_text(), "unit-test diagnostic\n")
+                    self.assertIn("unit-test diagnostic", result.stdout)
+
+    def test_shards_compile_disjoint_files_and_cover_the_suite_once(self):
+        files = [f"test/nested/example_{i}_test.dart" for i in range(11)]
+        files += ["test/space and $(false)/special_test.dart"]
+        all_selected = []
+        for shard in range(4):
+            with self.subTest(shard=shard), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = root / "frontend/appflowy_flutter"
+                for name in files + ["test/nested/helper.dart"]:
+                    path = app / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+                log = root / "output.txt"
+                arguments = root / "arguments"
+                script = (
+                    'cargo() { printf "cargo %s\\n" "$*"; }\n'
+                    'flutter() { printf "%s\\0" "$@" > "$STUB_ARGS"; }\n'
+                    + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+                )
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                    env={**os.environ, "RUNNER_OS": "Linux",
+                         "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                         "APPFLOWY_DART_TEST_SHARD_INDEX": str(shard),
+                         "STUB_ARGS": str(arguments)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = arguments.read_bytes().decode().split("\0")[:-1]
+                selected = [arg for arg in args if arg.startswith("test/")]
+                self.assertEqual(selected, sorted(files)[shard::4])
+                all_selected.extend(selected)
+                self.assertIn("--concurrency=1", args)
+                self.assertFalse(any(arg.startswith("--total-shards") for arg in args))
+                self.assertIn("copy-from-build-to-sandbox-folder", result.stdout)
+                self.assertEqual(result.stdout.count("dart_package_unit_test"), int(shard == 0))
+        self.assertCountEqual(all_selected, files)
+
+    def test_empty_shards_fail_before_flutter_can_run_the_full_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "frontend/appflowy_flutter/test").mkdir(parents=True)
+            script = (
+                'cargo() { return 0; }\n'
+                'flutter() { echo "must not run"; }\n'
+                + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(root / "output")))
+            )
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "RUNNER_OS": "Linux",
+                     "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                     "APPFLOWY_DART_TEST_SHARD_INDEX": "0"},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("must not run", result.stdout)
+            self.assertIn("no test files", result.stdout)
+
+    def test_preparation_failure_stops_before_running_flutter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "frontend/appflowy_flutter").mkdir(parents=True)
+            log = root / "output.txt"
+            script = (
+                'cargo() { echo "native setup failed"; return 23; }\n'
+                'flutter() { echo "must not run"; }\n'
+                + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+            )
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "RUNNER_OS": "Linux",
+                     "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                     "APPFLOWY_DART_TEST_SHARD_INDEX": "0"},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertNotIn("must not run", result.stdout)
+            self.assertEqual(log.read_text(), "native setup failed\n")
+
+
 class CloudRunnerWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
