@@ -108,6 +108,54 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
         self.assertFalse(self.desktop["strategy"]["fail-fast"])
 
 
+class UnitRunnerWorkflowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["unit_test"]
+        cls.step = next(
+            step for step in cls.job["steps"]
+            if step.get("name") == "Run Flutter unit tests"
+        )
+
+    def test_every_shard_runs_and_keeps_its_logs_after_failure(self):
+        count = int(self.step["env"]["APPFLOWY_DART_TEST_TOTAL_SHARDS"])
+        self.assertEqual(self.job["strategy"]["matrix"]["shard"], list(range(count)))
+        self.assertEqual(
+            self.step["env"]["APPFLOWY_DART_TEST_SHARD_INDEX"], "${{ matrix.shard }}",
+        )
+        self.assertFalse(self.job["strategy"]["fail-fast"])
+        upload = next(
+            step for step in self.job["steps"]
+            if step.get("name") == "Upload unit test output"
+        )
+        self.assertEqual(upload["if"], "always()")
+        self.assertIn("${{ matrix.shard }}", upload["with"]["name"])
+        self.assertIn("/tmp/unit-test-events.jsonl", upload["with"]["path"])
+        self.assertLess(self.step["timeout-minutes"], self.job["timeout-minutes"])
+
+    def test_streaming_logs_preserves_the_test_exit_status(self):
+        for platform in ["Linux", "macOS", "Windows"]:
+            for code in [0, 1, 17]:
+                with self.subTest(platform=platform, code=code), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / "frontend").mkdir()
+                    log = root / "output.txt"
+                    script = (
+                        'cargo() { printf "%s\\n" "$STUB_OUTPUT"; return "$STUB_EXIT"; }\n'
+                        + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+                    )
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", script],
+                        cwd=root,
+                        env={**os.environ, "RUNNER_OS": platform, "STUB_EXIT": str(code),
+                             "STUB_OUTPUT": "unit-test diagnostic"},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    self.assertEqual(log.read_text(), "unit-test diagnostic\n")
+                    self.assertIn("unit-test diagnostic", result.stdout)
+
+
 class CloudRunnerWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -565,11 +565,13 @@ jobs:
           path: appflowy_flutter.tar.gz
 
   unit_test:
+    name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
+        shard: [0, 1, 2, 3]
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -655,43 +657,45 @@ jobs:
         run: cargo make pub_get
 
       - name: Run Flutter unit tests
+        timeout-minutes: 45
+        shell: bash
         run: |
           cd frontend
 
-          set +eo pipefail
+          set +e
           if [ "$RUNNER_OS" == "macOS" ]; then
-            cargo make dart_unit_test > /tmp/test_output.txt 2>&1
+            cargo make dart_unit_test 2>&1 | tee /tmp/test_output.txt
           elif [ "$RUNNER_OS" == "Linux" ]; then
-            cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
+            cargo make dart_unit_test_no_build 2>&1 | tee /tmp/test_output.txt
           elif [ "$RUNNER_OS" == "Windows" ]; then
-            cargo make dart_unit_test_no_build > /tmp/test_output.txt 2>&1
+            cargo make dart_unit_test_no_build 2>&1 | tee /tmp/test_output.txt
           fi
           TEST_EXIT=$?
           set -eo pipefail
 
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt 2>/dev/null || echo "0")
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt 2>/dev/null || echo "0")
-
           if [ $TEST_EXIT -eq 0 ]; then
-            echo "✅ All $PASS_COUNT tests passed"
+            echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} passed"
           else
-            echo "❌ $FAIL_COUNT test(s) failed, $PASS_COUNT test(s) passed"
+            echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} failed (exit $TEST_EXIT)"
           fi
-
-          echo ""
-          echo "::group::Failed tests (click to expand)"
-          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
-          echo "::endgroup::"
-
-          echo ""
-          echo "::group::All logs (click to expand)"
-          cat /tmp/test_output.txt
-          echo "::endgroup::"
 
           exit $TEST_EXIT
         env:
+          APPFLOWY_DART_TEST_TOTAL_SHARDS: "4"
+          APPFLOWY_DART_TEST_SHARD_INDEX: ${{ matrix.shard }}
           DISABLE_EVENT_LOG: true
           DISABLE_CI_TEST_LOG: "true"
+
+      - name: Upload unit test output
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-output-${{ matrix.os }}-${{ matrix.shard }}-${{ github.run_id }}
+          path: |
+            /tmp/test_output.txt
+            /tmp/unit-test-events.jsonl
+          retention-days: 7
 
   cloud_integration_test:
     name: Cloud integration test (${{ matrix.cloud_test_suite }})
