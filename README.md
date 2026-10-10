@@ -75,7 +75,10 @@ Shared libraries runs the full `appflowy-cloud-directory` and `appflowy-mcp-core
 including SCIM protocol, group-status SQL and workspace-bound MCP token regressions. When the
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
-cases total), 12 group-status and 3 MCP token tests, with none ignored.
+cases total), 11 hosted group-status and 3 MCP token tests, with none ignored. After the full
+hosted package suite, a separate Directory-only invocation enables `self-host-af` and requires
+and runs the exact admin-retry audit regression, including rollback when audit persistence fails.
+Its inventory guard rejects missing or ignored coverage without changing the hosted suite's features.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.

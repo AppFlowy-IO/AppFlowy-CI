@@ -923,7 +923,7 @@ jobs:
               if [[ -f "$scim_contract" ]]; then
                 require_tests 'api::scim::' 51
                 require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1
-                require_tests 'biz::directory::status::tests::' 12
+                require_tests 'biz::directory::status::tests::' 11
               fi
               if [[ -f "$mcp_contract" ]]; then
                 require_tests 'workspace_token::tests::' 3
@@ -933,6 +933,20 @@ jobs:
             fi
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               "${member_packages[@]}" -- --test-threads=1
+            if [[ -f "$scim_contract" ]]; then
+              # Audit persistence is self-host-only. Keep its feature graph out
+              # of the hosted package suite, and reject empty/ignored selection.
+              audit_test=biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails
+              audit_command=(
+                "${cargo_command[@]}" test --locked -p appflowy-cloud-directory --lib
+                --features appflowy-cloud-directory/self-host-af "$audit_test"
+              )
+              "${audit_command[@]}" -- --exact --list > "$test_inventory/all"
+              "${audit_command[@]}" -- --exact --ignored --list > "$test_inventory/ignored"
+              require_tests "$audit_test" 1
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${audit_command[@]}" \
+                -- --exact --test-threads=1
+            fi
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-worker -- --test-threads=1
