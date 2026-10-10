@@ -684,12 +684,31 @@ jobs:
               cargo make --profile "$test_profile" dart_package_unit_test
             fi
             cd appflowy_flutter
-            # Select the shard here, including for Desktop branches whose
-            # cargo-make unit task predates the optional shard variables.
+            # Dart's shard flags divide tests within each suite, so every
+            # runner still compiles every file. Partition files before loading.
+            test_list="$(mktemp)"
+            trap 'rm -f "$test_list"' EXIT
+            python3 - "$test_list" <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+
+          count = int(os.environ["APPFLOWY_DART_TEST_TOTAL_SHARDS"])
+          index = int(os.environ["APPFLOWY_DART_TEST_SHARD_INDEX"])
+          if count < 1 or not 0 <= index < count:
+              raise SystemExit("Invalid Flutter test shard")
+          files = sorted(str(path) for path in Path("test").rglob("*_test.dart") if path.is_file())
+          selected = files[index::count]
+          if not selected:
+              raise SystemExit("Flutter test shard has no test files")
+          Path(sys.argv[1]).write_bytes(b"".join(path.encode() + b"\0" for path in selected))
+          PY
+            test_files=()
+            while IFS= read -r -d '' test_file; do
+              test_files+=("$test_file")
+            done < "$test_list"
             flutter test --concurrency=1 --coverage \
-              --total-shards="$APPFLOWY_DART_TEST_TOTAL_SHARDS" \
-              --shard-index="$APPFLOWY_DART_TEST_SHARD_INDEX" \
-              --file-reporter=json:/tmp/unit-test-events.jsonl
+              --file-reporter=json:/tmp/unit-test-events.jsonl "${test_files[@]}"
           ) 2>&1 | tee /tmp/test_output.txt
           TEST_EXIT=$?
           set -eo pipefail

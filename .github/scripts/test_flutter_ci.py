@@ -138,7 +138,9 @@ class UnitRunnerWorkflowTest(unittest.TestCase):
             for code in [0, 1, 17]:
                 with self.subTest(platform=platform, code=code), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
-                    (root / "frontend/appflowy_flutter").mkdir(parents=True)
+                    test_dir = root / "frontend/appflowy_flutter/test"
+                    test_dir.mkdir(parents=True)
+                    (test_dir / "example_test.dart").touch()
                     log = root / "output.txt"
                     script = (
                         'cargo() { return 0; }\n'
@@ -158,30 +160,63 @@ class UnitRunnerWorkflowTest(unittest.TestCase):
                     self.assertEqual(log.read_text(), "unit-test diagnostic\n")
                     self.assertIn("unit-test diagnostic", result.stdout)
 
-    def test_sharding_does_not_depend_on_the_desktop_makefile(self):
+    def test_shards_compile_disjoint_files_and_cover_the_suite_once(self):
+        files = [f"test/nested/example_{i}_test.dart" for i in range(11)]
+        files += ["test/space and $(false)/special_test.dart"]
+        all_selected = []
         for shard in range(4):
             with self.subTest(shard=shard), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                (root / "frontend/appflowy_flutter").mkdir(parents=True)
+                app = root / "frontend/appflowy_flutter"
+                for name in files + ["test/nested/helper.dart"]:
+                    path = app / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
                 log = root / "output.txt"
+                arguments = root / "arguments"
                 script = (
                     'cargo() { printf "cargo %s\\n" "$*"; }\n'
-                    'flutter() { printf "flutter %s\\n" "$*"; }\n'
+                    'flutter() { printf "%s\\0" "$@" > "$STUB_ARGS"; }\n'
                     + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
                 )
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
                     env={**os.environ, "RUNNER_OS": "Linux",
                          "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
-                         "APPFLOWY_DART_TEST_SHARD_INDEX": str(shard)},
+                         "APPFLOWY_DART_TEST_SHARD_INDEX": str(shard),
+                         "STUB_ARGS": str(arguments)},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("--total-shards=4", result.stdout)
-                self.assertIn(f"--shard-index={shard}", result.stdout)
-                self.assertIn("--concurrency=1", result.stdout)
+                args = arguments.read_bytes().decode().split("\0")[:-1]
+                selected = [arg for arg in args if arg.startswith("test/")]
+                self.assertEqual(selected, sorted(files)[shard::4])
+                all_selected.extend(selected)
+                self.assertIn("--concurrency=1", args)
+                self.assertFalse(any(arg.startswith("--total-shards") for arg in args))
                 self.assertIn("copy-from-build-to-sandbox-folder", result.stdout)
                 self.assertEqual(result.stdout.count("dart_package_unit_test"), int(shard == 0))
+        self.assertCountEqual(all_selected, files)
+
+    def test_empty_shards_fail_before_flutter_can_run_the_full_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "frontend/appflowy_flutter/test").mkdir(parents=True)
+            script = (
+                'cargo() { return 0; }\n'
+                'flutter() { echo "must not run"; }\n'
+                + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(root / "output")))
+            )
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "RUNNER_OS": "Linux",
+                     "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                     "APPFLOWY_DART_TEST_SHARD_INDEX": "0"},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("must not run", result.stdout)
+            self.assertIn("no test files", result.stdout)
 
     def test_preparation_failure_stops_before_running_flutter(self):
         with tempfile.TemporaryDirectory() as directory:
