@@ -138,22 +138,71 @@ class UnitRunnerWorkflowTest(unittest.TestCase):
             for code in [0, 1, 17]:
                 with self.subTest(platform=platform, code=code), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
-                    (root / "frontend").mkdir()
+                    (root / "frontend/appflowy_flutter").mkdir(parents=True)
                     log = root / "output.txt"
                     script = (
-                        'cargo() { printf "%s\\n" "$STUB_OUTPUT"; return "$STUB_EXIT"; }\n'
+                        'cargo() { return 0; }\n'
+                        'flutter() { printf "%s\\n" "$STUB_OUTPUT"; return "$STUB_EXIT"; }\n'
                         + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
                     )
                     result = subprocess.run(
                         ["bash", "-e", "-o", "pipefail", "-c", script],
                         cwd=root,
                         env={**os.environ, "RUNNER_OS": platform, "STUB_EXIT": str(code),
+                             "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                             "APPFLOWY_DART_TEST_SHARD_INDEX": "0",
                              "STUB_OUTPUT": "unit-test diagnostic"},
                         capture_output=True, text=True, timeout=5,
                     )
                     self.assertEqual(result.returncode, code, result.stderr)
                     self.assertEqual(log.read_text(), "unit-test diagnostic\n")
                     self.assertIn("unit-test diagnostic", result.stdout)
+
+    def test_sharding_does_not_depend_on_the_desktop_makefile(self):
+        for shard in range(4):
+            with self.subTest(shard=shard), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "frontend/appflowy_flutter").mkdir(parents=True)
+                log = root / "output.txt"
+                script = (
+                    'cargo() { printf "cargo %s\\n" "$*"; }\n'
+                    'flutter() { printf "flutter %s\\n" "$*"; }\n'
+                    + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+                )
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                    env={**os.environ, "RUNNER_OS": "Linux",
+                         "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                         "APPFLOWY_DART_TEST_SHARD_INDEX": str(shard)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("--total-shards=4", result.stdout)
+                self.assertIn(f"--shard-index={shard}", result.stdout)
+                self.assertIn("--concurrency=1", result.stdout)
+                self.assertIn("copy-from-build-to-sandbox-folder", result.stdout)
+                self.assertEqual(result.stdout.count("dart_package_unit_test"), int(shard == 0))
+
+    def test_preparation_failure_stops_before_running_flutter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "frontend/appflowy_flutter").mkdir(parents=True)
+            log = root / "output.txt"
+            script = (
+                'cargo() { echo "native setup failed"; return 23; }\n'
+                'flutter() { echo "must not run"; }\n'
+                + self.step["run"].replace("/tmp/test_output.txt", shlex.quote(str(log)))
+            )
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "RUNNER_OS": "Linux",
+                     "APPFLOWY_DART_TEST_TOTAL_SHARDS": "4",
+                     "APPFLOWY_DART_TEST_SHARD_INDEX": "0"},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertNotIn("must not run", result.stdout)
+            self.assertEqual(log.read_text(), "native setup failed\n")
 
 
 class CloudRunnerWorkflowTest(unittest.TestCase):

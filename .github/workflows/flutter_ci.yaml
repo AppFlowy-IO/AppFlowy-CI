@@ -663,13 +663,34 @@ jobs:
           cd frontend
 
           set +e
-          if [ "$RUNNER_OS" == "macOS" ]; then
-            cargo make dart_unit_test 2>&1 | tee /tmp/test_output.txt
-          elif [ "$RUNNER_OS" == "Linux" ]; then
-            cargo make dart_unit_test_no_build 2>&1 | tee /tmp/test_output.txt
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            cargo make dart_unit_test_no_build 2>&1 | tee /tmp/test_output.txt
-          fi
+          (
+            set -e
+            case "$RUNNER_OS" in
+              macOS)
+                test_profile="test-macos-$(uname -m)"
+                cargo make --profile "$test_profile" inner_build_test_backend
+                ;;
+              Linux)
+                test_profile=test-linux
+                cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
+                ;;
+              Windows)
+                test_profile=test-windows
+                cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
+                ;;
+              *) echo "Unsupported unit-test runner: $RUNNER_OS" >&2; exit 1 ;;
+            esac
+            if [ "$APPFLOWY_DART_TEST_SHARD_INDEX" = "0" ]; then
+              cargo make --profile "$test_profile" dart_package_unit_test
+            fi
+            cd appflowy_flutter
+            # Select the shard here, including for Desktop branches whose
+            # cargo-make unit task predates the optional shard variables.
+            flutter test --concurrency=1 --coverage \
+              --total-shards="$APPFLOWY_DART_TEST_TOTAL_SHARDS" \
+              --shard-index="$APPFLOWY_DART_TEST_SHARD_INDEX" \
+              --file-reporter=json:/tmp/unit-test-events.jsonl
+          ) 2>&1 | tee /tmp/test_output.txt
           TEST_EXIT=$?
           set -eo pipefail
 
