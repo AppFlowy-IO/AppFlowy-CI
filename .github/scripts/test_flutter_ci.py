@@ -133,6 +133,21 @@ class UnitRunnerWorkflowTest(unittest.TestCase):
         self.assertIn("/tmp/unit-test-events.jsonl", upload["with"]["path"])
         self.assertLess(self.step["timeout-minutes"], self.job["timeout-minutes"])
 
+    def test_large_dashboard_capacity_is_scoped_to_disposable_fixture_lanes(self):
+        cloud = yaml.safe_load(WORKFLOW.read_text())["jobs"]["cloud_integration_test"]
+        step = next(step for step in cloud["steps"]
+                    if step.get("name") == "Set capacity for large dashboard fixtures")
+        self.assertEqual(step["if"],
+                         "matrix.cloud_test_suite == 'dashboard_charts' || "
+                         "matrix.cloud_test_suite == 'dashboard_usecases'")
+        self.assertEqual(step["working-directory"], "AppFlowy-Cloud-Premium")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("APPFLOWY_MAX_DASHBOARD_WIDGETS=6\n")
+            subprocess.run(["bash", "-eu", "-c", step["run"]], cwd=root, check=True)
+            values = dict(line.split("=", 1) for line in (root / ".env").read_text().splitlines())
+            self.assertEqual(values["APPFLOWY_MAX_DASHBOARD_WIDGETS"], "16")
+
     def test_streaming_logs_preserves_the_test_exit_status(self):
         for platform in ["Linux", "macOS", "Windows"]:
             for code in [0, 1, 17]:

@@ -791,6 +791,15 @@ jobs:
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
+      - name: Set capacity for large dashboard fixtures
+        if: matrix.cloud_test_suite == 'dashboard_charts' || matrix.cloud_test_suite == 'dashboard_usecases'
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          # These scenarios seed up to twelve source views plus their grid and
+          # dashboard. Only their disposable server uses the larger capacity;
+          # other lanes retain the default six-view admission checks.
+          echo 'APPFLOWY_MAX_DASHBOARD_WIDGETS=16' >> .env
+
       - name: Trust localhost HTTPS for cloud tests
         working-directory: AppFlowy-Cloud-Premium
         run: |
