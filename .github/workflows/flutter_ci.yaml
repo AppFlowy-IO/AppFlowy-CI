@@ -1053,6 +1053,20 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Capture focused cloud diagnostic resources
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.cloud_test_suite != '' }}
+        timeout-minutes: 1
+        continue-on-error: true
+        shell: bash
+        run: |
+          {
+            date -u
+            free -m
+            df -h / /tmp
+            # Process names and resource usage are enough; arguments can contain credentials.
+            ps -eo pid,ppid,comm,rss,vsz,pcpu,pmem,etimes --sort=-rss | sed -n '1,25p'
+          } > /tmp/cloud-test-resources.txt
+
       - name: Upload cloud test output
         if: always()
         timeout-minutes: 3
@@ -1062,6 +1076,7 @@ jobs:
           path: |
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
+            /tmp/cloud-test-resources.txt
           if-no-files-found: warn
           retention-days: 7
 

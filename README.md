@@ -210,7 +210,8 @@ disposable test database; the fixtures do not infer developer database settings.
 For a focused Flutter cloud diagnostic, manually dispatch `flutter_ci.yaml` with
 `cloud_test_suite` set to one suite from the tested revision's `ci_suites.json`.
 Use an immutable source SHA for `pr_ref`. The workflow builds Linux and runs that
-suite with verbose Flutter logs and the JSON event artifact; macOS, Windows,
+suite with verbose Flutter logs, JSON events, and a final memory/disk/process
+snapshot, including after a test failure or timeout. macOS, Windows,
 unit-test and numbered desktop-runner jobs are excluded from this manual run.
 An unknown suite fails selection before tests are scheduled. Leaving the input
 empty keeps the full matrix, as do ordinary PR and repository-dispatch events.
