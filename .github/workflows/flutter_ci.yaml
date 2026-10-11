@@ -807,6 +807,17 @@ jobs:
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
+      - name: Set capacity for database duplication fixtures
+        working-directory: AppFlowy-Cloud-Premium
+        env:
+          CLOUD_TEST_SUITE: ${{ matrix.cloud_test_suite }}
+        run: |
+          # Copying the imported document adds two linked views to its six-view
+          # source database. This capacity belongs to that disposable suite.
+          if [ "$CLOUD_TEST_SUITE" = database ]; then
+            echo 'APPFLOWY_MAX_DASHBOARD_WIDGETS=8' >> .env
+          fi
+
       - name: Trust localhost HTTPS for cloud tests
         working-directory: AppFlowy-Cloud-Premium
         run: |

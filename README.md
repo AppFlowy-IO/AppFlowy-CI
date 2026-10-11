@@ -207,6 +207,10 @@ only for their newly created workspace. This keeps multi-member permission tests
 compatible with hosted Free-plan limits. Local runs must explicitly provide their
 disposable test database; the fixtures do not infer developer database settings.
 
+The Flutter `database` suite uses an eight-view limit in its disposable server
+and worker. Duplicating its imported document with inline and linked databases
+adds two linked views to a source database that already has six.
+
 For a focused Flutter cloud diagnostic, manually dispatch `flutter_ci.yaml` with
 `cloud_test_suite` set to one suite from the tested revision's `ci_suites.json`.
 Use an immutable source SHA for `pr_ref`. The workflow builds Linux and runs that

@@ -282,6 +282,26 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(output.removeprefix("suites=")), SPLIT_SUITES)
 
+    def test_database_duplication_capacity_only_changes_its_disposable_suite(self):
+        step = next(step for step in self.cloud["steps"]
+                    if step.get("name") == "Set capacity for database duplication fixtures")
+        self.assertEqual(step["working-directory"], "AppFlowy-Cloud-Premium")
+        for suite in SPLIT_SUITES:
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / ".env"
+                original = "APPFLOWY_MAX_DASHBOARD_WIDGETS=6\nFIXTURE_MARKER=keep\n"
+                path.write_text(original)
+                subprocess.run(
+                    ["bash", "-eu", "-c", step["run"]], cwd=directory,
+                    env={**os.environ, "CLOUD_TEST_SUITE": suite}, check=True,
+                )
+                if suite == "database":
+                    values = dict(line.split("=", 1) for line in path.read_text().splitlines())
+                    self.assertEqual(values["APPFLOWY_MAX_DASHBOARD_WIDGETS"], "8")
+                    self.assertEqual(values["FIXTURE_MARKER"], "keep")
+                else:
+                    self.assertEqual(path.read_text(), original)
+
     def test_manual_suite_selection_runs_one_registered_suite(self):
         for suite in SPLIT_SUITES:
             with self.subTest(suite=suite):
