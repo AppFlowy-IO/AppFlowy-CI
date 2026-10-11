@@ -1,5 +1,6 @@
 # Temporary diagnostic branch only. The full workflow remains unchanged on the CI source branch.
-# Reuses the verified 17f8ce application/native artifact and overlays exactly three test-only files.
+# Reuses the verified 17f8ce native artifact with seven reviewed test overlays.
+# Only the database job adds the two temporary, explicitly enabled recovery probes.
 name: Flutter-CI targeted revalidation
 
 on:
@@ -31,12 +32,13 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        os: [ubuntu-latest]
-        cloud_test_suite: [database]
         include:
           - os: ubuntu-latest
-            flutter_profile: development-linux-x86_64
-            target: x86_64-unknown-linux-gnu
+            cloud_test_suite: document
+            desktop_source: 5bcff3f33c37309af4d66d5e28351e94dab6883e
+          - os: ubuntu-latest
+            cloud_test_suite: database
+            desktop_source: 45edd6b06c09f7ac068e0604c21a36258fabf86d
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -186,6 +188,15 @@ jobs:
           with open('/tmp/cloud-runtime-image-provenance.json', 'w') as handle:
               json.dump(result, handle, indent=2)
           print(json.dumps(result, indent=2))
+          expected_images = {
+              'appflowy_cloud': 'sha256:79c62ef9ea3e1b6f5d5a0b8ab50ff07f6afad35d37bd3335e654824e6d3433c6',
+              'appflowy_worker': 'sha256:b839ddbad6943214ed5760cb272d4d58481fca44a118c314a941a4be54a80023',
+          }
+          for service, image_id in expected_images.items():
+              identity = result['services'][service]
+              assert identity['image_id'] == image_id, f'Runtime image drift: {service}'
+              assert identity['architecture'] == 'amd64', f'Unexpected image architecture: {service}'
+              assert identity['source_revision'] == '6260e7abcb0adc0f04122de66130c26aaaba8254', f'Unexpected image source: {service}'
           PYCODE
 
       - name: Wait for appflowy cloud to be ready
@@ -272,32 +283,66 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: 42d336d59743c8a7f94967e0bdf928bbc077f06b
-          fetch-depth: 2
+          ref: ${{ matrix.desktop_source }}
+          fetch-depth: 4
 
-      - name: Verify the exact test-only Desktop revision
+      - name: Verify the exact Desktop source and overlay manifest
         env:
           PREPARED_SOURCE: 17f8ce6778f02e50f26abead14536051af626e45
-          TARGET_SOURCE: 42d336d59743c8a7f94967e0bdf928bbc077f06b
+          TARGET_SOURCE: ${{ matrix.desktop_source }}
+          CLOUD_TEST_SUITE: ${{ matrix.cloud_test_suite }}
         run: |
           python3 - <<'PYCODE'
-          import os, subprocess
+          import json, os, pathlib, subprocess
           def git(*args):
               return subprocess.check_output(['git', *args], text=True).strip()
+          suite = os.environ['CLOUD_TEST_SUITE']
           target = os.environ['TARGET_SOURCE']
           prepared = os.environ['PREPARED_SOURCE']
+          targets = {
+              'document': '5bcff3f33c37309af4d66d5e28351e94dab6883e',
+              'database': '45edd6b06c09f7ac068e0604c21a36258fabf86d',
+          }
+          assert target == targets[suite], 'Unexpected suite/source selection'
           assert git('rev-parse', 'HEAD') == target, 'Unexpected Desktop checkout'
           subprocess.run(['git', 'merge-base', '--is-ancestor', prepared, target], check=True)
           expected = {
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group.feature',
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group_test.dart',
-              'frontend/appflowy_flutter/test/step/the_number_grouping_validation_error_is.dart',
+              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group.feature': '71aecf3079bffa427911401ed670c9b5adb57912',
+              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group_test.dart': '13a7ba5c0e94766c1b95f94616d00ecbc64869f2',
+              'frontend/appflowy_flutter/integration_test/shared/document_write_failure_expectations.dart': '576d7a724c657f1ad85bf531c65767446bae7d6d',
+              'frontend/appflowy_flutter/integration_test/shared/document_write_navigation_recovery.dart': '8160d990abd7c0dcc2580a576bc9d97ef2090938',
+              'frontend/appflowy_flutter/test/step/one_document_update_failure_dialog_shows_error.dart': '1ef655c8fc3daa8eb7213281c4d57a0760b76bd8',
+              'frontend/appflowy_flutter/test/step/the_number_grouping_validation_error_is.dart': 'cfab809c5b3aa2566089f41481df79bdea56d5f0',
+              'frontend/appflowy_flutter/test/widget_test/document_write_failure_dialog_test.dart': 'ee7f211ea79af3f1f237aaf4e3072b9a78e7bbcb',
           }
+          probes = {
+              'frontend/appflowy_flutter/integration_test/shared/database_cloud_recovery_fixture.dart': '7c265a81ee926e2b12d04048769a6b948aae883e',
+              'frontend/appflowy_flutter/lib/plugins/database/application/database_controller.dart': 'ed26234da1c7295231538c40866f8b1674eb1791',
+          }
+          if suite == 'database':
+              expected.update(probes)
           actual = set(git('diff', '--name-only', prepared, target).splitlines())
-          assert actual == expected, f'Unexpected source changes: {actual ^ expected}'
-          for line in git('diff', '--numstat', prepared, target).splitlines():
-              assert line.split('\t')[:2] == ['1', '1'], f'Unexpected test change: {line}'
-          print(f'Verified {target}: only three one-line test changes from prepared {prepared}')
+          assert actual == set(expected), f'Unexpected source changes: {actual ^ set(expected)}'
+          for path, blob in expected.items():
+              assert git('rev-parse', target + ':' + path) == blob, f'Unreviewed overlay: {path}'
+          native_tree = git('rev-parse', prepared + ':frontend/rust-lib')
+          assert git('rev-parse', target + ':frontend/rust-lib') == native_tree, 'Native sources changed'
+          if suite == 'document':
+              assert git('rev-parse', prepared + ':frontend/appflowy_flutter/lib') == git('rev-parse', target + ':frontend/appflowy_flutter/lib'), 'Document application sources changed'
+          result = {
+              'suite': suite,
+              'prepared_source': prepared,
+              'tested_source': target,
+              'ci_source': os.environ['GITHUB_SHA'],
+              'overlays': expected,
+              'native_tree': native_tree,
+              'native_tree_unchanged': True,
+              'prepared_probe_blobs': {path: git('rev-parse', prepared + ':' + path) for path in probes},
+              'final_probe_blobs': {path: git('rev-parse', target + ':' + path) for path in probes},
+              'database_diagnostics_enabled': suite == 'database',
+          }
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-overlay-manifest.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2))
           PYCODE
 
       - name: Install flutter
@@ -359,23 +404,33 @@ jobs:
         run: |
           tar -xf appflowy_flutter.tar.gz
 
-      - name: Restore and verify the three corrected test files
+      - name: Restore and verify the reviewed source overlays
         run: |
           python3 - <<'PYCODE'
-          import subprocess
-          target = '42d336d59743c8a7f94967e0bdf928bbc077f06b'
-          paths = [
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group.feature',
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group_test.dart',
-              'frontend/appflowy_flutter/test/step/the_number_grouping_validation_error_is.dart',
-          ]
-          subprocess.run(['git', 'restore', '--source=' + target, '--worktree', '--', *paths], check=True)
-          for path in paths:
-              expected = subprocess.check_output(['git', 'rev-parse', target + ':' + path], text=True).strip()
-              actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
-              assert actual == expected, f'Test overlay mismatch: {path}'
-              print(f'{path}: {actual}')
-          print('Verified exact corrected test sources over unchanged prepared application/native artifact')
+          import json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          result = json.loads((temporary / 'desktop-overlay-manifest.json').read_text())
+          for path, blob in result['prepared_probe_blobs'].items():
+              assert git('hash-object', path) == blob, f'Prepared artifact source mismatch: {path}'
+          paths = list(result['overlays'])
+          subprocess.run(['git', 'restore', '--source=' + result['tested_source'], '--worktree', '--', *paths], check=True)
+          for path, blob in result['overlays'].items():
+              assert git('hash-object', path) == blob, f'Overlay mismatch: {path}'
+          for path, blob in result['final_probe_blobs'].items():
+              assert git('hash-object', path) == blob, f'Unexpected diagnostic source: {path}'
+          artifact = json.loads((temporary / 'prepared-artifact.json').read_text())
+          result['prepared_artifact'] = {
+              'id': artifact['id'],
+              'run_id': artifact['workflow_run']['id'],
+              'digest': artifact['digest'],
+              'zip_digest_verified': True,
+          }
+          result['prepared_probe_sources_verified'] = True
+          result['overlay_blobs_verified'] = True
+          pathlib.Path('/tmp/desktop-test-source-provenance.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2))
           PYCODE
 
       - name: Inspect media_kit native plugin
@@ -404,8 +459,14 @@ jobs:
           sudo apt-get install network-manager
           docker ps -a
 
+          TEST_NAME_ARGS=()
+          if [ "${{ matrix.cloud_test_suite }}" = "database" ]; then
+            TEST_NAME_ARGS=(--name 'Preset cloud env|Desktop database version history|Cloud database load recovery' --dart-define=AF_DATABASE_PERF_DEBUG=true)
+          fi
+
           set +e
           flutter test \
+            "${TEST_NAME_ARGS[@]}" \
             --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
             --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
             integration_test/desktop/cloud/cloud_runner.dart \
@@ -451,6 +512,7 @@ jobs:
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
             /tmp/cloud-runtime-image-provenance.json
+            /tmp/desktop-test-source-provenance.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -479,216 +541,3 @@ jobs:
             gotrue_logs.txt
             nginx_logs.txt
           retention-days: 1
-
-  integration_test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        test_number: [16]
-        include:
-          - os: ubuntu-latest
-            target: "x86_64-unknown-linux-gnu"
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: 42d336d59743c8a7f94967e0bdf928bbc077f06b
-          fetch-depth: 2
-
-      - name: Verify the exact test-only Desktop revision
-        env:
-          PREPARED_SOURCE: 17f8ce6778f02e50f26abead14536051af626e45
-          TARGET_SOURCE: 42d336d59743c8a7f94967e0bdf928bbc077f06b
-        run: |
-          python3 - <<'PYCODE'
-          import os, subprocess
-          def git(*args):
-              return subprocess.check_output(['git', *args], text=True).strip()
-          target = os.environ['TARGET_SOURCE']
-          prepared = os.environ['PREPARED_SOURCE']
-          assert git('rev-parse', 'HEAD') == target, 'Unexpected Desktop checkout'
-          subprocess.run(['git', 'merge-base', '--is-ancestor', prepared, target], check=True)
-          expected = {
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group.feature',
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group_test.dart',
-              'frontend/appflowy_flutter/test/step/the_number_grouping_validation_error_is.dart',
-          }
-          actual = set(git('diff', '--name-only', prepared, target).splitlines())
-          assert actual == expected, f'Unexpected source changes: {actual ^ expected}'
-          for line in git('diff', '--numstat', prepared, target).splitlines():
-              assert line.split('\t')[:2] == ['1', '1'], f'Unexpected test change: {line}'
-          print(f'Verified {target}: only three one-line test changes from prepared {prepared}')
-          PYCODE
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
-
-      - name: Install prerequisites
-        working-directory: frontend
-        run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-          sudo apt-get update
-          sudo apt-get install -y --fix-broken
-          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-          sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
-          sudo apt-get install -y libmpv-dev mpv libasound2-dev
-          # Install GStreamer for audioplayers_linux
-          # Install libunwind-dev first to resolve dependency issues
-          sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-        shell: bash
-
-      - name: Enable Flutter Desktop
-        run: |
-          flutter config --enable-linux-desktop
-        shell: bash
-
-      - name: Download and verify the immutable prepared Linux artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api repos/AppFlowy-IO/AppFlowy-CI/actions/artifacts/11698020192 > "$RUNNER_TEMP/prepared-artifact.json"
-          python3 - "$RUNNER_TEMP/prepared-artifact.json" <<'PYCODE'
-          import json, sys
-          with open(sys.argv[1]) as handle:
-              artifact = json.load(handle)
-          assert artifact['id'] == 11698020192
-          assert artifact['name'] == '38126067520-ubuntu-latest'
-          assert artifact['expired'] is False
-          assert artifact['workflow_run']['id'] == 38126067520
-          assert artifact['workflow_run']['head_sha'] == '5618248fb1bd09b1e4ae43f1d738ba1d3d66bdd7'
-          assert artifact['digest'] == 'sha256:4059813490112eb69b93995dbc1a1ed20bf9c390960af344f37922a8b7fd2ba1'
-          print('Verified immutable prepared artifact metadata')
-          PYCODE
-          gh api repos/AppFlowy-IO/AppFlowy-CI/actions/artifacts/11698020192/zip > "$RUNNER_TEMP/prepared-linux.zip"
-          echo "4059813490112eb69b93995dbc1a1ed20bf9c390960af344f37922a8b7fd2ba1  $RUNNER_TEMP/prepared-linux.zip" | sha256sum --check --strict
-          unzip -p "$RUNNER_TEMP/prepared-linux.zip" appflowy_flutter.tar.gz > appflowy_flutter.tar.gz
-
-      - name: Uncompressed appflowy_flutter
-        run: tar -xf appflowy_flutter.tar.gz
-        shell: bash
-
-      - name: Restore and verify the three corrected test files
-        run: |
-          python3 - <<'PYCODE'
-          import subprocess
-          target = '42d336d59743c8a7f94967e0bdf928bbc077f06b'
-          paths = [
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group.feature',
-              'frontend/appflowy_flutter/integration_test/desktop/bdd/database/layout_and_group/layout_and_group_test.dart',
-              'frontend/appflowy_flutter/test/step/the_number_grouping_validation_error_is.dart',
-          ]
-          subprocess.run(['git', 'restore', '--source=' + target, '--worktree', '--', *paths], check=True)
-          for path in paths:
-              expected = subprocess.check_output(['git', 'rev-parse', target + ':' + path], text=True).strip()
-              actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
-              assert actual == expected, f'Test overlay mismatch: {path}'
-              print(f'{path}: {actual}')
-          print('Verified exact corrected test sources over unchanged prepared application/native artifact')
-          PYCODE
-
-      - name: Inspect media_kit native plugin
-        working-directory: frontend/appflowy_flutter
-        run: |
-          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
-          pkg-config --modversion mpv || true
-          pkg-config --modversion epoxy || true
-        shell: bash
-
-      - name: Prepare PDFium for Linux integration tests
-        run: |
-          set -euo pipefail
-          PDFIUM_DIR="$RUNNER_TEMP/pdfium"
-          PDFIUM_ARCHIVE="$RUNNER_TEMP/pdfium-linux-x64.tgz"
-          mkdir -p "$PDFIUM_DIR"
-          curl -L \
-            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz" \
-            -o "$PDFIUM_ARCHIVE"
-          tar -xzf "$PDFIUM_ARCHIVE" -C "$PDFIUM_DIR" lib/libpdfium.so
-          echo "APPFLOWY_PDFIUM_MODULE_PATH=$PDFIUM_DIR/lib/libpdfium.so" >> "$GITHUB_ENV"
-          ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
-        shell: bash
-
-      - name: Run Flutter integration tests
-        # Leave time inside the 60-minute job limit to upload partial results.
-        timeout-minutes: 45
-        shell: bash
-        run: |
-          cd frontend/appflowy_flutter
-          flutter pub get
-          dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          sudo apt-get install network-manager
-
-          set +e
-          flutter test \
-            integration_test/desktop_runner_${{ matrix.test_number }}.dart \
-            -d Linux \
-            --file-reporter=json:/tmp/desktop-test-events.jsonl \
-            --coverage 2>&1 | tee /tmp/test_output.txt
-          TEST_EXIT=${PIPESTATUS[0]}
-          set -eo pipefail
-
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
-
-          if [ "$TEST_EXIT" -ne 0 ] &&
-            grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
-            grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
-            grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
-            ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
-            echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
-            TEST_EXIT=0
-          fi
-
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "✅ All $PASS_COUNT integration tests passed"
-          else
-            echo "❌ $FAIL_COUNT integration test(s) failed, $PASS_COUNT test(s) passed"
-          fi
-
-          echo ""
-          echo "::group::Failed tests (click to expand)"
-          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
-          echo "::endgroup::"
-
-          exit $TEST_EXIT
-
-      - name: Upload desktop test output
-        if: always()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-test-output-${{ matrix.test_number }}-${{ github.run_id }}
-          path: |
-            /tmp/test_output.txt
-            /tmp/desktop-test-events.jsonl
-          if-no-files-found: warn
-          retention-days: 7
