@@ -17,7 +17,7 @@ inputs:
     description: Existing Cloud checkout with the job's Compose environment prepared.
     default: AppFlowy-Cloud-Premium
   github-token:
-    description: Existing token with read access to private Cloud Actions and artifacts.
+    description: Existing token with read access to private Client source and Cloud Actions/artifacts.
     required: true
   timeline:
     description: Build the commercial self-hosted Cloud flavor from the verified source.
@@ -29,6 +29,27 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Resolve the immutable generated Client pin
+      id: pins
+      shell: bash
+      env:
+        CLOUD_SHA: ${{ inputs.cloud-source-sha }}
+        IMAGE_RUN: ${{ inputs.image-run-id }}
+        DESKTOP_REF: ${{ inputs.desktop-ref }}
+        DESKTOP_PATH: ${{ inputs.desktop-path }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" pins \
+          --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
+          --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH"
+    - name: Check out the exact generated Client source
+      if: steps.pins.outputs.client-sha != ''
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Client
+        ref: ${{ steps.pins.outputs.client-sha }}
+        path: .ci-generated-client
+        token: ${{ inputs.github-token }}
+        persist-credentials: false
     - name: Verify paired inputs, source checkouts and private build
       id: request
       shell: bash
@@ -43,6 +64,7 @@ runs:
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" request \
           --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
           --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH" --cloud "$CLOUD_PATH" \
+          --client "$GITHUB_WORKSPACE/.ci-generated-client" \
           --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json"
     - name: Download the verified private image set
       if: steps.request.outputs.enabled == 'true'

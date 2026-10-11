@@ -13,13 +13,16 @@ from pathlib import Path
 import re
 import subprocess
 import tarfile
+import tempfile
 import tomllib
+from urllib.parse import parse_qs, urlsplit
 
 
 REPOSITORY = "AppFlowy-IO/AppFlowy-Cloud-Premium"
 WORKFLOW = ".github/workflows/build_ci_images_self_hosted.yml"
 SERVICES = ("appflowy_cloud", "appflowy_worker", "appflowy_search", "appflowy_mcp")
 SERVER_URL = "https://github.com/appflowy-io/appflowy-cloud-premium"
+CLIENT_URL = "https://github.com/appflowy-io/appflowy-client"
 
 
 def command(arguments, *, cwd=None, env=None, capture=True):
@@ -41,17 +44,83 @@ def validate_pair(source_sha, image_run_id):
     return True
 
 
-def verify_desktop_pin(desktop, source_sha):
+def desktop_pin(desktop, source_sha):
     with (desktop / "frontend/rust-lib/Cargo.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
     dependencies = manifest["workspace"]["dependencies"]
     pins = {name: dependencies[name] for name in ("collab", "appflowy-entity", "appflowy-proto")}
     pins["client-api"] = manifest["patch"]["crates-io"]["client-api"]
+    sources = set()
     for name, pin in pins.items():
         if (not isinstance(pin, dict) or "path" in pin
-                or pin.get("git", "").removesuffix(".git").lower() != SERVER_URL
-                or pin.get("rev") != source_sha):
-            raise ValueError(f"Desktop {name} must use the requested immutable Cloud revision")
+                or not re.fullmatch(r"[a-f0-9]{40}", pin.get("rev", ""))):
+            raise ValueError(f"Desktop {name} must use an immutable shared revision")
+        sources.add((pin.get("git", "").removesuffix(".git").lower(), pin["rev"]))
+    if len(sources) != 1:
+        raise ValueError("Desktop shared pins must use the same repository and revision")
+    repository, revision = sources.pop()
+    if repository not in (SERVER_URL, CLIENT_URL) or (repository == SERVER_URL and revision != source_sha):
+        raise ValueError("Desktop pins do not identify the requested immutable Cloud revision")
+    with (desktop / "frontend/rust-lib/Cargo.lock").open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+    locked = set()
+    for package in packages:
+        source = package.get("source", "")
+        if not source.startswith("git+"):
+            continue
+        url = urlsplit(source[4:])
+        origin = f"{url.scheme}://{url.netloc}{url.path}".removesuffix(".git").lower()
+        if origin not in (SERVER_URL, CLIENT_URL):
+            continue
+        if (origin != repository or url.fragment != revision
+                or parse_qs(url.query) != {"rev": [revision]}):
+            raise ValueError("Desktop lockfile has a different shared source")
+        locked.add(package["name"])
+    if not set(pins).issubset(locked):
+        raise ValueError("Desktop lockfile is missing a pinned shared package")
+    return {"shared_source_kind": "generated_client" if repository == CLIENT_URL else "server",
+            "shared_source_sha": revision}
+
+
+def generated_client_source(cloud, source_sha, client, client_sha, run=command):
+    if (client is None or run(["git", "rev-parse", "HEAD"], cwd=client) != client_sha
+            or run(["git", "remote", "get-url", "origin"], cwd=client).removesuffix(".git").lower() != CLIENT_URL):
+        raise ValueError("Generated Client checkout differs from its canonical pinned revision")
+    # Generate from committed bytes: the live Cloud checkout has job-owned Compose edits.
+    # No Cargo resolution or services are needed, and the existing sync script owns the recipe.
+    with tempfile.TemporaryDirectory(prefix="desktop-generated-client-") as temporary:
+        root = Path(temporary)
+        for name, repository, revision in (("cloud", cloud, source_sha), ("client", client, client_sha)):
+            archive = root / f"{name}.tar"
+            run(["git", "archive", "--format=tar", f"--output={archive}", revision], cwd=repository)
+            with tarfile.open(archive) as contents:
+                if any(not (member.isfile() or member.isdir()) for member in contents.getmembers()):
+                    raise ValueError("Shared source archive must contain only regular files and directories")
+                contents.extractall(root / name, filter="data")
+        expected = root / "expected"
+        expected.mkdir()
+        script = root / "cloud/scripts/sync_client_repo.sh"
+        run(["bash", str(script), str(root / "cloud"), str(expected)])
+
+        def inventory(directory):
+            result = {}
+            for path in directory.rglob("*"):
+                if path.is_symlink():
+                    raise ValueError("Generated source must not contain symlinks")
+                relative = path.relative_to(directory).as_posix()
+                if path.is_file() and relative != "Cargo.lock":
+                    result[relative] = [hashlib.sha256(path.read_bytes()).hexdigest(),
+                                        bool(path.stat().st_mode & 0o111)]
+            return result
+
+        generated = inventory(expected)
+        # The standalone check writes Client's root lock; downstream builds use Desktop's
+        # checked lock instead. Every other tracked Client file must be generated identically.
+        if not generated or generated != inventory(root / "client"):
+            raise ValueError("Generated Client source differs from the requested Cloud source")
+        return {"client_source_sha": client_sha,
+                "generated_source_sha256": hashlib.sha256(json.dumps(generated, sort_keys=True).encode()).hexdigest(),
+                "sync_script_sha256": hashlib.sha256(script.read_bytes()).hexdigest()}
 
 
 def verify_build(build, source_sha):
@@ -67,7 +136,7 @@ def verify_build(build, source_sha):
         raise ValueError("Private image build does not identify the requested Cloud revision")
 
 
-def prepare_request(source_sha, image_run_id, desktop, cloud, desktop_ref, manifest, run=command):
+def prepare_request(source_sha, image_run_id, desktop, cloud, desktop_ref, manifest, run=command, *, client=None):
     if not validate_pair(source_sha, image_run_id):
         return False
     if not re.fullmatch(r"[a-f0-9]{40}", desktop_ref or ""):
@@ -79,7 +148,9 @@ def prepare_request(source_sha, image_run_id, desktop, cloud, desktop_ref, manif
     ci_sha = run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2])
     if ci_sha != os.environ["GITHUB_SHA"]:
         raise ValueError("CI runtime tools differ from the workflow revision")
-    verify_desktop_pin(desktop, source_sha)
+    shared = desktop_pin(desktop, source_sha)
+    if shared["shared_source_kind"] == "generated_client":
+        shared.update(generated_client_source(cloud, source_sha, client, shared["shared_source_sha"], run))
     build = json.loads(run(["gh", "api", f"repos/{REPOSITORY}/actions/runs/{image_run_id}"]))
     verify_build(build, source_sha)
     artifacts = json.loads(run([
@@ -102,6 +173,7 @@ def prepare_request(source_sha, image_run_id, desktop, cloud, desktop_ref, manif
         "image_workflow_sha": build["head_sha"],
         "image_artifacts": {item["name"]: item["id"] for item in image_artifacts},
         "stage": "request_verified",
+        **shared,
     })
     return True
 
@@ -221,12 +293,18 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
+    pins = sub.add_parser("pins")
+    pins.add_argument("--cloud-source-sha", default="")
+    pins.add_argument("--image-run-id", default="")
+    pins.add_argument("--desktop-ref", default="")
+    pins.add_argument("--desktop", type=Path, required=True)
     request = sub.add_parser("request")
     request.add_argument("--cloud-source-sha", default="")
     request.add_argument("--image-run-id", default="")
     request.add_argument("--desktop-ref", default="")
     request.add_argument("--desktop", type=Path, required=True)
     request.add_argument("--cloud", type=Path, required=True)
+    request.add_argument("--client", type=Path)
     request.add_argument("--manifest", type=Path, required=True)
     start = sub.add_parser("start")
     start.add_argument("--cloud", type=Path, required=True)
@@ -234,9 +312,20 @@ def main():
     start.add_argument("--manifest", type=Path, required=True)
     start.add_argument("--timeline", action="store_true")
     args = parser.parse_args()
-    if args.operation == "request":
+    if args.operation == "pins":
+        revision = ""
+        if validate_pair(args.cloud_source_sha, args.image_run_id):
+            if (not re.fullmatch(r"[a-f0-9]{40}", args.desktop_ref)
+                    or command(["git", "rev-parse", "HEAD"], cwd=args.desktop) != args.desktop_ref):
+                raise ValueError("Exact Cloud mode requires the checked-out immutable Desktop revision")
+            shared = desktop_pin(args.desktop, args.cloud_source_sha)
+            if shared["shared_source_kind"] == "generated_client":
+                revision = shared["shared_source_sha"]
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            print(f"client-sha={revision}", file=output)
+    elif args.operation == "request":
         enabled = prepare_request(args.cloud_source_sha, args.image_run_id, args.desktop,
-                                  args.cloud, args.desktop_ref, args.manifest)
+                                  args.cloud, args.desktop_ref, args.manifest, client=args.client)
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"enabled={str(enabled).lower()}", file=output)
             if enabled:

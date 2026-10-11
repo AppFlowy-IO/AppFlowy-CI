@@ -1,9 +1,11 @@
 # Desktop against an exact Cloud commit
 
 Desktop's source trigger can send an optional `cloud_source_sha` alongside its
-immutable Desktop `pr_ref`. This mode is for direct shared-crate pins to the
-private server repository, including an unmerged server PR. Existing generated
-Client mirror consumers omit the value and retain registry-image behavior.
+immutable Desktop `pr_ref`. Exact mode accepts consistent shared-crate pins to
+the generated `AppFlowy-Client` repository or directly to the requested private
+Server commit. Generated Client consumers currently omit the value in their
+automatic trigger and retain registry-image behavior; manual exact mode supplies
+the Cloud SHA and successful image run explicitly.
 
 The receiver requests the four images once with the existing private
 `build_ci_images_self_hosted.yml` workflow. It forwards the successful build's
@@ -13,7 +15,10 @@ The Desktop PR number is not passed as a Cloud PR number. This request omits
 
 Each runtime job checks out the requested Cloud commit and verifies:
 
-- Desktop `pr_ref`, the actual Desktop checkout, and all four shared Rust pins.
+- Desktop `pr_ref`, the actual Desktop checkout, all four shared Rust pins and
+  their matching resolved Git sources in Desktop's lockfile.
+- For generated Client pins, the canonical Client checkout at that full SHA and
+  its source equality with the requested Server commit's sync output.
 - The actual CI tools checkout against that workflow's `github.sha`.
 - The private build's repository, default-branch workflow, successful status,
   source-correlated title, and complete unexpired artifact set.
@@ -25,15 +30,32 @@ and a job-owned Compose override protects the four loaded images. Any verificati
 or load failure ends the job, with no registry fallback. Both optional inputs must
 be absent for the legacy path; a partial or malformed pair is an error.
 
+The generated Client check runs the exact Server commit's
+`scripts/sync_client_repo.sh` on committed source in a temporary directory. It
+compares every generated file's path, contents and executable mode with the
+committed Client tree, including manifests, vendor patches and fixtures. Only
+Client's root `Cargo.lock` is excluded: that standalone workspace resolution is
+not used by Desktop, whose own lockfile is checked separately. No Cargo command
+or service is started by this source check, and temporary files are removed on
+success or failure. Mixed pins, stale lock sources and unrelated Client source
+fail before downloading images.
+
+This establishes source equality, not who authored the Client commit. Desktop
+publication still requires the Server change to merge into `main`, its sync
+workflow to succeed, and selection of that generated Client SHA. Preserve the
+sync run and commit evidence separately; a matching short commit subject alone
+does not establish the relationship.
+
 Timeline still builds its `self-host-af,commercial-ci,ci-test` Cloud flavor from
 the verified Cloud checkout. The other three services use that same commit's
 artifacts. Its source-built Cloud image receives the revision label and the final
 container ID is recorded; the existing `self_hosted=true` server-info check remains.
 
 The `desktop-cloud-manifest-*` job artifacts record Desktop, Cloud and CI commits,
-the private image run and attempt, artifact IDs and runtime image IDs. A manifest
-with `stage: runtime_verified` proves startup completed; it does not itself prove
-the tests passed. Image artifacts expire after one day; an expired set requires a
+shared source kind and revision, generated Client/tree/sync-script identities
+when applicable, the private image run and attempt, artifact IDs and runtime
+image IDs. A manifest with `stage: runtime_verified` proves startup completed;
+it does not itself prove the tests passed. Image artifacts expire after one day; an expired set requires a
 new build of the same source, never a fallback to a registry tag.
 
 ## Activation and premerge validation
@@ -56,22 +78,24 @@ merging it or adding a task-branch pin to Desktop's shipping workflow:
 ```bash
 gh workflow run rust_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
   --ref codex/desktop-exact-cloud-artifacts \
-  -f pr_ref="$DESKTOP_SHA" -f pr_number="$DESKTOP_PR" \
+  -f pr_ref="$DESKTOP_SHA" \
   -f cloud_source_sha="$CLOUD_SHA" -f cloud_image_run_id="$IMAGE_RUN_ID"
 gh workflow run flutter_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
   --ref codex/desktop-exact-cloud-artifacts \
-  -f pr_ref="$DESKTOP_SHA" -f pr_number="$DESKTOP_PR" \
+  -f pr_ref="$DESKTOP_SHA" \
   -f cloud_source_sha="$CLOUD_SHA" -f cloud_image_run_id="$IMAGE_RUN_ID"
 gh workflow run ios_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
   --ref codex/desktop-exact-cloud-artifacts \
-  -f pr_ref="$DESKTOP_SHA" -f pr_number="$DESKTOP_PR"
+  -f pr_ref="$DESKTOP_SHA"
 ```
 
+These manual commands omit the PR number to avoid the automatic PR concurrency
+group. The existing token also needs read access to private Client source.
 Record the intended CI branch commit before dispatch, discover the actual runs,
 and check their `headSha` plus each manifest's `ci_source_sha` against it. Check
-`desktop_source_sha` and `cloud_source_sha` as well; a public workflow head SHA
-alone does not identify either private source. Do not use a default-branch
-registry-mode run as evidence for a new atomic API. Manual branch validation and
+`desktop_source_sha`, `cloud_source_sha` and `client_source_sha` when present;
+a public workflow head SHA alone does not identify either private source. Do not
+use a default-branch registry-mode run as evidence for a new atomic API. Manual branch validation and
 automatic receiver activation are separate decisions.
 
 ```bash
@@ -97,8 +121,9 @@ python3 -B -m unittest discover -s .github/scripts
 python3 -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
 ```
 
-The new exact-runtime tests use real Docker archive metadata and temporary Git
-checkouts with controlled GitHub/command boundaries; they never start Docker or
+The exact-runtime tests use real Docker archive metadata and temporary Git
+checkouts, run source generation and compare committed trees, with controlled
+GitHub boundaries; they never start Docker or
 dispatch Actions. The pre-existing Cloud binary archive tests require a Linux
 AMD64 compiler/runtime and run in `workflow_checks.yaml` on Ubuntu. Local macOS
 execution cannot validate that existing ELF-specific fixture.
