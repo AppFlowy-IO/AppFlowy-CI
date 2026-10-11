@@ -193,6 +193,9 @@ and S3 fixtures, and four Rust test threads. They start only after the selected 
 shared test-binary gate succeeds, and are skipped when image construction is cancelled or fails, so
 they cannot keep a failed image request running. The Rust runner first builds the ordinary indexing
 library, then runs the selected cache and Worker tests.
+The cache-contract job has a four-hour limit for cold package builds and the final real-storage
+recovery checks in both hosted and self-hosted modes. All test selections and their runner-level
+timeouts remain unchanged.
 The dashboard job validates Prometheus queries and both CI Compose cache configurations.
 
 Older Cloud refs with none of `script/test_encoded_cache.sh`,
