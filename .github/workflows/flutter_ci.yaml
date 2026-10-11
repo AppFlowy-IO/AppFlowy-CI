@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: "main"
+      cloud_test_suite:
+        description: "One cloud suite to diagnose; leave empty for the full matrix"
+        required: false
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,6 +97,8 @@ jobs:
       - name: Select cloud test suites from the tested revision
         id: cloud-test-suites
         shell: bash
+        env:
+          REQUESTED_CLOUD_TEST_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_test_suite || '' }}
         run: |
           manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
           if [ -f "$manifest" ]; then
@@ -104,6 +111,12 @@ jobs:
           else
             # Older AppFlowy branches do not understand the split suite names.
             suites='["core_workspace","sidebar","database","document"]'
+          fi
+          if [ -n "${REQUESTED_CLOUD_TEST_SUITE:-}" ]; then
+            suites=$(jq -ce --arg requested "$REQUESTED_CLOUD_TEST_SUITE" '
+              if index($requested) != null then [$requested]
+              else error("Unknown requested cloud suite") end
+            ' <<< "$suites")
           fi
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
@@ -291,6 +304,7 @@ jobs:
           path: appflowy_flutter.tar.gz
 
   prepare-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_test_suite == ''
     strategy:
       fail-fast: true
       matrix:
@@ -427,6 +441,7 @@ jobs:
           path: appflowy_flutter.tar.gz
 
   prepare-macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_test_suite == ''
     strategy:
       fail-fast: true
       matrix:
@@ -565,6 +580,7 @@ jobs:
           path: appflowy_flutter.tar.gz
 
   unit_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_test_suite == ''
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
@@ -984,6 +1000,8 @@ jobs:
         # Leave time inside the 60-minute job limit to upload partial results.
         timeout-minutes: 45
         shell: bash
+        env:
+          FLUTTER_TEST_VERBOSE: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_test_suite != '' }}
         run: |
           cd frontend/appflowy_flutter
           flutter pub get
@@ -995,7 +1013,11 @@ jobs:
           docker ps -a
 
           set +e
-          flutter test \
+          flutter_args=()
+          if [ "${FLUTTER_TEST_VERBOSE:-false}" = true ]; then
+            flutter_args+=(--verbose)
+          fi
+          flutter test "${flutter_args[@]}" \
             --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
             --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
             integration_test/desktop/cloud/cloud_runner.dart \
@@ -1070,6 +1092,7 @@ jobs:
           retention-days: 1
 
   integration_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_test_suite == ''
     needs: [prepare-linux]
     strategy:
       fail-fast: false

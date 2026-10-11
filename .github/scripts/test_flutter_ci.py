@@ -257,7 +257,7 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             if step.get("name", "").startswith("Run Flutter integration tests")
         )
 
-    def select_suites(self, manifest=None):
+    def select_suites(self, manifest=None, requested=""):
         with tempfile.TemporaryDirectory(prefix="cloud-ci-matrix-") as directory:
             root = Path(directory)
             if manifest is not None:
@@ -268,7 +268,8 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", self.selection["run"]],
                 cwd=root,
-                env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                env={**os.environ, "GITHUB_OUTPUT": str(output),
+                     "REQUESTED_CLOUD_TEST_SUITE": requested},
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -280,6 +281,57 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         result, output = self.select_suites(SPLIT_SUITES)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(output.removeprefix("suites=")), SPLIT_SUITES)
+
+    def test_manual_suite_selection_runs_one_registered_suite(self):
+        for suite in SPLIT_SUITES:
+            with self.subTest(suite=suite):
+                result, output = self.select_suites(SPLIT_SUITES, requested=suite)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(output.removeprefix("suites=")), [suite])
+
+    def test_unknown_manual_suite_fails_before_scheduling_tests(self):
+        for suite in ["missing_suite", "workspace,sharing", "$(false)"]:
+            with self.subTest(suite=suite):
+                result, output = self.select_suites(SPLIT_SUITES, requested=suite)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+                self.assertIn("Unknown requested cloud suite", result.stderr)
+
+    def test_manual_suite_uses_the_tested_revisions_legacy_manifest(self):
+        result, output = self.select_suites(requested="core_workspace")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(output.removeprefix("suites=")), ["core_workspace"])
+
+    def test_focused_manual_run_excludes_unrelated_builds_and_test_jobs(self):
+        condition = "github.event_name != 'workflow_dispatch' || inputs.cloud_test_suite == ''"
+        for job in ["prepare-macos", "prepare-windows", "unit_test", "integration_test"]:
+            with self.subTest(job=job):
+                self.assertEqual(self.jobs[job].get("if"), condition)
+        self.assertNotIn("if", self.prepare)
+        self.assertNotIn("if", self.cloud)
+        self.assertEqual(self.cloud["needs"], ["prepare-linux"])
+
+    def test_focused_run_collects_verbose_logs_and_keeps_the_flutter_exit_code(self):
+        for verbose in ["true", "false"]:
+            for code in [0, 17]:
+                with self.subTest(verbose=verbose, code=code), tempfile.TemporaryDirectory() as directory:
+                    arguments = Path(directory) / "arguments"
+                    script = (
+                        'flutter() { printf "%s\\n" "$@" > "$STUB_ARGUMENTS"; return "$STUB_EXIT"; }\n'
+                        + self.execution_script(directory, include_stub=False)
+                    )
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", script],
+                        env={**os.environ, "STUB_ARGUMENTS": str(arguments),
+                             "STUB_EXIT": str(code), "FLUTTER_TEST_VERBOSE": verbose},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    actual = arguments.read_text().splitlines()
+                    self.assertEqual("--verbose" in actual, verbose == "true")
+                    self.assertIn("--dart-define=CLOUD_TEST_SUITE=workspace", actual)
+                    self.assertIn("integration_test/desktop/cloud/cloud_runner.dart", actual)
+                    self.assertIn(f"--file-reporter=json:{directory}/events.jsonl", actual)
 
     def test_old_revisions_keep_legacy_matrix(self):
         result, output = self.select_suites()

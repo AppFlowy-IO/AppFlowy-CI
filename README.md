@@ -206,3 +206,13 @@ for the job's disposable Compose PostgreSQL and use `psql` to provision a paid p
 only for their newly created workspace. This keeps multi-member permission tests
 compatible with hosted Free-plan limits. Local runs must explicitly provide their
 disposable test database; the fixtures do not infer developer database settings.
+
+For a focused Flutter cloud diagnostic, manually dispatch `flutter_ci.yaml` with
+`cloud_test_suite` set to one suite from the tested revision's `ci_suites.json`.
+Use an immutable source SHA for `pr_ref`. The workflow builds Linux and runs that
+suite with verbose Flutter logs and the JSON event artifact; macOS, Windows,
+unit-test and numbered desktop-runner jobs are excluded from this manual run.
+An unknown suite fails selection before tests are scheduled. Leaving the input
+empty keeps the full matrix, as do ordinary PR and repository-dispatch events.
+Wait for the PR's current runs to finish first: manual runs share its concurrency
+group. The workflow can run from a CI feature branch before that branch is merged.
