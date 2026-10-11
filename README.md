@@ -121,6 +121,24 @@ and the public run/attempt ID. It waits for the private result and includes fail
 integration notification. The existing self-hosted runners belong only to Cloud Premium, so the
 public job is a lightweight GitHub-hosted waiter; no additional public runner registration is needed.
 
+All public Backup jobs share the `appflowy-cloud-backup-requests` concurrency group with
+`queue: max` and cancellation disabled. GitHub queues requests before dispatch and before the
+360-minute job budget starts; the requester's 345-minute deadline remains available for the private
+qualification. This queue is independent of PR/source identity and does not serialize image builds
+or ordinary integration tests. GitHub retains up to 100 pending requests in a concurrency group.
+The private `ci` job also needs its own shared queue before VM allocation: a cancelled public waiter
+releases this public slot while its private restore and cleanup continue. Both queues retain the
+private VM's file lock as the final exclusion boundary.
+
+Roll out the private Backup job queue and this caller queue together. Existing runs and source
+branches with older workflow definitions keep their old scheduling behavior; let those private
+qualifications finish before expecting the queues to eliminate VM lock contention. Public requests
+still have a bounded result wait, so a private run queued behind a surviving cancelled request or
+a manual qualification can exhaust that deadline. Such a timeout must remain a failure and must
+not cancel the private restore. For GitHub's queue semantics, see
+[workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Start a fresh integration run after rollout; rerunning an old run retains its old workflow definition.
+
 Cloud owns the Backup integration tests and their fixtures under its root `tests/backup/`
 directory. The private lane executes the source-owned `script/ci/test_backup.sh`, including the
 Rust harness, live PostgreSQL 16 integration tests, engine/retry tests, and a complete deployment

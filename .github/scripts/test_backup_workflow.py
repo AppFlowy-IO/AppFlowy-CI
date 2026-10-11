@@ -97,6 +97,24 @@ class BackupWorkflowTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(outputs.get("status"), expected)
 
+    def test_backup_requests_share_one_queue_without_replacing_pending_requests(self):
+        concurrency = self.jobs["backup"]["concurrency"]
+        # A literal group shares admission across every source branch, SHA and PR.
+        # A request/ref expression would recreate concurrent VM lock waiters.
+        group = concurrency["group"]
+        self.assertTrue(group)
+        self.assertNotIn("${{", group)
+        self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
+        self.assertNotEqual(group, self.workflow["concurrency"]["group"])
+        for name, job in self.jobs.items():
+            if name != "backup":
+                self.assertNotEqual(job.get("concurrency", {}).get("group"), group, name)
+        # New commits can still cancel their obsolete public run. Private restore
+        # cancellation is covered by test_request_backup_tests.py.
+        self.assertIs(self.workflow["concurrency"]["cancel-in-progress"], True)
+        self.assertIn("!cancelled()", self.jobs["backup"]["if"])
+
 
     def test_failed_predecessors_cannot_report_success_when_backup_is_skipped(self):
         notification = self.jobs["notify-webhook"]

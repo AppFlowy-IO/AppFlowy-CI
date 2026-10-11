@@ -1098,6 +1098,12 @@ jobs:
     # Wait for the shared compiler jobs before asking it to build the self-hosted
     # Backup stack. Hosted Cloud images do not exercise restore service policies.
     runs-on: ubuntu-24.04
+    # All Cloud branches share one private Backup slot. Queue before dispatch so
+    # waiting requests consume neither VM runners nor this job's execution budget.
+    concurrency:
+      group: appflowy-cloud-backup-requests
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 360
     steps:
       - name: Checkout CI tools
