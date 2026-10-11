@@ -16,6 +16,14 @@ on:
         required: false
         type: string
         default: "main"
+      cloud_source_sha:
+        description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
+        required: false
+        type: string
+      cloud_image_run_id:
+        description: "Successful private image build for cloud_source_sha (manual premerge validation)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -759,12 +767,28 @@ jobs:
       APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
 
     steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
       - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           path: AppFlowy-Cloud-Premium
+          ref: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}
 
       - name: Prepare appflowy cloud env
         working-directory: AppFlowy-Cloud-Premium
@@ -826,7 +850,7 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Run Docker-Compose
+      - name: Clean Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
         env:
           APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
@@ -840,6 +864,25 @@ jobs:
           docker volume prune -f || true
           sudo rm -rf /tmp/minio-data || true
 
+      - name: Start the verified exact Cloud runtime
+        id: exact-cloud
+        uses: ./.desktop-ci-tools/.github/actions/desktop-cloud-runtime
+        with:
+          cloud-source-sha: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+          image-run-id: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
+          desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          timeline: ${{ matrix.cloud_test_suite == 'timeline' }}
+
+      - name: Run Docker-Compose from legacy registry images
+        if: steps.exact-cloud.outputs.enabled == 'false'
+        working-directory: AppFlowy-Cloud-Premium
+        env:
+          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+        run: |
           echo "Pulling and starting containers..."
           docker compose -f docker-compose-ci.yml pull
           if [ "${{ matrix.cloud_test_suite }}" = "timeline" ]; then
@@ -919,13 +962,6 @@ jobs:
           done
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
-
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
       - name: Install flutter
         id: flutter
@@ -1030,6 +1066,15 @@ jobs:
           echo "::endgroup::"
 
           exit $TEST_EXIT
+
+      - name: Upload exact Cloud runtime manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-cloud-manifest-flutter-${{ matrix.cloud_test_suite }}
+          path: ${{ runner.temp }}/desktop-cloud-manifest.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload cloud test output
         if: always()

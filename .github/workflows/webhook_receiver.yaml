@@ -21,6 +21,10 @@ on:
         description: "Git ref/branch to test"
         required: true
         type: string
+      cloud_source_sha:
+        description: "Optional immutable Cloud commit required by Desktop's shared protocol pins"
+        required: false
+        type: string
       workflows:
         description: "Workflows to trigger (comma-separated: flutter,rust,mobile,ios,rust_coverage,docker,commit_lint,backend,frontend,e2e,cloud_docker,rustlint,integration)"
         required: true
@@ -39,7 +43,10 @@ concurrency:
 jobs:
   dispatch-workflows:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     outputs:
+      cloud_source_sha: ${{ steps.parse.outputs.cloud_source_sha }}
+      cloud_image_run_id: ${{ steps.cloud-images.outputs.run_id }}
       flutter_run_url: ${{ steps.get_run_urls.outputs.flutter_run_url }}
       rust_run_url: ${{ steps.get_run_urls.outputs.rust_run_url }}
       mobile_run_url: ${{ steps.get_run_urls.outputs.mobile_run_url }}
@@ -57,7 +64,15 @@ jobs:
     steps:
       - name: Parse event data
         id: parse
+        env:
+          CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
         run: |
+          # The source trigger supplies only a revision, never an artifact ID.
+          if [[ -n "$CLOUD_SOURCE_SHA" && ! "$CLOUD_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::cloud_source_sha must be an immutable 40-character commit"
+            exit 1
+          fi
+          echo "cloud_source_sha=$CLOUD_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
@@ -93,6 +108,34 @@ jobs:
           echo "Workflows: ${{ steps.parse.outputs.workflows }}"
           echo "Execution ID: ${{ steps.parse.outputs.execution_id }}"
 
+      - name: Validate the optional Desktop Cloud request
+        if: steps.parse.outputs.cloud_source_sha != ''
+        env:
+          SOURCE_REPO: ${{ steps.parse.outputs.source_repo }}
+          DESKTOP_REF: ${{ steps.parse.outputs.pr_ref }}
+          WORKFLOWS: ${{ steps.parse.outputs.workflows }}
+        run: |
+          [[ "$SOURCE_REPO" == AppFlowy-Premium ]]
+          [[ "$DESKTOP_REF" =~ ^[a-f0-9]{40}$ ]]
+          [[ ",$WORKFLOWS," == *",rust,"* || ",$WORKFLOWS," == *",flutter,"* ]]
+
+      - name: Check out the receiver's image request tools
+        if: steps.parse.outputs.cloud_source_sha != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Build the exact Cloud image set once for Desktop
+        id: cloud-images
+        if: steps.parse.outputs.cloud_source_sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.parse.outputs.cloud_source_sha }}
+        # Deliberately omit CI_TOOLS_SHA (Cloud test compilation) and PR_NUMBER:
+        # this PR belongs to Desktop, not the private server repository.
+        run: python3 .github/scripts/request_image_build.py
+
       - name: Trigger Flutter CI
         if: contains(steps.parse.outputs.workflows, 'flutter')
         uses: peter-evans/repository-dispatch@v3
@@ -105,6 +148,8 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
+              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
               "workflow_type": "flutter"
             }
 
@@ -120,6 +165,8 @@ jobs:
               "pr_ref": "${{ steps.parse.outputs.pr_ref }}",
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
+              "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
+              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
               "workflow_type": "rust"
             }
 
@@ -658,6 +705,7 @@ jobs:
           **Started**: ${{ steps.parse.outputs.timestamp }}
           **Branch**: `${{ steps.parse.outputs.pr_ref }}`
           **Run ID**: `${{ github.run_id }}`
+          ${{ needs.dispatch-workflows.outputs.cloud_image_run_id != '' && format('**Cloud source**: `{0}`; [exact private image build](https://github.com/AppFlowy-IO/AppFlowy-Cloud-Premium/actions/runs/{1})', needs.dispatch-workflows.outputs.cloud_source_sha, needs.dispatch-workflows.outputs.cloud_image_run_id) || '' }}
 
           Your PR has triggered our CI/CD pipeline in the public repository. You can monitor the test results and build status here:
 

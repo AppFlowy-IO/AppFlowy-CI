@@ -1,5 +1,9 @@
 # AppFlowy-CI
 
+Desktop can optionally test direct shared-crate server pins against an exact
+private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
+for input provenance, legacy behavior and CI-branch validation before receiver activation.
+
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
 run on GitHub runners; the Backup topic uses the private isolated VM for restore qualification.
@@ -75,7 +79,11 @@ Shared libraries runs the full `appflowy-cloud-directory` and `appflowy-mcp-core
 including SCIM protocol, group-status SQL and workspace-bound MCP token regressions. When the
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
-cases total), 12 group-status and 3 MCP token tests, with none ignored.
+cases total), 11 default-feature group-status and 3 MCP token tests, with none ignored.
+The lane then compiles and runs the directory status suite with `self-host-af`, requiring all
+12 status tests including the exact admin-audit rollback case in its nonignored inventory. This
+keeps the default member-package graph intact while covering the self-host-only contract;
+member binaries compile on this runner and do not use the root Cloud binary archive.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.

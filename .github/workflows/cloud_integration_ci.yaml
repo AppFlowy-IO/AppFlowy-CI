@@ -907,13 +907,14 @@ jobs:
               "${cargo_command[@]}" test --locked "${member_packages[@]}" --lib \
                 -- --ignored --list > "$test_inventory/ignored"
               require_tests() {
-                local prefix="$1" minimum="$2" selected ignored
+                local prefix="$1" minimum="$2" inventory="${3:-$test_inventory}" selected ignored
+                # Namespace selectors end in ::; named tests must match exactly.
                 selected=$(awk -v prefix="$prefix" \
-                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
-                  "$test_inventory/all")
+                  '((prefix ~ /::$/ && index($0, prefix) == 1) || $0 == prefix ": test") && /: test$/ { n++ } END { print n+0 }' \
+                  "$inventory/all")
                 ignored=$(awk -v prefix="$prefix" \
-                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
-                  "$test_inventory/ignored")
+                  '((prefix ~ /::$/ && index($0, prefix) == 1) || $0 == prefix ": test") && /: test$/ { n++ } END { print n+0 }' \
+                  "$inventory/ignored")
                 echo "==> $prefix: $selected selected, $ignored ignored (minimum $minimum)"
                 if [[ "$selected" -lt "$minimum" || "$ignored" -ne 0 ]]; then
                   echo "::error::Required SCIM/MCP regression coverage is missing or ignored: $prefix"
@@ -923,7 +924,8 @@ jobs:
               if [[ -f "$scim_contract" ]]; then
                 require_tests 'api::scim::' 51
                 require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1
-                require_tests 'biz::directory::status::tests::' 12
+                # The audit rollback case is self-host-only; require it separately below.
+                require_tests 'biz::directory::status::tests::' 11
               fi
               if [[ -f "$mcp_contract" ]]; then
                 require_tests 'workspace_token::tests::' 3
@@ -933,6 +935,23 @@ jobs:
             fi
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               "${member_packages[@]}" -- --test-threads=1
+            if [[ -f "$scim_contract" ]]; then
+              # Keep the default package graph above intact and execute all 12 status
+              # contracts, including the gated admin audit rollback, in its real graph.
+              # Shared archives contain only root Cloud tests; this member compiles here.
+              self_host_directory=(cargo test --locked -p appflowy-cloud-directory
+                --features self-host-af --lib)
+              self_host_inventory="$test_inventory/self-host"
+              mkdir "$self_host_inventory"
+              "${self_host_directory[@]}" 'biz::directory::status::tests::' \
+                -- --list > "$self_host_inventory/all"
+              "${self_host_directory[@]}" 'biz::directory::status::tests::' \
+                -- --ignored --list > "$self_host_inventory/ignored"
+              require_tests 'biz::directory::status::tests::' 12 "$self_host_inventory"
+              require_tests 'biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails' 1 "$self_host_inventory"
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${self_host_directory[@]}" \
+                'biz::directory::status::tests::' -- --test-threads=1
+            fi
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-worker -- --test-threads=1
