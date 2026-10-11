@@ -98,7 +98,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       "status": "biz::directory::status::tests::",
       "mcp": "workspace_token::tests::",
     }
-    counts = counts if counts is not None else {"scim": 51, "group": 1, "status": 12, "mcp": 3}
+    counts = counts if counts is not None else {"scim": 51, "group": 1, "status": 11, "mcp": 3}
     def case_name(suite, index):
       return SCIM_GROUP_POLICY if suite == "group" else f"{prefixes[suite]}case_{index}"
 
@@ -169,13 +169,13 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn("appflowy-mcp", packages)
     self.assertIn("api::scim::: 51 selected, 0 ignored", result.stdout)
     self.assertIn(f"{SCIM_GROUP_POLICY}: 1 selected, 0 ignored", result.stdout)
-    self.assertIn("12 selected, 0 ignored", result.stdout)
+    self.assertIn("11 selected, 0 ignored", result.stdout)
     self.assertIn("3 selected, 0 ignored", result.stdout)
 
   def test_managed_user_guards_allow_old_sources_and_independent_features(self):
     for contracts, counts in [
       ((), {}),
-      (("scim",), {"scim": 52, "group": 1, "status": 12}),
+      (("scim",), {"scim": 52, "group": 1, "status": 11}),
       (("mcp",), {"mcp": 4}),
     ]:
       with self.subTest(contracts=contracts):
@@ -186,10 +186,10 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         self.assertEqual(commands[-1][-2:], ["--", "--test-threads=1"])
 
   def test_managed_user_guards_reject_missing_or_ignored_cases(self):
-    for suite, minimum in {"scim": 51, "group": 1, "status": 12, "mcp": 3}.items():
+    for suite, minimum in {"scim": 51, "group": 1, "status": 11, "mcp": 3}.items():
       for selected, ignored in [(0, ()), (minimum - 1, ()), (minimum, (suite,))]:
         with self.subTest(suite=suite, selected=selected, ignored=ignored):
-          counts = {"scim": 51, "group": 1, "status": 12, "mcp": 3, suite: selected}
+          counts = {"scim": 51, "group": 1, "status": 11, "mcp": 3, suite: selected}
           result, commands = self.run_member_packages(counts=counts, ignored=ignored)
           self.assertNotEqual(result.returncode, 0)
           self.assertIn("::error::Required SCIM/MCP regression coverage", result.stdout)
@@ -199,6 +199,53 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     result, commands = self.run_member_packages(execution_exit=42)
     self.assertEqual(result.returncode, 42)
     self.assertEqual(len(commands), 3)
+
+  def test_legacy_fixture_leaves_the_ordinary_phase_only_when_admission_exists(self):
+    legacy = "workspace::page_view::duplication_test::duplicate_export_user_document_preserves_embedded_docs"
+    run = render_run_tests(self.lane("appflowy_cloud_workspace_content"))
+    for admission in (False, True):
+      with self.subTest(admission=admission), tempfile.TemporaryDirectory() as directory:
+        project = Path(directory)
+        if admission:
+          source = project / "libs/database/src/database_view_limit.rs"
+          source.parent.mkdir(parents=True)
+          source.touch()
+        script = 'cargo() { printf "%s\\n" "$@" >> cargo-calls; }\n' + run
+        result = subprocess.run(
+          ["bash", "-e", "-o", "pipefail", "-c", script], cwd=project,
+          env={**os.environ, "CLOUD_RUN_ROOT": "false", "RUN_ROOT_UNIT_TESTS": "false",
+               "RUN_SEARCH_PACKAGE": "false", "TEST_TARGETS": "", "TEST_SKIPS": ""},
+          capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        arguments = (project / "cargo-calls").read_text()
+        self.assertEqual(f"--skip\n{legacy}\n" in arguments, admission)
+
+  def test_self_host_audit_is_discovered_and_executed_with_its_feature(self):
+    step = next(step for step in self.job["steps"]
+                if step.get("name") == "Self-host Directory audit regression")
+    self.assertIn("matrix.test_service == 'appflowy_cloud_member_packages'", step["if"])
+    for selected, ignored, execution, expected in [(1, 0, 0, 0), (0, 0, 0, 1),
+                                                   (1, 1, 0, 1), (1, 0, 42, 42)]:
+      with self.subTest(selected=selected, ignored=ignored, execution=execution):
+        fake_cargo = r'''cargo() {
+          [[ " $* " == *" --features self-host-af "* ]] || return 77
+          [[ " $* " == *" --exact "* ]] || return 78
+          if [[ " $* " == *" --list "* ]]; then
+            local count="$SELECTED"
+            if [[ " $* " == *" --ignored "* ]]; then count="$IGNORED"; fi
+            if [[ "$count" == 1 ]]; then printf '%s: test\n' "$audit_test"; fi
+          else
+            return "$EXECUTION_EXIT"
+          fi
+        }
+        ''' + step["run"]
+        result = subprocess.run(
+          ["bash", "-e", "-o", "pipefail", "-c", fake_cargo],
+          env={**os.environ, "SELECTED": str(selected), "IGNORED": str(ignored),
+               "EXECUTION_EXIT": str(execution)}, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
   def test_permission_and_space_suites_are_partitioned_without_drops(self):
     lanes = [

@@ -923,7 +923,8 @@ jobs:
               if [[ -f "$scim_contract" ]]; then
                 require_tests 'api::scim::' 51
                 require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1
-                require_tests 'biz::directory::status::tests::' 12
+                # The twelfth status test exercises the self-host audit policy below.
+                require_tests 'biz::directory::status::tests::' 11
               fi
               if [[ -f "$mcp_contract" ]]; then
                 require_tests 'workspace_token::tests::' 3
@@ -972,12 +973,17 @@ jobs:
               -- --skip stress_test --skip commercial_test --test-threads=1
           else
             # Run root crate integration tests module by module.
-            # `${module}::` makes the filter a Rust path prefix rather than a
-            # substring, so a module like `workspace` only matches tests under
-            # `tests/workspace/` and not unrelated `mcp::*workspace*` or
-            # `search::*workspace*` tests.
+            # The trailing :: avoids matching words inside test-function names. Libtest
+            # still matches nested module paths, which the explicit skips below account for.
             # Skip whitelist tests — they run in the dedicated whitelist group.
-            skip_args=()
+            # libtest filters match substrings: database:: also selects the nested collab
+            # loss tests. These fixtures run explicitly below with their required settings.
+            skip_args=(
+              --skip collab::missing_user_updates::database::
+            )
+            if [[ -f libs/database/src/database_view_limit.rs ]]; then
+              skip_args+=(--skip workspace::page_view::duplication_test::duplicate_export_user_document_preserves_embedded_docs)
+            fi
             for skipped_test in ${TEST_SKIPS:-}; do
               skip_args+=(--skip "${skipped_test}")
             done
@@ -995,6 +1001,33 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-search -- --test-threads=1
           fi
+
+      - name: Self-host Directory audit regression
+        if: matrix.test_service == 'appflowy_cloud_member_packages' && hashFiles('libs/appflowy-cloud-directory/src/biz/directory/status/tests.rs') != ''
+        run: |
+          audit_test=biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails
+          command=(cargo test --locked -p appflowy-cloud-directory --features self-host-af --lib "$audit_test" -- --exact)
+          selected=$("${command[@]}" --list | awk '/: test$/ { count++ } END { print count+0 }')
+          ignored=$("${command[@]}" --ignored --list | awk '/: test$/ { count++ } END { print count+0 }')
+          if [[ "$selected" != 1 || "$ignored" != 0 ]]; then
+            echo "::error::Required self-host audit regression: $selected selected, $ignored ignored"
+            exit 1
+          fi
+          "${command[@]}" --test-threads=1
+
+      - name: Database WebSocket loss regressions
+        if: matrix.test_service == 'appflowy_cloud_collab' && hashFiles('tests/collab/missing_user_updates/database.rs') != ''
+        timeout-minutes: 10
+        run: |
+          python3 ci-tools/.github/scripts/cloud_fixture_modes.py database-websocket-loss \
+            --features "$CLOUD_TEST_FEATURES"
+
+      - name: Legacy exported-document duplication
+        if: matrix.test_service == 'appflowy_cloud_workspace_content' && hashFiles('libs/database/src/database_view_limit.rs') != '' && hashFiles('tests/workspace/page_view/duplication_test.rs') != ''
+        timeout-minutes: 10
+        run: |
+          python3 ci-tools/.github/scripts/cloud_fixture_modes.py legacy-duplication \
+            --features "$CLOUD_TEST_FEATURES"
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
       # ordinary modules in this lane or another matrix job. Older Cloud refs lack the runner.

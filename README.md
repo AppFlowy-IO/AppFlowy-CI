@@ -75,7 +75,9 @@ Shared libraries runs the full `appflowy-cloud-directory` and `appflowy-mcp-core
 including SCIM protocol, group-status SQL and workspace-bound MCP token regressions. When the
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
-cases total), 12 group-status and 3 MCP token tests, with none ignored.
+cases total), 11 hosted group-status and 3 MCP token tests, with none ignored. The twelfth
+group-status test requires `self-host-af`; a separate guarded step builds and executes that exact
+audit/rollback regression with its feature enabled. Both build configurations retain coverage.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.
@@ -113,6 +115,19 @@ indexing backlog. Auth enables both Authentik and OpenLDAP profiles and runs SCI
 The standalone topic discovers every non-`main` Cargo test target, and the coverage gate requires a
 new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
 room for workflow setup, coverage and cache-contract jobs.
+
+Two fixtures need a different server configuration and run after their topic's ordinary tests.
+Realtime collaboration recreates Cloud with `APPFLOWY_CI_DATABASE_HISTORY_ENABLED=false` for the
+four Database/DatabaseRow WebSocket loss tests; the ordinary history-enabled phase retains history
+coverage. Import and publishing recreates Cloud and Worker with a ten-view database cap for the
+captured exported-document duplication fixture. The ordinary phase still runs the six-view limit
+contracts. Broad libtest filters skip these fixtures because `database::` also matches nested
+collab module names. `cloud_fixture_modes.py` checks nonempty, nonignored selections, renders and
+checks both writers' settings, waits for matching server-info, then runs the same precompiled tests.
+These phases preserve the job's snapshot and do not add image builds or matrix jobs. The database
+WebSocket phase requires Cloud's CI history override; older sources without the tests skip it.
+Sources predating database-view admission keep the legacy duplication fixture in the ordinary
+phase because they have no view cap to override.
 
 **Backup** is an additional integration topic with a dedicated private deployment. After the
 shared image/test-binary build finishes, the public `Integration Tests (Backup)` job dispatches
