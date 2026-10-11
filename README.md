@@ -225,3 +225,9 @@ for the job's disposable Compose PostgreSQL and use `psql` to provision a paid p
 only for their newly created workspace. This keeps multi-member permission tests
 compatible with hosted Free-plan limits. Local runs must explicitly provide their
 disposable test database; the fixtures do not infer developer database settings.
+
+Desktop's Flutter `database` suite gives its disposable Cloud and Worker a ten-view
+database cap. Database history saves all nine layouts, and the captured document
+duplication fixture contains eight views. The workflow checks both writers' rendered
+Compose settings before startup and requires server-info to advertise the same cap
+before tests run. Other suites and the production six-view default are unchanged.

@@ -791,6 +791,26 @@ jobs:
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
+          if [ "${{ matrix.cloud_test_suite }}" = "database" ]; then
+            # History saves all nine layouts; the captured duplication fixture
+            # has eight views. Only this disposable suite needs a larger cap.
+            echo 'APPFLOWY_MAX_DASHBOARD_WIDGETS=10' >> .env
+          fi
+
+      - name: Verify database fixture Compose capacity
+        if: matrix.cloud_test_suite == 'database'
+        working-directory: AppFlowy-Cloud-Premium
+        run: |
+          docker compose -f docker-compose-ci.yml config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          for service in ("appflowy_cloud", "appflowy_worker"):
+              actual = services[service]["environment"].get("APPFLOWY_MAX_DASHBOARD_WIDGETS")
+              if actual != "10":
+                  raise SystemExit(f"{service} must use the ten-view database fixture cap, got {actual!r}")
+          print("Cloud and Worker both use the ten-view database fixture cap")
+          '
+
       - name: Trust localhost HTTPS for cloud tests
         working-directory: AppFlowy-Cloud-Premium
         run: |
@@ -868,6 +888,19 @@ jobs:
           done
           echo "::error::Cloud HTTPS health check timed out"
           exit 1
+
+      - name: Verify database fixture runtime capacity
+        if: matrix.cloud_test_suite == 'database'
+        run: |
+          curl --fail --show-error --max-time 10 \
+            -H 'client-version: 0.14.8' -H 'x-platform: app' \
+            "$APPFLOWY_CLOUD_URL/api/server-info" | python3 -c '
+          import json, sys
+          envelope = json.load(sys.stdin)
+          if envelope.get("code") != 0 or (envelope.get("data") or {}).get("max_dashboard_widgets") != 10:
+              raise SystemExit("Cloud did not advertise the ten-view database fixture cap")
+          print("Cloud advertises the ten-view database fixture cap")
+          '
 
       - name: Verify self-hosted Cloud for Timeline tests
         if: matrix.cloud_test_suite == 'timeline'

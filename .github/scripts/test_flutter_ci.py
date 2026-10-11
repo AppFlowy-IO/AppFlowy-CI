@@ -7,6 +7,7 @@ command; no app, cloud services, or GitHub credentials are used.
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import subprocess
@@ -447,6 +448,105 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             stub = 'flutter() { printf "%s\\n" "$STUB_OUTPUT"; return "$STUB_EXIT"; }\n'
             script = stub + script
         return script
+
+
+class DatabaseFixtureCapacityTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cloud = yaml.safe_load(WORKFLOW.read_text())["jobs"]["cloud_integration_test"]
+
+    def step(self, name):
+        return next(step for step in self.cloud["steps"] if step.get("name") == name)
+
+    def execute(self, script, directory, **environment):
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=directory, env={**os.environ, **environment},
+            capture_output=True, text=True, timeout=10,
+        )
+
+    def test_only_database_suite_changes_both_rendered_writer_caps(self):
+        for suite, expected in [("database", "10"), ("sharing", "6"), ("timeline", "6")]:
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                deployment = "APPFLOWY_MAX_DASHBOARD_WIDGETS=6\nPRESERVED=original\n"
+                (root / "deploy.env").write_text(deployment)
+                compose = {"services": {
+                    service: {"image": "busybox", "environment": {
+                        "APPFLOWY_MAX_DASHBOARD_WIDGETS": "${APPFLOWY_MAX_DASHBOARD_WIDGETS:-6}",
+                        "PRESERVED": service,
+                    }} for service in ("appflowy_cloud", "appflowy_worker")
+                }}
+                compose["services"]["redis"] = {"image": "redis:7"}
+                source = root / "docker-compose-ci.yml"
+                source.write_text(json.dumps(compose))
+                original = source.read_bytes()
+                script = self.step("Prepare appflowy cloud env")["run"]
+                script = script.replace("${{ matrix.cloud_test_suite }}", suite)
+                script = re.sub(r"\$\{\{[^}]+\}\}", "test-value", script)
+                result = self.execute(script, directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Docker Compose loads the real generated .env and renders both writers.
+                rendered = json.loads(subprocess.check_output(
+                    ["docker", "compose", "-f", str(source), "config", "--format", "json"],
+                    cwd=directory, text=True,
+                ))
+                for service in ("appflowy_cloud", "appflowy_worker"):
+                    self.assertEqual(rendered["services"][service]["environment"]["APPFLOWY_MAX_DASHBOARD_WIDGETS"], expected)
+                    self.assertEqual(rendered["services"][service]["environment"]["PRESERVED"], service)
+                self.assertEqual((root / "deploy.env").read_text(), deployment)
+                self.assertEqual(source.read_bytes(), original)
+                if suite == "database":
+                    verified = self.execute(self.step("Verify database fixture Compose capacity")["run"], directory)
+                    self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_compose_check_rejects_either_missing_or_wrong_writer_cap(self):
+        for service in ("appflowy_cloud", "appflowy_worker"):
+            for cap in (None, "6"):
+                with self.subTest(service=service, cap=cap), tempfile.TemporaryDirectory() as directory:
+                    config = {"services": {
+                        name: {"environment": {"APPFLOWY_MAX_DASHBOARD_WIDGETS": "10"}}
+                        for name in ("appflowy_cloud", "appflowy_worker")
+                    }}
+                    config["services"][service]["environment"] = (
+                        {} if cap is None else {"APPFLOWY_MAX_DASHBOARD_WIDGETS": cap}
+                    )
+                    script = 'docker() { printf "%s\\n" "$COMPOSE_JSON"; }\n' + self.step("Verify database fixture Compose capacity")["run"]
+                    result = self.execute(script, directory, COMPOSE_JSON=json.dumps(config))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(service, result.stderr)
+
+    def test_runtime_check_requires_successful_matching_advertisement(self):
+        for status, body, succeeds in [
+            (0, {"code": 0, "data": {"max_dashboard_widgets": 10}}, True),
+            (0, {"code": 0, "data": {"max_dashboard_widgets": 6}}, False),
+            (0, {"code": 0, "data": {}}, False),
+            (0, {"code": 1000, "data": {"max_dashboard_widgets": 10}}, False),
+            (22, {"code": 0, "data": {"max_dashboard_widgets": 10}}, False),
+        ]:
+            with self.subTest(status=status, body=body), tempfile.TemporaryDirectory() as directory:
+                arguments = Path(directory) / "arguments"
+                script = ('curl() { printf "%s\\n" "$@" > "$ARGUMENTS"; '
+                          'printf "%s\\n" "$SERVER_INFO"; return "$CURL_STATUS"; }\n'
+                          + self.step("Verify database fixture runtime capacity")["run"])
+                result = self.execute(
+                    script, directory, SERVER_INFO=json.dumps(body), CURL_STATUS=str(status),
+                    ARGUMENTS=str(arguments), APPFLOWY_CLOUD_URL="https://localhost",
+                )
+                self.assertEqual(result.returncode == 0, succeeds, result.stdout + result.stderr)
+                self.assertIn("https://localhost/api/server-info", arguments.read_text())
+                self.assertNotIn("--insecure", arguments.read_text())
+
+    def test_checks_are_scoped_and_run_before_tests(self):
+        steps = self.cloud["steps"]
+        compose = self.step("Verify database fixture Compose capacity")
+        runtime = self.step("Verify database fixture runtime capacity")
+        for step in (compose, runtime):
+            self.assertEqual(step["if"], "matrix.cloud_test_suite == 'database'")
+        self.assertLess(steps.index(compose), steps.index(self.step("Run Docker-Compose")))
+        self.assertLess(steps.index(self.step("Wait for appflowy cloud to be ready")), steps.index(runtime))
+        tests = next(step for step in steps if step.get("name", "").startswith("Run Flutter integration tests"))
+        self.assertLess(steps.index(runtime), steps.index(tests))
 
 
 if __name__ == "__main__":
