@@ -3,8 +3,10 @@
 from contextlib import contextmanager
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -45,7 +47,7 @@ class FixtureModesTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "appflowy_worker"):
             modes.verify_compose(mode, config)
 
-    def test_history_hardcoding_fails_before_any_restart(self):
+    def test_effective_history_mismatch_fails_before_any_restart(self):
         mode = modes.MODES["database-websocket-loss"]
         config = configuration(mode)
         config["services"]["appflowy_cloud"]["environment"]["APPFLOWY_DATABASE_HISTORY_ENABLED"] = "true"
@@ -55,6 +57,47 @@ class FixtureModesTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "database-history"):
                 modes.run_mode(mode, "sync-v2,ci-test")
             run.assert_not_called()
+
+    def test_override_renders_old_and_configurable_sources_without_changing_other_services(self):
+        for history in ["true", "${APPFLOWY_CI_DATABASE_HISTORY_ENABLED:-true}"]:
+            for mode in modes.MODES.values():
+                with self.subTest(history=history, mode=mode.test), TemporaryDirectory() as directory:
+                    source = Path(directory) / "docker-compose-ci.yml"
+                    source.write_text(json.dumps({"services": {
+                        "appflowy_cloud": {"image": "busybox", "environment": {
+                            "APPFLOWY_DATABASE_HISTORY_ENABLED": history,
+                            "APPFLOWY_MAX_DASHBOARD_WIDGETS": "${APPFLOWY_MAX_DASHBOARD_WIDGETS:-6}",
+                            "PRESERVED": "cloud",
+                        }},
+                        "appflowy_worker": {"image": "busybox", "environment": {
+                            "APPFLOWY_MAX_DASHBOARD_WIDGETS": "${APPFLOWY_MAX_DASHBOARD_WIDGETS:-6}",
+                            "PRESERVED": "worker",
+                        }},
+                        "redis": {"image": "redis:7", "environment": {"PRESERVED": "redis"}},
+                    }}))
+                    original = source.read_bytes()
+                    environment = {**os.environ, "APPFLOWY_MAX_DASHBOARD_WIDGETS": "3",
+                                   "APPFLOWY_CI_DATABASE_HISTORY_ENABLED": str(not mode.history).lower()}
+                    baseline = json.loads(subprocess.check_output(
+                        ["docker", "compose", "-f", str(source), "config", "--format", "json"],
+                        env=environment, text=True,
+                    ))
+                    with modes.fixture_compose(mode) as compose:
+                        override = Path(compose[-1])
+                        self.assertEqual(set(json.loads(override.read_text())["services"]),
+                                         set(mode.services))
+                        rendered = json.loads(subprocess.check_output(
+                            [*compose, "config", "--format", "json"],
+                            cwd=directory, env=environment, text=True,
+                        ))
+                        modes.verify_compose(mode, rendered)
+                        for service, settings in baseline["services"].items():
+                            if service not in mode.services:
+                                self.assertEqual(rendered["services"][service], settings)
+                            self.assertEqual(rendered["services"][service]["environment"]["PRESERVED"],
+                                             settings["environment"]["PRESERVED"])
+                    self.assertFalse(override.exists(), "the phase override must be temporary")
+                    self.assertEqual(source.read_bytes(), original)
 
     def test_server_readiness_requires_the_advertised_capability_and_limit(self):
         mode = modes.MODES["database-websocket-loss"]
@@ -105,6 +148,8 @@ class FixtureModesTest(unittest.TestCase):
                 self.assertEqual(tests.args[0][-1], "--test-threads=1")
                 self.assertTrue(tests.kwargs["check"], "assertion failures must fail the job")
                 self.assertEqual(tests.kwargs["env"]["APPFLOWY_MAX_DASHBOARD_WIDGETS"], str(mode.view_limit))
+                override = Path(restart.args[0][restart.args[0].index("up") - 1])
+                self.assertFalse(override.exists(), "clean up after a successful phase")
 
     def test_service_restart_failures_prevent_test_execution(self):
         mode = modes.MODES["legacy-duplication"]
@@ -113,6 +158,8 @@ class FixtureModesTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 modes.run_mode(mode, "sync-v2,ci-test")
             self.assertEqual(run.call_count, 1)
+            override = Path(run.call_args.args[0][run.call_args.args[0].index("up") - 1])
+            self.assertFalse(override.exists(), "clean up when the restart fails")
 
     def test_workflow_reassigns_both_special_selections_after_ordinary_tests(self):
         workflow = Path(__file__).resolve().parents[1] / "workflows/cloud_integration_ci.yaml"

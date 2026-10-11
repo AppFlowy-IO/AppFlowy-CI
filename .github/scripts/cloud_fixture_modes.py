@@ -7,12 +7,14 @@ running assertions; a missing or ignored regression must not become a successful
 """
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -61,10 +63,27 @@ def verify_compose(mode, configuration):
     services = configuration["services"]
     history = str(mode.history).lower()
     if services["appflowy_cloud"]["environment"]["APPFLOWY_DATABASE_HISTORY_ENABLED"] != history:
-        raise RuntimeError("Cloud Compose source does not honor the CI database-history setting")
+        raise RuntimeError("Cloud Compose configuration does not match the fixture's database-history setting")
     for service in mode.services:
         if services[service]["environment"]["APPFLOWY_MAX_DASHBOARD_WIDGETS"] != str(mode.view_limit):
             raise RuntimeError(f"{service} does not honor the fixture's database view limit")
+
+
+@contextmanager
+def fixture_compose(mode):
+    # Older Cloud sources hardcode history=true. Override only this phase's writers,
+    # without editing their source Compose file or changing the ordinary test phase.
+    services = {
+        service: {"environment": {"APPFLOWY_MAX_DASHBOARD_WIDGETS": str(mode.view_limit)}}
+        for service in mode.services
+    }
+    services["appflowy_cloud"]["environment"]["APPFLOWY_DATABASE_HISTORY_ENABLED"] = (
+        str(mode.history).lower()
+    )
+    with TemporaryDirectory(prefix="appflowy-ci-fixture-") as directory:
+        override = Path(directory) / "compose.json"
+        override.write_text(json.dumps({"services": services}))
+        yield ["docker", "compose", "-f", "docker-compose-ci.yml", "-f", str(override)]
 
 
 def wait_for_server(mode, base_url, timeout=120):
@@ -105,26 +124,25 @@ def run_mode(mode, features):
         **os.environ,
         "APPFLOWY_CLOUD_VERSION": "latest-amd64",
         "APPFLOWY_WORKER_VERSION": "latest-amd64",
-        "APPFLOWY_CI_DATABASE_HISTORY_ENABLED": str(mode.history).lower(),
-        "APPFLOWY_MAX_DASHBOARD_WIDGETS": str(mode.view_limit),
         "RUST_LOG": "info",
         "DISABLE_CI_TEST_LOG": "true",
     }
-    compose = ["docker", "compose", "-f", "docker-compose-ci.yml"]
-    # Keep resolved environment values (including credentials) out of the public job log.
-    configuration = json.loads(subprocess.check_output(
-        [*compose, "config", "--format", "json"], env=environment, text=True,
-    ))
-    verify_compose(mode, configuration)
-    print(f"Running {len(test_names(selected))} tests with history={mode.history}, "
-          f"view_limit={mode.view_limit}", flush=True)
-    subprocess.run(
-        [*compose, "up", "-d", "--no-deps", "--no-build", "--pull=never", "--force-recreate",
-         "--wait", "--wait-timeout", "120", *mode.services],
-        env=environment, check=True,
-    )
-    wait_for_server(mode, environment.get("LOCALHOST_URL", "http://localhost"))
-    subprocess.run([*command, "--test-threads=1"], env=environment, check=True)
+    with fixture_compose(mode) as compose:
+        # Keep resolved environment values (including credentials) out of the public job log.
+        configuration = json.loads(subprocess.check_output(
+            [*compose, "config", "--format", "json"], env=environment, text=True,
+        ))
+        verify_compose(mode, configuration)
+        print(f"Running {len(test_names(selected))} tests with history={mode.history}, "
+              f"view_limit={mode.view_limit}", flush=True)
+        subprocess.run(
+            [*compose, "up", "-d", "--no-deps", "--no-build", "--pull=never", "--force-recreate",
+             "--wait", "--wait-timeout", "120", *mode.services],
+            env=environment, check=True,
+        )
+        wait_for_server(mode, environment.get("LOCALHOST_URL", "http://localhost"))
+        test_environment = {**environment, "APPFLOWY_MAX_DASHBOARD_WIDGETS": str(mode.view_limit)}
+        subprocess.run([*command, "--test-threads=1"], env=test_environment, check=True)
 
 
 if __name__ == "__main__":

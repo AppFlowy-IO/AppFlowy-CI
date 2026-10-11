@@ -117,15 +117,18 @@ new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ce
 room for workflow setup, coverage and cache-contract jobs.
 
 Two fixtures need a different server configuration and run after their topic's ordinary tests.
-Realtime collaboration recreates Cloud with `APPFLOWY_CI_DATABASE_HISTORY_ENABLED=false` for the
+Realtime collaboration recreates Cloud with database history disabled for the
 four Database/DatabaseRow WebSocket loss tests; the ordinary history-enabled phase retains history
 coverage. Import and publishing recreates Cloud and Worker with a ten-view database cap for the
 captured exported-document duplication fixture. The ordinary phase still runs the six-view limit
 contracts. Broad libtest filters skip these fixtures because `database::` also matches nested
 collab module names. `cloud_fixture_modes.py` checks nonempty, nonignored selections, renders and
 checks both writers' settings, waits for matching server-info, then runs the same precompiled tests.
-These phases preserve the job's snapshot and do not add image builds or matrix jobs. The database
-WebSocket phase requires Cloud's CI history override; older sources without the tests skip it.
+The runner writes a temporary Compose override for only the affected services, so both hardcoded
+and configurable source settings work without changing the source Compose file. The same override
+is validated and used for recreation, then removed when the phase finishes or fails. These phases
+preserve the job's snapshot and do not add image builds or matrix jobs. Older sources without the
+WebSocket tests skip that phase.
 Sources predating database-view admission keep the legacy duplication fixture in the ordinary
 phase because they have no view cap to override.
 
@@ -177,7 +180,8 @@ writer role, and compiler cache hits/misses. GitHub cache storage is shared with
 check repository Actions cache usage if snapshots are repeatedly evicted. A new cache group or
 dependency/toolchain change needs a successful writer run before later runs can reuse its snapshot.
 
-Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
+Run the workflow regression checks with Python 3, PyYAML, OpenSSL, and Docker Compose installed.
+The fixture-mode tests render Compose configurations without starting containers:
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts
