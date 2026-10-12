@@ -95,7 +95,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
   def run_member_packages(self, *, contracts=("scim", "mcp"), counts=None,
                           ignored=(), execution_exit=0, self_host_count=12,
                           self_host_audit=True, self_host_ignored=False,
-                          self_host_execution_exit=0):
+                          self_host_execution_exit=0,
+                          service="appflowy_cloud_member_packages"):
     prefixes = {
       "scim": "api::scim::tests::",
       "status": "biz::directory::status::tests::",
@@ -134,7 +135,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       (project / "self-host-ignored-tests").write_text(
         f"{SELF_HOST_STATUS_AUDIT}: test\n" if self_host_ignored else ""
       )
-      run = render_run_tests(self.lane("appflowy_cloud_member_packages"))
+      run = render_run_tests(self.lane(service))
       fake_cargo = r'''cargo() {
         printf '%s\t' "$@" >> cargo-calls
         printf '\n' >> cargo-calls
@@ -176,13 +177,14 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         text=True,
         check=False,
       )
-      calls = (project / "cargo-calls").read_text().splitlines()
+      calls_path = project / "cargo-calls"
+      calls = calls_path.read_text().splitlines() if calls_path.exists() else []
       return result, [command.rstrip("\t").split("\t") for command in calls]
 
   def test_managed_user_guards_and_execution_share_unfiltered_packages(self):
     result, commands = self.run_member_packages()
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertEqual(len(commands), 6)
+    self.assertEqual(len(commands), 3)
     packages = commands[2][2:-2]
     self.assertEqual(commands[2][-2:], ["--", "--test-threads=1"])
     self.assertEqual(commands[0][2:-3], packages)
@@ -196,14 +198,20 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn("api::scim::: 51 selected, 0 ignored", result.stdout)
     self.assertIn(f"{SCIM_GROUP_POLICY}: 1 selected, 0 ignored", result.stdout)
     self.assertIn("11 selected, 0 ignored", result.stdout)
+    self.assertIn("3 selected, 0 ignored", result.stdout)
+    self.assertFalse(any("self-host-af" in command for command in commands))
+
+  def test_self_host_status_runs_once_in_a_separate_feature_graph(self):
+    result, commands = self.run_member_packages(service="appflowy_cloud_directory_self_host")
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(len(commands), 3)
     self.assertIn("12 selected, 0 ignored", result.stdout)
     self.assertIn(f"{SELF_HOST_STATUS_AUDIT}: 1 selected, 0 ignored", result.stdout)
-    self.assertIn("3 selected, 0 ignored", result.stdout)
     self_host = ["test", "--locked", "-p", "appflowy-cloud-directory",
                  "--features", "self-host-af", "--lib", "biz::directory::status::tests::"]
-    self.assertEqual(commands[3], self_host + ["--", "--list"])
-    self.assertEqual(commands[4], self_host + ["--", "--ignored", "--list"])
-    self.assertEqual(commands[5], self_host + ["--", "--test-threads=1"])
+    self.assertEqual(commands[0], self_host + ["--", "--list"])
+    self.assertEqual(commands[1], self_host + ["--", "--ignored", "--list"])
+    self.assertEqual(commands[2], self_host + ["--", "--test-threads=1"])
 
   def test_managed_user_guards_allow_old_sources_and_independent_features(self):
     for contracts, counts in [
@@ -214,11 +222,15 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       with self.subTest(contracts=contracts):
         result, commands = self.run_member_packages(contracts=contracts, counts=counts)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(commands), 6 if "scim" in contracts else 3 if contracts else 1)
+        self.assertEqual(len(commands), 3 if contracts else 1)
         default_execution = commands[2] if contracts else commands[0]
         self.assertIn("appflowy-mcp-core", default_execution)
         self.assertEqual(default_execution[-2:], ["--", "--test-threads=1"])
-        self.assertEqual(any("self-host-af" in command for command in commands), "scim" in contracts)
+        self.assertFalse(any("self-host-af" in command for command in commands))
+        self_host_result, self_host_commands = self.run_member_packages(
+          contracts=contracts, counts=counts, service="appflowy_cloud_directory_self_host")
+        self.assertEqual(self_host_result.returncode, 0, self_host_result.stdout + self_host_result.stderr)
+        self.assertEqual(len(self_host_commands), 3 if "scim" in contracts else 0)
 
   def test_managed_user_guards_reject_missing_or_ignored_cases(self):
     for suite, minimum in {"scim": 51, "group": 1, "status": 11, "mcp": 3}.items():
@@ -237,20 +249,40 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       {"self_host_ignored": True},
     ]:
       with self.subTest(options=options):
-        result, commands = self.run_member_packages(**options)
+        result, commands = self.run_member_packages(service="appflowy_cloud_directory_self_host", **options)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("::error::Required SCIM/MCP regression coverage", result.stdout)
-        self.assertEqual(len(commands), 5, "Do not execute the self-host suite with incomplete coverage")
+        self.assertEqual(len(commands), 2, "Do not execute the self-host suite with incomplete coverage")
 
   def test_self_host_status_execution_failure_fails_the_job(self):
-    result, commands = self.run_member_packages(self_host_execution_exit=43)
+    result, commands = self.run_member_packages(
+      service="appflowy_cloud_directory_self_host", self_host_execution_exit=43)
     self.assertEqual(result.returncode, 43)
-    self.assertEqual(len(commands), 6)
+    self.assertEqual(len(commands), 3)
 
   def test_member_package_test_failures_fail_the_job(self):
     result, commands = self.run_member_packages(execution_exit=42)
     self.assertEqual(result.returncode, 42)
     self.assertEqual(len(commands), 3)
+
+  def test_directory_feature_lanes_preserve_source_fixture_and_time_budgets(self):
+    hosted = self.lane("appflowy_cloud_member_packages")
+    self_host = self.lane("appflowy_cloud_directory_self_host")
+    self.assertEqual(self_host["topic"], "Directory self-host contracts")
+    self.assertEqual(self_host["cache_group"], "directory-self-host")
+    self.assertNotEqual(hosted["cache_group"], self_host["cache_group"])
+    self.assertTrue(hosted["cache_writer"])
+    self.assertTrue(self_host["cache_writer"])
+    self.assertEqual(self_host["test_modules"], "")
+    self.assertEqual(self.job["runs-on"], "ubuntu-24.04")
+    self.assertEqual(self.job["timeout-minutes"], 60)
+    self.assertEqual(self.job["strategy"]["max-parallel"], 15)
+    steps = self.job["steps"]
+    self.assertEqual(next(step for step in steps if step.get("name") == "Run Tests")["timeout-minutes"], 50)
+    self.assertEqual(steps[0]["with"]["ref"], "${{ needs.image_source.outputs.sha }}")
+    self.assertIn("build_self_hosted", self.job["needs"])
+    self.assertEqual(len([lane for lane in self.lanes
+                         if lane.get("cache_group") == "directory-self-host"]), 1)
 
   def test_permission_and_space_suites_are_partitioned_without_drops(self):
     lanes = [
@@ -286,6 +318,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     for step in (start, install):
       self.assertIn("matrix.test_service == 'appflowy_worker'", step["if"])
       self.assertIn("matrix.test_service == 'appflowy_cloud_member_packages'", step["if"])
+      self.assertIn("matrix.test_service == 'appflowy_cloud_directory_self_host'", step["if"])
       self.assertIn("matrix.test_package_search == true", step["if"])
     self.assertIn("--publish 127.0.0.1::6379", start["run"])
     self.assertIn("APPFLOWY_TEST_REDIS_URL=redis://127.0.0.1:$fixture_port", start["run"])

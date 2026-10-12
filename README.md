@@ -67,8 +67,8 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
-The Search, Worker and Shared libraries lanes start a separate Redis on a random loopback port
-and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,
+The Search, Worker, Shared libraries and Directory self-host contracts lanes start a separate Redis
+on a random loopback port and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,
 so they cannot drain admission-test streams and hide unexpected enqueueing. An always-run step
 removes this fixture, including failed jobs. Shared libraries also runs the MCP and generic Redis
 worker package regressions.
@@ -80,10 +80,12 @@ including SCIM protocol, group-status SQL and workspace-bound MCP token regressi
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
 cases total), 11 default-feature group-status and 3 MCP token tests, with none ignored.
-The lane then compiles and runs the directory status suite with `self-host-af`, requiring all
-12 status tests including the exact admin-audit rollback case in its nonignored inventory. This
-keeps the default member-package graph intact while covering the self-host-only contract;
-member binaries compile on this runner and do not use the root Cloud binary archive.
+The separate **Directory self-host contracts** runner compiles and runs the directory status
+suite with `self-host-af`, requiring all 12 status tests including the exact admin-audit rollback
+case in its nonignored inventory. Moving that feature graph to its own runner keeps its compilation
+out of the Shared libraries budget without changing the hosted member-package selection, features
+or unfiltered test/doc-test coverage. Each feature graph runs once and owns a separate Cargo cache;
+these member binaries compile on their runner and do not use the root Cloud binary archive.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.
@@ -94,7 +96,7 @@ managed-user server changes because the new count guards are source-gated. Cloud
 branch name, which this workflow resolves once: verify the resolved source SHA matches the Cloud
 PR head when reviewing results. The CI workflow/tools SHA is the public run's `github.sha`.
 
-The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays each job's topic:
+The integration matrix has 16 jobs, with `max-parallel: 15`. Actions displays each job's topic:
 
 | Topic | Suites |
 | --- | --- |
@@ -108,6 +110,7 @@ The integration matrix has 15 jobs, with `max-parallel: 15`. Actions displays ea
 | AI and authentication | AI, GoTrue, OIDC and user APIs |
 | SQL persistence | SQL core, permissions, collab and workspace persistence |
 | Shared libraries | Workspace-member and extracted Cloud package tests |
+| Directory self-host contracts | The `self-host-af` Directory status SQL suite, including admin-audit rollback |
 | Search | Database index and restore-search tests, root search integration tests, and the `appflowy-search` package |
 | Signup whitelist | Isolated GoTrue whitelist and system-configuration tests |
 | Auth | SCIM tests with Authentik and LDAP tests with OpenLDAP |
@@ -158,7 +161,7 @@ The laptop keeps registry downloads, Git dependencies and the complete Cargo `ta
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
 CPU and memory without Docker resource quotas. Its cache survives runner jobs and laptop restarts.
 
-The three package lanes use Cargo dependency snapshots and `sccache` with GitHub's cache v2 API.
+The four package lanes use Cargo dependency snapshots and `sccache` with GitHub's cache v2 API.
 Each owns a snapshot and is its only writer.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. The
 workflow disables dev/test debug symbols and does not persist the root compiler's `target/`
