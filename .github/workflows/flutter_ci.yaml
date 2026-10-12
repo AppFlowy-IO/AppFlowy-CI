@@ -715,7 +715,7 @@ jobs:
             while IFS= read -r -d '' test_file; do
               test_files+=("$test_file")
             done < "$test_list"
-            flutter test --concurrency=1 --coverage \
+            flutter test --verbose --concurrency=1 --coverage \
               --file-reporter=json:/tmp/unit-test-events.jsonl "${test_files[@]}"
           ) 2>&1 | tee /tmp/test_output.txt
           TEST_EXIT=$?
