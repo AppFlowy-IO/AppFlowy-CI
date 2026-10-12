@@ -1,0 +1,90 @@
+name: Exact Cloud runtime for Desktop
+description: Verify private source-labelled images and start only this job's Compose runtime.
+inputs:
+  cloud-source-sha:
+    description: Optional immutable Cloud commit; must accompany image-run-id.
+    default: ''
+  image-run-id:
+    description: Successful private integration-image build for cloud-source-sha.
+    default: ''
+  desktop-ref:
+    description: Immutable Desktop commit when exact Cloud mode is selected.
+    required: true
+  desktop-path:
+    description: Existing Desktop checkout.
+    default: '.'
+  cloud-path:
+    description: Existing Cloud checkout with the job's Compose environment prepared.
+    default: AppFlowy-Cloud-Premium
+  github-token:
+    description: Existing token with read access to private Client source and Cloud Actions/artifacts.
+    required: true
+  timeline:
+    description: Build the commercial self-hosted Cloud flavor from the verified source.
+    default: 'false'
+outputs:
+  enabled:
+    description: True only when the exact runtime has passed all provenance checks.
+    value: ${{ steps.request.outputs.enabled }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the immutable generated Client pin
+      id: pins
+      shell: bash
+      env:
+        CLOUD_SHA: ${{ inputs.cloud-source-sha }}
+        IMAGE_RUN: ${{ inputs.image-run-id }}
+        DESKTOP_REF: ${{ inputs.desktop-ref }}
+        DESKTOP_PATH: ${{ inputs.desktop-path }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" pins \
+          --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
+          --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH"
+    - name: Check out the exact generated Client source
+      if: steps.pins.outputs.client-sha != ''
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Client
+        ref: ${{ steps.pins.outputs.client-sha }}
+        path: .ci-generated-client
+        token: ${{ inputs.github-token }}
+        persist-credentials: false
+    - name: Verify paired inputs, source checkouts and private build
+      id: request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CLOUD_SHA: ${{ inputs.cloud-source-sha }}
+        IMAGE_RUN: ${{ inputs.image-run-id }}
+        DESKTOP_REF: ${{ inputs.desktop-ref }}
+        DESKTOP_PATH: ${{ inputs.desktop-path }}
+        CLOUD_PATH: ${{ inputs.cloud-path }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" request \
+          --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
+          --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH" --cloud "$CLOUD_PATH" \
+          --client "$GITHUB_WORKSPACE/.ci-generated-client" \
+          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json"
+    - name: Download the verified private image set
+      if: steps.request.outputs.enabled == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        artifact-ids: ${{ steps.request.outputs.artifact-ids }}
+        merge-multiple: true
+        path: ${{ runner.temp }}/desktop-cloud-images
+        repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+        run-id: ${{ inputs.image-run-id }}
+        github-token: ${{ inputs.github-token }}
+    - name: Verify images, pull dependencies and start the pinned runtime
+      if: steps.request.outputs.enabled == 'true'
+      shell: bash
+      env:
+        CLOUD_PATH: ${{ inputs.cloud-path }}
+        TIMELINE: ${{ inputs.timeline }}
+      run: |
+        args=()
+        if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
+        python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" start \
+          --cloud "$CLOUD_PATH" --archives "$RUNNER_TEMP/desktop-cloud-images" \
+          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" "${args[@]}"

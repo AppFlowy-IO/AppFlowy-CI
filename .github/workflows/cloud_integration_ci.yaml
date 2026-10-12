@@ -427,6 +427,13 @@ jobs:
             test_modules: ""
             cache_group: members
             cache_writer: true
+          # A separate feature graph must not consume the hosted members lane's
+          # compile/test budget or change its unified Cargo feature selection.
+          - test_service: "appflowy_cloud_directory_self_host"
+            topic: "Directory self-host contracts"
+            test_modules: ""
+            cache_group: directory-self-host
+            cache_writer: true
           # Run database indexing and restore-search first on a fresh stack, then
           # the root search modules and appflowy-search package tests. Keeping
           # both selectors in one topic ensures the indexer and service stay
@@ -688,6 +695,7 @@ jobs:
         if: >-
           matrix.test_service == 'appflowy_worker' ||
           matrix.test_service == 'appflowy_cloud_member_packages' ||
+          matrix.test_service == 'appflowy_cloud_directory_self_host' ||
           matrix.test_package_search == true
         run: |
           sudo apt-get update
@@ -700,6 +708,7 @@ jobs:
         if: >-
           matrix.test_service == 'appflowy_worker' ||
           matrix.test_service == 'appflowy_cloud_member_packages' ||
+          matrix.test_service == 'appflowy_cloud_directory_self_host' ||
           matrix.test_package_search == true
         run: |
           set -euo pipefail
@@ -830,6 +839,21 @@ jobs:
           if [[ "$CLOUD_RUN_ROOT" == true ]]; then
             cargo_command=(python3 ci-tools/.github/scripts/cloud_test_binaries.py run)
           fi
+          require_tests() {
+            local prefix="$1" minimum="$2" inventory="$3" selected ignored
+            # Namespace selectors end in ::; named tests must match exactly.
+            selected=$(awk -v prefix="$prefix" \
+              '((prefix ~ /::$/ && index($0, prefix) == 1) || $0 == prefix ": test") && /: test$/ { n++ } END { print n+0 }' \
+              "$inventory/all")
+            ignored=$(awk -v prefix="$prefix" \
+              '((prefix ~ /::$/ && index($0, prefix) == 1) || $0 == prefix ": test") && /: test$/ { n++ } END { print n+0 }' \
+              "$inventory/ignored")
+            echo "==> $prefix: $selected selected, $ignored ignored (minimum $minimum)"
+            if [[ "$selected" -lt "$minimum" || "$ignored" -ne 0 ]]; then
+              echo "::error::Required SCIM/MCP regression coverage is missing or ignored: $prefix"
+              return 1
+            fi
+          }
           echo "Running tests for ${{ matrix.test_service }}"
           if [[ "${RUN_ROOT_UNIT_TESTS:-false}" == true ]]; then
             echo "==> Testing appflowy-cloud root unit tests"
@@ -906,33 +930,40 @@ jobs:
                 -- --list > "$test_inventory/all"
               "${cargo_command[@]}" test --locked "${member_packages[@]}" --lib \
                 -- --ignored --list > "$test_inventory/ignored"
-              require_tests() {
-                local prefix="$1" minimum="$2" selected ignored
-                selected=$(awk -v prefix="$prefix" \
-                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
-                  "$test_inventory/all")
-                ignored=$(awk -v prefix="$prefix" \
-                  'index($0, prefix) == 1 && /: test$/ { n++ } END { print n+0 }' \
-                  "$test_inventory/ignored")
-                echo "==> $prefix: $selected selected, $ignored ignored (minimum $minimum)"
-                if [[ "$selected" -lt "$minimum" || "$ignored" -ne 0 ]]; then
-                  echo "::error::Required SCIM/MCP regression coverage is missing or ignored: $prefix"
-                  return 1
-                fi
-              }
               if [[ -f "$scim_contract" ]]; then
-                require_tests 'api::scim::' 51
-                require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1
-                require_tests 'biz::directory::status::tests::' 12
+                require_tests 'api::scim::' 51 "$test_inventory"
+                require_tests 'biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit' 1 "$test_inventory"
+                # The dedicated self-host lane requires the gated audit rollback case.
+                require_tests 'biz::directory::status::tests::' 11 "$test_inventory"
               fi
               if [[ -f "$mcp_contract" ]]; then
-                require_tests 'workspace_token::tests::' 3
+                require_tests 'workspace_token::tests::' 3 "$test_inventory"
               fi
             else
               echo "==> Older Cloud source: running package tests without managed-user count guards"
             fi
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               "${member_packages[@]}" -- --test-threads=1
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_directory_self_host" ]; then
+            scim_contract=libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs
+            if [[ -f "$scim_contract" ]]; then
+              # Compile the exact existing self-host graph on its own runner;
+              # shared archives contain only root Cloud tests.
+              self_host_directory=(cargo test --locked -p appflowy-cloud-directory
+                --features self-host-af --lib)
+              self_host_inventory=$(mktemp -d)
+              trap 'rm -rf "$self_host_inventory"' EXIT
+              "${self_host_directory[@]}" 'biz::directory::status::tests::' \
+                -- --list > "$self_host_inventory/all"
+              "${self_host_directory[@]}" 'biz::directory::status::tests::' \
+                -- --ignored --list > "$self_host_inventory/ignored"
+              require_tests 'biz::directory::status::tests::' 12 "$self_host_inventory"
+              require_tests 'biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails' 1 "$self_host_inventory"
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${self_host_directory[@]}" \
+                'biz::directory::status::tests::' -- --test-threads=1
+            else
+              echo "==> Older Cloud source: no self-host directory status contract"
+            fi
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               -p appflowy-worker -- --test-threads=1

@@ -399,7 +399,7 @@ class SharedBuildWorkflowTest(unittest.TestCase):
     def test_package_lanes_still_use_cargo_and_their_original_package_selections(self):
         lanes = [lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
                  if lane.get("cache_group")]
-        self.assertEqual({lane["cache_group"] for lane in lanes}, {"worker", "search", "members"})
+        self.assertEqual({lane["cache_group"] for lane in lanes}, {"worker", "search", "members", "directory-self-host"})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cargo = root / "cargo"
@@ -417,6 +417,10 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                                                  "RUN_SEARCH_PACKAGE": str(lane.get("test_package_search", False)).lower()},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    if lane["cache_group"] == "directory-self-host":
+                        self.assertIn("Older Cloud source: no self-host directory status contract", result.stdout)
+                        self.assertNotIn("--test-threads=1", result.stdout)
+                        continue
                     if lane.get("test_package_search"):
                         self.assertIn("-p\nappflowy-search\n", result.stdout)
                     else:

@@ -5,12 +5,14 @@ on:
     paths:
       - '.github/workflows/**'
       - '.github/scripts/**'
+      - '.github/actions/**'
       - 'scripts/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/**'
       - '.github/scripts/**'
+      - '.github/actions/**'
       - 'scripts/**'
   workflow_dispatch:
 
