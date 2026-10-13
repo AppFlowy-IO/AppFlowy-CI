@@ -269,6 +269,10 @@ def release_images(image_run_id, build, source_sha, run=command):
                                       f"{build['run_attempt']}/jobs?per_page=100"]))
     if jobs.get("total_count", len(jobs["jobs"])) > 100:
         raise ValueError("Unexpectedly large release job set")
+    # Recent gh versions reject ANSI bytes even when stdout is captured. Only
+    # log reads opt in: the parser consumes these bytes without printing them.
+    # Probe once so older runner/local CLIs remain supported without retries.
+    log_options = ["--allow-escape-sequences"] if "--allow-escape-sequences" in run(["gh", "api", "--help"]) else []
     images = {}
     selected = (*SERVICES, "gotrue") if any(job["name"] == "Build and publish gotrue" for job in jobs["jobs"]) else SERVICES
     for service in selected:
@@ -279,7 +283,7 @@ def release_images(image_run_id, build, source_sha, run=command):
                            for step in matching[0].get("steps", []))):
             raise ValueError(f"Release build is missing the successful {service} image")
         job = matching[0]
-        proof = release_image_proof(run(["gh", "api", f"repos/{REPOSITORY}/actions/jobs/{job['id']}/logs"]),
+        proof = release_image_proof(run(["gh", "api", *log_options, f"repos/{REPOSITORY}/actions/jobs/{job['id']}/logs"]),
                                     service, source_sha)
         images[service] = {**proof, "job_id": job["id"]}
     if len({proof["published_tag"].split(":", 1)[1] for proof in images.values()}) != 1:

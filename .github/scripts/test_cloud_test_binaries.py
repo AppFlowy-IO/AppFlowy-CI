@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -29,13 +30,16 @@ def step(job, name):
     return next(item for item in WORKFLOW["jobs"][job]["steps"] if item.get("name") == name)
 
 
-@unittest.skipUnless(shutil.which("cargo") and shutil.which("cc"), "requires Rust and a C compiler")
+@unittest.skipUnless(platform.system() == "Linux" and shutil.which("cargo") and shutil.which("cc"),
+                     "requires Linux ELF shared-library runtime, Rust and a C compiler")
 class CloudTestArchiveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory(prefix="cloud-test-archive-")
         cls.addClassCleanup(cls.directory.cleanup)
-        cls.root = Path(cls.directory.name)
+        # Cargo preserves an explicit target alias while canonicalizing manifests.
+        # The archive contract intentionally requires one absolute checkout path.
+        cls.root = Path(cls.directory.name).resolve()
         cls.workspace = cls.root / "source"
         cls.workspace.mkdir()
         files = {
@@ -323,14 +327,36 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertFalse((self.workspace / sentinel.name).exists())
 
-    def test_existing_symlink_cannot_escape_target(self):
-        link = self.workspace / "target/external"
-        link.symlink_to(self.root, target_is_directory=True)
-        try:
+
+class ArchivePathTest(unittest.TestCase):
+    def test_relative_and_absolute_artifacts_use_the_same_canonical_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            artifact = workspace / "target/debug/test-binary"
+            artifact.parent.mkdir(parents=True)
+            artifact.touch()
+            expected = Path("target/debug/test-binary")
+            self.assertEqual(binaries.target_path(expected, workspace), expected)
+            self.assertEqual(binaries.target_path(artifact, workspace), expected)
+
+    def test_traversal_and_existing_symlinks_cannot_escape_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "source"
+            (workspace / "target").mkdir(parents=True)
+            (workspace / "target/external").symlink_to(root, target_is_directory=True)
+            for path in ("target/../../escaped", "target/external/escaped", root / "outside"):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    binaries.target_path(path, workspace)
+
+    def test_target_directory_itself_cannot_be_an_external_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "source"
+            workspace.mkdir()
+            (workspace / "target").symlink_to(root, target_is_directory=True)
             with self.assertRaises(ValueError):
-                binaries.target_path("target/external/escaped", self.workspace)
-        finally:
-            link.unlink()
+                binaries.target_path("target/debug/test-binary", workspace)
 
 
 class SharedBuildWorkflowTest(unittest.TestCase):

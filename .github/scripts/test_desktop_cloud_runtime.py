@@ -532,6 +532,52 @@ class ReleaseImageTest(unittest.TestCase):
             with self.subTest(log=log), self.assertRaises(ValueError):
                 runtime.release_image_proof(log, "appflowy_cloud", SOURCE)
 
+    def test_job_log_capture_supports_escape_guard_without_weakening_other_api_reads(self):
+        jobs = [{"id": index, "name": f"Build and publish {service}", "status": "completed",
+                 "conclusion": "success", "steps": [{"name": "Record the result", "conclusion": "success"}]}
+                for index, service in enumerate(runtime.SERVICES)]
+        for supports_guard in (True, False):
+            calls = []
+
+            def run(args, **_):
+                calls.append(args)
+                if args == ["gh", "api", "--help"]:
+                    return "--allow-escape-sequences" if supports_guard else "Legacy gh api options"
+                if args[-1].endswith("/logs"):
+                    if supports_guard and "--allow-escape-sequences" not in args:
+                        raise subprocess.CalledProcessError(1, args, stderr="the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway")
+                    if not supports_guard and "--allow-escape-sequences" in args:
+                        raise subprocess.CalledProcessError(1, args, stderr="unknown flag: --allow-escape-sequences")
+                    service = jobs[int(args[-1].split("/")[-2])]["name"].removeprefix("Build and publish ")
+                    return release_log(service).replace("Run {", "\x1b[36;1mRun {\x1b[0m")
+                self.assertNotIn("--allow-escape-sequences", args)
+                return json.dumps({"jobs": jobs})
+
+            with self.subTest(supports_guard=supports_guard):
+                result = runtime.release_images("123", release_build(), SOURCE, run)
+                self.assertEqual(set(result), set(runtime.SERVICES))
+                self.assertEqual(calls.count(["gh", "api", "--help"]), 1)
+                self.assertEqual(sum(args[-1].endswith("/logs") for args in calls), len(runtime.SERVICES))
+
+    def test_job_log_download_failure_is_not_retried_without_the_guard(self):
+        jobs = [{"id": index, "name": f"Build and publish {service}", "status": "completed",
+                 "conclusion": "success", "steps": [{"name": "Record the result", "conclusion": "success"}]}
+                for index, service in enumerate(runtime.SERVICES)]
+        downloads = []
+
+        def run(args, **_):
+            if args == ["gh", "api", "--help"]:
+                return "--allow-escape-sequences"
+            if args[-1].endswith("/logs"):
+                downloads.append(args)
+                raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: access denied")
+            return json.dumps({"jobs": jobs})
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            runtime.release_images("123", release_build(), SOURCE, run)
+        self.assertEqual(len(downloads), 1)
+        self.assertIn("--allow-escape-sequences", downloads[0])
+
     def test_complete_request_reads_only_the_successful_attempt_and_records_digests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
