@@ -28,7 +28,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FLUTTER_VERSION: "3.41.9"
-  RUST_TOOLCHAIN: "1.92.0"
   CARGO_MAKE_VERSION: "0.37.18"
   CLOUD_VERSION: latest-amd64
   # Speed up crate downloads with sparse registry
@@ -116,14 +115,33 @@ jobs:
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
 
+      - name: Install Python for source toolchain selection
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Rust toolchain from the tested Desktop revision
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Desktop CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"RUST_TOOLCHAIN={toolchain}\n")
+          PYTHON
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          override: true
-          profile: minimal
 
       - name: Setup sccache
         id: sccache
@@ -322,14 +340,33 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Install Python for source toolchain selection
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Rust toolchain from the tested Desktop revision
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Desktop CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"RUST_TOOLCHAIN={toolchain}\n")
+          PYTHON
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          override: true
-          profile: minimal
 
       - name: Setup sccache
         id: sccache
@@ -454,14 +491,33 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Install Python for source toolchain selection
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Rust toolchain from the tested Desktop revision
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Desktop CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"RUST_TOOLCHAIN={toolchain}\n")
+          PYTHON
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          override: true
-          profile: minimal
 
       - name: Setup sccache
         id: sccache
@@ -595,14 +651,33 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Install Python for source toolchain selection
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Rust toolchain from the tested Desktop revision
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Desktop CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"RUST_TOOLCHAIN={toolchain}\n")
+          PYTHON
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          override: true
-          profile: minimal
 
       - name: Install flutter
         id: flutter
@@ -1134,14 +1209,33 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Install Python for source toolchain selection
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Rust toolchain from the tested Desktop revision
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Desktop CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"RUST_TOOLCHAIN={toolchain}\n")
+          PYTHON
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          override: true
-          profile: minimal
 
       - name: Install flutter
         id: flutter

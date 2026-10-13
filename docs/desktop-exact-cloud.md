@@ -20,14 +20,31 @@ Each runtime job checks out the requested Cloud commit and verifies:
 - For generated Client pins, the canonical Client checkout at that full SHA and
   its source equality with the requested Server commit's sync output.
 - The actual CI tools checkout against that workflow's `github.sha`.
-- The private build's repository, default-branch workflow, successful status,
-  source-correlated title, and complete unexpired artifact set.
+- The private build's repository, expected workflow and successful attempt.
+  CI archive builds require a source-correlated title and complete unexpired
+  artifact set. Published self-hosted release builds require successful per-service
+  jobs and their final result metadata: source SHA, platform, version and digest.
+  Release tag pushes must identify the requested source SHA; manual builds must
+  originate from the default branch.
 - Exact artifact IDs, Docker tags, Linux AMD64 architecture and OCI source
   revision labels before loading; then loaded image IDs and actual container IDs.
+  Classic Docker reports the archive config digest; containerd reports an OCI
+  manifest digest. When the archive includes OCI metadata, the verifier checks
+  its single tagged AMD64 descriptor, manifest hash, exact config digest/size and
+  matching layer list before accepting that alternate ID. It records both the
+  proof and the actual loaded ID used for the final container check.
 
-Only dependency service images are pulled. Startup uses `--no-build --pull never`
-and a job-owned Compose override protects the four loaded images. Any verification
-or load failure ends the job, with no registry fallback. Both optional inputs must
+Archive mode pulls only dependency service images. Release mode reads the immutable
+published digests from the selected attempt's final job logs, pulls Linux AMD64
+by digest, and verifies source labels and attached container IDs. It also pins
+GoTrue when that run builds it. Mutable version/latest tags are never used to
+resolve the release. Missing metadata, a failed job, wrong source/platform, or a
+different pulled digest ends verification. The inactive backup profile is not
+started by these Desktop tests.
+
+Startup uses `--no-build --pull never` and a job-owned Compose override protects
+the verified images. Any verification or load failure ends the job, with no
+fallback between archive, release and legacy modes. Both optional inputs must
 be absent for the legacy path; a partial or malformed pair is an error.
 
 The generated Client check runs the exact Server commit's
@@ -35,8 +52,16 @@ The generated Client check runs the exact Server commit's
 compares every generated file's path, contents and executable mode with the
 committed Client tree, including manifests, vendor patches and fixtures. Only
 Client's root `Cargo.lock` is excluded: that standalone workspace resolution is
-not used by Desktop, whose own lockfile is checked separately. No Cargo command
-or service is started by this source check, and temporary files are removed on
+not used by Desktop, whose own lockfile is checked separately. Cargo's standalone
+Client check regenerates prost modules before pushing the mirror. A mismatch in
+`libs/appflowy-proto/src/pb/*.rs` is therefore canonicalized only when both files
+carry the prost generated marker and their corresponding protobuf schema is
+byte-identical. The source's pinned Rust toolchain and committed `rustfmt.toml`
+format both disposable copies. Wire tags, field types, schema changes, authored
+Rust, extra/missing files and executable modes remain strict. The manifest records
+the formatter version, configuration hash and paths. The action installs that
+specific formatter before verification without changing the default toolchain.
+No Cargo command or service is started by this source check, and temporary files are removed on
 success or failure. Mixed pins, stale lock sources and unrelated Client source
 fail before downloading images.
 
@@ -48,21 +73,23 @@ does not establish the relationship.
 
 Timeline still builds its `self-host-af,commercial-ci,ci-test` Cloud flavor from
 the verified Cloud checkout. The other three services use that same commit's
-artifacts. Its source-built Cloud image receives the revision label and the final
+artifacts or published release digests. Its source-built Cloud image receives the revision label and the final
 container ID is recorded; the existing `self_hosted=true` server-info check remains.
 
 The `desktop-cloud-manifest-*` job artifacts record Desktop, Cloud and CI commits,
 shared source kind and revision, generated Client/tree/sync-script identities
 when applicable, the private image run and attempt, artifact IDs and runtime
-image IDs. A manifest with `stage: runtime_verified` proves startup completed;
+image IDs, and release job IDs/digest references when applicable. A manifest with `stage: runtime_verified` proves startup completed;
 it does not itself prove the tests passed. Image artifacts expire after one day; an expired set requires a
-new build of the same source, never a fallback to a registry tag.
+new build of the same source, never a fallback to a registry tag. Release mode
+requires retained build logs and registry digests; it fails if either is unavailable.
 
 ## Manual iOS cloud coverage
 
 `ios_ci_test.yaml` runs on an Intel macOS runner with Docker and the matching
 `x86_64-apple-ios` Rust simulator library. It takes immutable `pr_ref` and
-`cloud_source_sha` inputs plus `cloud_image_run_id`; every image and runtime
+`cloud_source_sha` inputs plus `cloud_image_run_id` (CI archive or published
+self-hosted release run); every image and runtime
 provenance check above also applies. Rust comes from the tested Desktop's pinned
 `frontend/rust-toolchain.toml`. `test_suite=all` preserves broad mobile coverage;
 `cloud` selects only the mobile cloud runner, and `row_page` selects the focused

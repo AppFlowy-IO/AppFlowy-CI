@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       cloud_image_run_id:
-        description: "Successful private integration-image build for cloud_source_sha"
+        description: "Successful private CI archive or published release build for cloud_source_sha"
         required: true
         type: string
       test_suite:

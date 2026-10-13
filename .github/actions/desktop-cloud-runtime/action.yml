@@ -5,7 +5,7 @@ inputs:
     description: Optional immutable Cloud commit; must accompany image-run-id.
     default: ''
   image-run-id:
-    description: Successful private integration-image build for cloud-source-sha.
+    description: Successful private CI archive or published self-hosted release build for cloud-source-sha.
     default: ''
   desktop-ref:
     description: Immutable Desktop commit when exact Cloud mode is selected.
@@ -65,6 +65,22 @@ runs:
         path: .ci-generated-client
         token: ${{ inputs.github-token }}
         persist-credentials: false
+    - name: Install the source-pinned generated protobuf formatter
+      if: steps.pins.outputs.client-sha != ''
+      shell: bash
+      env:
+        CLOUD_PATH: ${{ inputs.cloud-path }}
+      run: |
+        toolchain=$(python3 - <<'PYTHON'
+        import os, re, subprocess, tomllib
+        source = subprocess.check_output(["git", "show", "HEAD:rust-toolchain.toml"], cwd=os.environ["CLOUD_PATH"], text=True)
+        channel = tomllib.loads(source)["toolchain"]["channel"]
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", channel):
+            raise SystemExit("Generated Client verification requires the source's pinned Rust toolchain")
+        print(channel)
+        PYTHON
+        )
+        rustup toolchain install "$toolchain" --profile minimal --component rustfmt
     - name: Verify paired inputs, source checkouts and private build
       id: request
       shell: bash
@@ -86,7 +102,7 @@ runs:
           --shared-cloud "$GITHUB_WORKSPACE/.ci-shared-cloud" \
           --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" "${args[@]}"
     - name: Download the verified private image set
-      if: steps.request.outputs.enabled == 'true'
+      if: steps.request.outputs.enabled == 'true' && steps.request.outputs.image-kind == 'ci_archive'
       uses: actions/download-artifact@v4
       with:
         artifact-ids: ${{ steps.request.outputs.artifact-ids }}

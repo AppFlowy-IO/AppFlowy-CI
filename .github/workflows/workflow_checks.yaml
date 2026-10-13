@@ -29,5 +29,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install PyYAML==6.0.2
+      # Exercise the generated-Client source comparison with a real formatter.
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
       - run: python -B -m unittest discover -s .github/scripts
       - run: python -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
