@@ -58,6 +58,28 @@ image IDs. A manifest with `stage: runtime_verified` proves startup completed;
 it does not itself prove the tests passed. Image artifacts expire after one day; an expired set requires a
 new build of the same source, never a fallback to a registry tag.
 
+## Manual iOS cloud coverage
+
+`ios_ci_test.yaml` runs on an Intel macOS runner with Docker and the matching
+`x86_64-apple-ios` Rust simulator library. It takes immutable `pr_ref` and
+`cloud_source_sha` inputs plus `cloud_image_run_id`; every image and runtime
+provenance check above also applies. Rust comes from the tested Desktop's pinned
+`frontend/rust-toolchain.toml`. `test_suite=all` preserves broad mobile coverage;
+`cloud` selects only the mobile cloud runner, and `row_page` selects the focused
+row-page create, empty-icon, edit, clear, reopen and legacy-body scenarios.
+The simulator receives the CI/localhost configuration through Dart defines.
+
+Only this manual iOS workflow opts into `allow-equivalent-shared-source` on the
+runtime component. Its strict default remains unchanged. When Desktop pins a
+different Server SHA, the component checks out that immutable source separately
+and generates both complete Client exports with their committed server-owned
+sync scripts. Both scripts, every exported file and executable mode must match;
+all generated workspace members must exist. This permits a server-only fix
+without changing Desktop's shared dependency pins. Source mismatch, incomplete
+exports or unavailable artifacts fail before starting services. The evidence
+artifact records both SHAs and the source-equivalence hash, plus Flutter stdout
+and failure logs. Runs use isolated Compose projects and do not cancel each other.
+
 ## Activation and premerge validation
 
 Automatic `repository_dispatch` runs use AppFlowy-CI's default branch. This CI PR

@@ -22,6 +22,9 @@ inputs:
   timeline:
     description: Build the commercial self-hosted Cloud flavor from the verified source.
     default: 'false'
+  allow-equivalent-shared-source:
+    description: Allow a different Server pin only when both immutable server-owned Client exports are identical.
+    default: 'false'
 outputs:
   enabled:
     description: True only when the exact runtime has passed all provenance checks.
@@ -37,10 +40,22 @@ runs:
         IMAGE_RUN: ${{ inputs.image-run-id }}
         DESKTOP_REF: ${{ inputs.desktop-ref }}
         DESKTOP_PATH: ${{ inputs.desktop-path }}
+        ALLOW_EQUIVALENT_SOURCE: ${{ inputs.allow-equivalent-shared-source }}
       run: |
+        args=()
+        if [[ "$ALLOW_EQUIVALENT_SOURCE" == true ]]; then args+=(--allow-equivalent-shared-source); fi
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" pins \
           --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
-          --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH"
+          --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH" "${args[@]}"
+    - name: Check out the exact shared Server source for equivalence verification
+      if: steps.pins.outputs.shared-cloud-sha != ''
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+        ref: ${{ steps.pins.outputs.shared-cloud-sha }}
+        path: .ci-shared-cloud
+        token: ${{ inputs.github-token }}
+        persist-credentials: false
     - name: Check out the exact generated Client source
       if: steps.pins.outputs.client-sha != ''
       uses: actions/checkout@v4
@@ -60,12 +75,16 @@ runs:
         DESKTOP_REF: ${{ inputs.desktop-ref }}
         DESKTOP_PATH: ${{ inputs.desktop-path }}
         CLOUD_PATH: ${{ inputs.cloud-path }}
+        ALLOW_EQUIVALENT_SOURCE: ${{ inputs.allow-equivalent-shared-source }}
       run: |
+        args=()
+        if [[ "$ALLOW_EQUIVALENT_SOURCE" == true ]]; then args+=(--allow-equivalent-shared-source); fi
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" request \
           --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
           --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH" --cloud "$CLOUD_PATH" \
           --client "$GITHUB_WORKSPACE/.ci-generated-client" \
-          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json"
+          --shared-cloud "$GITHUB_WORKSPACE/.ci-shared-cloud" \
+          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" "${args[@]}"
     - name: Download the verified private image set
       if: steps.request.outputs.enabled == 'true'
       uses: actions/download-artifact@v4

@@ -359,17 +359,17 @@ class GeneratedClientTest(unittest.TestCase):
         environment = {**os.environ, "GITHUB_OUTPUT": str(output)}
         exact = ["--cloud-source-sha", self.source, "--image-run-id", "123"]
         subprocess.run(arguments + exact, env=environment, check=True, capture_output=True)
-        self.assertEqual(output.read_text(), f"client-sha={self.client_sha}\n")
+        self.assertEqual(output.read_text(), f"client-sha={self.client_sha}\nshared-cloud-sha=\n")
         output.unlink()
         write_pins(self.desktop, self.source)
         arguments[-1] = self.commit(self.desktop)
         subprocess.run(arguments + exact, env=environment, check=True, capture_output=True)
-        self.assertEqual(output.read_text(), "client-sha=\n")
+        self.assertEqual(output.read_text(), "client-sha=\nshared-cloud-sha=\n")
         output.unlink()
         # Legacy mode does not inspect source pins or require even a checkout.
         shutil.rmtree(self.desktop)
         subprocess.run(arguments, env=environment, check=True, capture_output=True)
-        self.assertEqual(output.read_text(), "client-sha=\n")
+        self.assertEqual(output.read_text(), "client-sha=\nshared-cloud-sha=\n")
 
 
 class RuntimeTest(unittest.TestCase):
@@ -532,7 +532,7 @@ class WorkflowWiringTest(unittest.TestCase):
     def test_generated_client_checkout_is_conditional_canonical_and_precedes_verification(self):
         action = yaml.safe_load((ROOT / ".github/actions/desktop-cloud-runtime/action.yml").read_text())
         steps = action["runs"]["steps"]
-        checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout"))
+        checkout = next(step for step in steps if step.get("with", {}).get("repository") == "AppFlowy-IO/AppFlowy-Client")
         self.assertEqual(checkout["if"], "steps.pins.outputs.client-sha != ''")
         self.assertEqual(checkout["with"]["repository"], "AppFlowy-IO/AppFlowy-Client")
         self.assertEqual(checkout["with"]["ref"], "${{ steps.pins.outputs.client-sha }}")
@@ -540,6 +540,119 @@ class WorkflowWiringTest(unittest.TestCase):
         request = next(step for step in steps if step.get("id") == "request")
         self.assertLess(steps.index(checkout), steps.index(request))
         self.assertIn('--client "$GITHUB_WORKSPACE/.ci-generated-client"', request["run"])
+
+
+class EquivalentServerSourceTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.cloud = self.root / "runtime"
+        self.shared = self.root / "shared"
+        runtime.command(["git", "init", "-q", str(self.cloud)])
+        members = [f"libs/{name}" for name in ("client-api", "collab", "appflowy-entity", "appflowy-proto")]
+        for member in members:
+            crate = self.cloud / "export" / member
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.cloud / "export/Cargo.toml").write_text("[workspace]\nmembers = " + json.dumps(members) + "\n")
+        (self.cloud / "export/libs/client-api/lib.rs").write_text("pub fn unchanged() {}\n")
+        script = self.cloud / "scripts/sync_client_repo.sh"
+        script.parent.mkdir()
+        script.write_text('#!/usr/bin/env bash\nset -euo pipefail\ncp -R "$1/export/." "$2/"\n')
+        self.shared_sha = self.commit(self.cloud)
+        runtime.command(["git", "clone", "-q", str(self.cloud), str(self.shared)])
+        runtime.command(["git", "remote", "set-url", "origin", runtime.SERVER_URL], cwd=self.shared)
+        (self.cloud / "server-only.rs").write_text("server fix\n")
+        self.source_sha = self.commit(self.cloud)
+
+    def commit(self, repository):
+        runtime.command(["git", "add", "-A"], cwd=repository)
+        runtime.command(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                         "commit", "-qm", "fixture"], cwd=repository)
+        return runtime.command(["git", "rev-parse", "HEAD"], cwd=repository)
+
+    def verify(self):
+        return runtime.equivalent_server_source(self.cloud, self.source_sha, self.shared, self.shared_sha)
+
+    def test_server_only_change_has_identical_complete_shared_exports(self):
+        proof = self.verify()
+        self.assertRegex(proof["equivalent_shared_source_sha256"], r"^[a-f0-9]{64}$")
+        self.assertRegex(proof["sync_script_sha256"], r"^[a-f0-9]{64}$")
+        desktop = self.root / "desktop"
+        write_pins(desktop, self.shared_sha)
+        with self.assertRaisesRegex(ValueError, "immutable Cloud revision"):
+            runtime.desktop_pin(desktop, self.source_sha)
+        self.assertEqual(runtime.desktop_pin(desktop, self.source_sha,
+                         allow_equivalent_shared_source=True)["shared_source_sha"], self.shared_sha)
+
+    def test_opt_in_request_records_proof_and_still_requires_successful_image_build(self):
+        desktop = self.root / "desktop"
+        write_pins(desktop, self.shared_sha)
+        runtime.command(["git", "init", "-q", str(desktop)])
+        desktop_sha = self.commit(desktop)
+        metadata = {**build_metadata(), "display_title": f"CI images 900-1 ({self.source_sha})"}
+        manifest = self.root / "manifest.json"
+
+        def run(args, **kwargs):
+            if args[0] == "gh":
+                return json.dumps(artifacts() if "artifacts?" in args[-1] else metadata)
+            return runtime.command(args, **kwargs)
+
+        ci_sha = runtime.command(["git", "rev-parse", "HEAD"], cwd=ROOT)
+        with patch.dict(os.environ, {"GITHUB_SHA": ci_sha}):
+            self.assertTrue(runtime.prepare_request(self.source_sha, "123", desktop, self.cloud,
+                            desktop_sha, manifest, run, shared_cloud=self.shared,
+                            allow_equivalent_shared_source=True))
+            state = json.loads(manifest.read_text())
+            self.assertEqual(state["shared_source_sha"], self.shared_sha)
+            self.assertEqual(state["cloud_source_sha"], self.source_sha)
+            self.assertIn("equivalent_shared_source_sha256", state)
+            metadata["conclusion"] = "cancelled"
+            manifest.unlink()
+            with self.assertRaisesRegex(ValueError, "successful private integration-image"):
+                runtime.prepare_request(self.source_sha, "123", desktop, self.cloud,
+                            desktop_sha, manifest, run, shared_cloud=self.shared,
+                            allow_equivalent_shared_source=True)
+            self.assertFalse(manifest.exists())
+
+        output = self.root / "outputs"
+        arguments = [sys.executable, "-B", str(ROOT / ".github/scripts/desktop_cloud_runtime.py"),
+                     "pins", "--desktop", str(desktop), "--desktop-ref", desktop_sha,
+                     "--cloud-source-sha", self.source_sha, "--image-run-id", "123"]
+        environment = {**os.environ, "GITHUB_OUTPUT": str(output)}
+        default = subprocess.run(arguments, env=environment, capture_output=True)
+        self.assertNotEqual(default.returncode, 0)
+        subprocess.run(arguments + ["--allow-equivalent-shared-source"], env=environment,
+                       check=True, capture_output=True)
+        self.assertEqual(output.read_text(), f"client-sha=\nshared-cloud-sha={self.shared_sha}\n")
+
+    def test_changed_source_recipe_or_executable_mode_is_rejected(self):
+        original = self.source_sha
+        for mutation in ("source", "recipe", "mode"):
+            with self.subTest(mutation=mutation):
+                runtime.command(["git", "reset", "--hard", original], cwd=self.cloud)
+                if mutation == "recipe":
+                    with (self.cloud / "scripts/sync_client_repo.sh").open("a") as handle:
+                        handle.write("# changed recipe\n")
+                elif mutation == "mode":
+                    (self.cloud / "export/libs/client-api/lib.rs").chmod(0o755)
+                else:
+                    (self.cloud / "export/libs/client-api/lib.rs").write_text("changed protocol\n")
+                self.source_sha = self.commit(self.cloud)
+                with self.assertRaisesRegex(ValueError, "Pinned shared source differs"):
+                    self.verify()
+
+    def test_incomplete_exports_wrong_origin_and_missing_checkout_are_rejected(self):
+        (self.cloud / "export/libs/collab/Cargo.toml").unlink()
+        self.source_sha = self.commit(self.cloud)
+        with self.assertRaisesRegex(ValueError, "workspace is incomplete"):
+            self.verify()
+        runtime.command(["git", "remote", "set-url", "origin", "https://github.com/other/server"], cwd=self.shared)
+        with self.assertRaisesRegex(ValueError, "differs from the Desktop pin"):
+            self.verify()
+        with self.assertRaisesRegex(ValueError, "differs from the Desktop pin"):
+            runtime.equivalent_server_source(self.cloud, self.source_sha, None, self.shared_sha)
 
 
 if __name__ == "__main__":

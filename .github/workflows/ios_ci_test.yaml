@@ -1,56 +1,133 @@
 name: iOS-CI-Docker-Test
+run-name: "iOS cloud ${{ inputs.test_suite }} (${{ inputs.pr_ref }})"
 
 on:
   workflow_dispatch:
     inputs:
       pr_ref:
-        description: "Git ref to checkout from private repo"
-        required: false
+        description: "Immutable Desktop commit (40-character SHA)"
+        required: true
         type: string
-        default: "main"
+      cloud_source_sha:
+        description: "Immutable Cloud runtime commit (40-character SHA)"
+        required: true
+        type: string
+      cloud_image_run_id:
+        description: "Successful private integration-image build for cloud_source_sha"
+        required: true
+        type: string
+      test_suite:
+        description: "Mobile UI coverage to execute"
+        required: true
+        type: choice
+        default: all
+        options: [row_page, cloud, all]
 
 env:
   FLUTTER_VERSION: "3.41.9"
-  RUST_TOOLCHAIN: "1.92.0"
-  CLOUD_VERSION: latest-amd64
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ inputs.pr_ref }}-${{ inputs.test_suite }}
+  cancel-in-progress: false
 
 jobs:
   cloud-integration-test:
     timeout-minutes: 120
+    # Docker requires the Intel macOS runner; compile its matching simulator ABI.
     runs-on: macos-15-intel
     env:
-      MINIO_DATA_DIR: /tmp/minio-data
+      COMPOSE_PROJECT_NAME: mobile-cloud-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ inputs.pr_ref }}
+
+      - name: Checkout CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
       - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ inputs.cloud_source_sha }}
           path: AppFlowy-Cloud-Premium
 
-      - name: Prepare appflowy cloud env
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify simulator architecture and select mobile coverage
+        id: mobile-target
+        shell: bash
+        env:
+          TEST_SUITE: ${{ inputs.test_suite }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          case "$TEST_SUITE" in
+            row_page) target=integration_test/mobile/bdd/cloud/mobile_row_page_reopen_test.dart ;;
+            cloud) target=integration_test/mobile/cloud/cloud_runner.dart ;;
+            all) target=integration_test/runner.dart ;;
+            *) echo "Unsupported mobile test suite" >&2; exit 1 ;;
+          esac
+          test -f "frontend/appflowy_flutter/$target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          python3 - <<'PYTHON'
+          import os, re, tomllib
+          from pathlib import Path
+          toolchain = tomllib.loads(Path("frontend/rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain):
+              raise SystemExit("Mobile CI requires the source's pinned Rust toolchain")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"rust-toolchain={toolchain}\n")
+          PYTHON
+          printf 'MINIO_DATA_DIR=%s/mobile-cloud-minio\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'Desktop: %s\nCloud: %s\nMobile test: %s\n' \
+            "$(git rev-parse HEAD)" "$(git -C AppFlowy-Cloud-Premium rev-parse HEAD)" "$target"
+
+      - name: Prepare isolated appflowy cloud env
         working-directory: AppFlowy-Cloud-Premium
+        env:
+          CI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
         run: |
           cp deploy.env .env
-          sed -i '' 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
+          sed -i '' 's|^FQDN=.*|FQDN=localhost|' .env
+          sed -i '' 's|^SCHEME=.*|SCHEME=http|' .env
+          sed -i '' 's|^WS_SCHEME=.*|WS_SCHEME=ws|' .env
+          sed -i '' 's|GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*|GOTRUE_EXTERNAL_GOOGLE_ENABLED=true|' .env
           sed -i '' 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
           sed -i '' 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=http://localhost|' .env
-          sed -i '' 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
           sed -i '' 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
           sed -i '' 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          config = Path(".env")
+          config.write_text("\n".join(
+              "AI_OPENAI_API_KEY=" + os.environ["CI_OPENAI_API_KEY"]
+              if line.startswith("AI_OPENAI_API_KEY=") else line
+              for line in config.read_text().splitlines()
+          ) + "\n")
+          PYTHON
+          cat >> .env <<'ENV'
 
-          echo '' >> .env
-          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
-          echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
-          echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
-          echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
-          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
-          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
+          APPFLOWY_PAGE_HISTORY_ENABLE=true
+          APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io
+          APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0
+          APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0
+          APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0
+          ENV
 
       - name: Setup Docker on macOS
         uses: douglascamata/setup-docker-macos-action@v1
@@ -61,156 +138,108 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Run Docker-Compose
-        working-directory: AppFlowy-Cloud-Premium
-        env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
-        run: |
-          echo "Cleaning up any existing containers..."
-          docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
-          docker container prune -f || true
-          docker volume prune -f || true
-          sudo rm -rf /tmp/minio-data || true
-
-          echo "Pulling and starting containers..."
-          docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d
-          docker ps -a
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
+      - name: Start the verified exact Cloud runtime
+        uses: ./.desktop-ci-tools/.github/actions/desktop-cloud-runtime
+        with:
+          cloud-source-sha: ${{ inputs.cloud_source_sha }}
+          image-run-id: ${{ inputs.cloud_image_run_id }}
+          desktop-ref: ${{ inputs.pr_ref }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          allow-equivalent-shared-source: 'true'
 
       - name: Wait for appflowy cloud to be ready
-        working-directory: AppFlowy-Cloud-Premium
         run: |
-          echo "Waiting for services to be ready..."
-          for i in {1..60}; do
-            if curl -f http://localhost/api/health 2>/dev/null; then
-              echo "Health check passed after $((i*5)) seconds"
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error --max-time 5 http://localhost/api/health; then
               exit 0
             fi
-            echo "Attempt $i: Health check failed, waiting 5 seconds..."
             sleep 5
           done
-          echo "Health check timeout after 300 seconds - proceeding anyway"
-
-      - name: Wait for MinIO to be ready
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          echo "Waiting for MinIO to be ready..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:9000/minio/health/ready 2>/dev/null; then
-              echo "MinIO ready after $((i*3)) seconds"
-              break
-            fi
-            echo "Attempt $i: MinIO not ready, waiting 3 seconds..."
-            sleep 3
-          done
-
-          # Verify bucket is accessible via S3 API
-          echo "Verifying MinIO bucket access..."
-          for i in {1..10}; do
-            if docker compose -f docker-compose-ci.yml exec -T minio mc ls local/ 2>/dev/null; then
-              echo "MinIO bucket listing succeeded"
-              exit 0
-            fi
-            # Fallback: try raw S3 list via curl
-            if curl -sf http://localhost:9000/appflowy/ 2>/dev/null; then
-              echo "MinIO bucket accessible via HTTP"
-              exit 0
-            fi
-            echo "Attempt $i: Bucket not accessible, waiting 3 seconds..."
-            sleep 3
-          done
-          echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
-          docker compose -f docker-compose-ci.yml logs minio
-
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.inputs.pr_ref || 'main' }}
+          echo 'Cloud did not become ready' >&2
+          exit 1
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: aarch64-apple-ios-sim
-          override: true
-          profile: minimal
+          toolchain: ${{ steps.mobile-target.outputs.rust-toolchain }}
+          targets: x86_64-apple-ios
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: macos-15-intel
-          workspaces: |
-            frontend/rust-lib
+          prefix-key: macos-15-intel-ios
+          workspaces: frontend/rust-lib
           cache-all-crates: true
 
-      - uses: davidB/rust-cargo-make@v1
+      - uses: taiki-e/install-action@v2
         with:
-          version: "0.37.15"
+          tool: cargo-make@0.37.18, duckscript_cli, cargo-lipo
 
       - name: Install prerequisites
         working-directory: frontend
-        run: |
-          rustup target install aarch64-apple-ios-sim
-          cargo install --force --locked duckscript_cli
-          cargo install cargo-lipo
-          cargo make appflowy-flutter-deps-tools
-        shell: bash
+        run: cargo make appflowy-flutter-deps-tools
 
       - name: Configure Git credentials for Cargo
-        run: |
-          git config --global credential.helper store
-          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: gh auth setup-git
 
-      - name: Build AppFlowy
+      - name: Build AppFlowy for the Intel simulator
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         working-directory: frontend
         run: |
-          cargo make --profile development-ios-arm64-sim appflowy-core-dev-ios
-          cargo make --profile development-ios-arm64-sim code_generation
-
-      - name: List simulators
-        run: |
-          xcrun simctl list --json devices available
+          cargo make --profile development-ios-x86_64-sim appflowy-core-dev-ios
+          cargo make --profile development-ios-x86_64-sim code_generation
+          lipo -archs appflowy_flutter/packages/appflowy_backend/ios/libdart_ffi.a | grep -qx x86_64
 
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: "iPhone 16 Pro"
+          model: iPhone 16 Pro
           shutdown_after_job: false
 
-      - name: Pre-build iOS app for simulator
+      - name: Run Flutter mobile cloud integration tests
         working-directory: frontend/appflowy_flutter
-        run: flutter build ios --simulator --debug
-
-      - name: Run Flutter integration tests
-        working-directory: frontend/appflowy_flutter
-        run: flutter test integration_test/runner.dart -d ${{ steps.simulator-action.outputs.udid }}
+        env:
+          TEST_TARGET: ${{ steps.mobile-target.outputs.target }}
+          SIMULATOR_ID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          flutter test "$TEST_TARGET" -d "$SIMULATOR_ID" \
+            --dart-define=CI=true \
+            --dart-define=APPFLOWY_CLOUD_URL=http://localhost \
+            --dart-define=APPFLOWY_CLOUD_FORCE_SELF_HOST=true \
+            --reporter expanded 2>&1 | tee "$RUNNER_TEMP/mobile-cloud-flutter.log"
 
       - name: Collect Docker logs
         if: failure()
+        working-directory: AppFlowy-Cloud-Premium
         run: |
-          docker ps -a > docker-ps-output.txt
-          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+          docker compose -f docker-compose-ci.yml ps -a > "$RUNNER_TEMP/mobile-cloud-docker-ps.txt"
+          docker compose -f docker-compose-ci.yml logs --no-color appflowy_cloud appflowy_worker gotrue \
+            > "$RUNNER_TEMP/mobile-cloud-docker.log" 2>&1 || true
 
-      - name: Upload Docker logs
-        if: failure()
+      - name: Upload mobile CI provenance and failure logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-cloud-integration-test-logs-${{ github.run_id }}
+          name: ios-cloud-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            docker-ps-output.txt
-            appflowy_cloud_logs.txt
-            minio_logs.txt
-          retention-days: 1
+            ${{ runner.temp }}/desktop-cloud-manifest.json
+            ${{ runner.temp }}/mobile-cloud-docker-ps.txt
+            ${{ runner.temp }}/mobile-cloud-docker.log
+            ${{ runner.temp }}/mobile-cloud-flutter.log
+          retention-days: 3
+
+      - name: Stop this job's Cloud stack
+        if: always()
+        working-directory: AppFlowy-Cloud-Premium
+        run: docker compose -f docker-compose-ci.yml down --volumes --remove-orphans
