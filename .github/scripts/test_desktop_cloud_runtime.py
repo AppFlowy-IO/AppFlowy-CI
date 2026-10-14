@@ -799,6 +799,25 @@ class RuntimeTest(unittest.TestCase):
                 setattr(self, flag, False)
                 self.assertFalse(any("up" in args or args[:2] == ["docker", "load"] for args, _ in self.calls))
 
+    def test_retry_cannot_bypass_release_digest_verification_or_use_fallback(self):
+        state = self.release_manifest()
+        self.wrong_digest = True
+        pulls = []
+        original_run = self.run_command
+        def run(args, **kwargs):
+            if args[:2] == ["docker", "pull"]:
+                pulls.append(args.copy())
+                if len(pulls) == 1:
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return original_run(args, **kwargs)
+        with patch.object(runtime.time, "sleep"), patch.object(runtime, "PULL_RETRY_DELAY", 0):
+            with self.assertRaisesRegex(ValueError, "digest does not match"):
+                runtime.start_runtime(self.root, self.root, self.manifest, run=run)
+        reference = next(iter(state["release_images"].values()))["reference"]
+        self.assertEqual(pulls, [["docker", "pull", "--platform", "linux/amd64", reference]] * 2)
+        self.assertFalse(any("up" in args or args[:2] == ["docker", "load"] for args, _ in self.calls))
+        self.assertNotEqual(json.loads(self.manifest.read_text()).get("stage"), "runtime_verified")
+
     def test_release_timeline_remains_explicit_source_build_and_protects_other_digests(self):
         self.release_manifest()
         self.config["services"]["appflowy_cloud"]["image"] = runtime.image_tag("appflowy_cloud")
@@ -806,6 +825,81 @@ class RuntimeTest(unittest.TestCase):
         state = json.loads(self.manifest.read_text())
         self.assertTrue(state["timeline_source_build"])
         self.assertEqual(state["images"]["appflowy_cloud"], self.timeline_id)
+
+
+class ImagePullDeadlineTest(unittest.TestCase):
+    def test_real_subprocess_timeout_terminates_parent_and_compose_style_child(self):
+        # A descendant inheriting the captured pipe would keep communicate()
+        # blocked for 30s if only its parent were killed on timeout.
+        script = ("import subprocess,sys,time; "
+                  "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                  "print('started',flush=True); time.sleep(30)")
+        started = runtime.time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            runtime.command([sys.executable, "-c", script], timeout=0.2, merge_stderr=True)
+        self.assertLess(runtime.time.monotonic() - started, 3)
+
+    def pull(self, run, *, clock=lambda: 0, deadline=600):
+        args = ["docker", "pull", "--platform", "linux/amd64", "example/image@sha256:" + "a" * 64]
+        sleeps = []
+        runtime.pull_images(args, deadline=deadline, label="test image", run=run,
+                            clock=clock, sleep=sleeps.append)
+        return args, sleeps
+
+    def test_timeout_retries_exact_reference_with_same_bound(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append((args.copy(), kwargs))
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return "pulled"
+        args, sleeps = self.pull(run)
+        self.assertEqual([call[0] for call in calls], [args, args])
+        self.assertEqual([call[1]["timeout"] for call in calls], [300, 300])
+        self.assertTrue(all(call[1]["merge_stderr"] for call in calls))
+        self.assertEqual(sleeps, [runtime.PULL_RETRY_DELAY])
+
+    def test_known_transient_error_retries_but_auth_and_integrity_errors_do_not(self):
+        for message in ("TLS handshake timeout", b"unexpected EOF", "503 Service Unavailable"):
+            with self.subTest(message=message):
+                calls = []
+                def run(args, **_):
+                    calls.append(args.copy())
+                    if len(calls) == 1:
+                        raise subprocess.CalledProcessError(1, args, output=message)
+                args, _ = self.pull(run)
+                self.assertEqual(calls, [args, args])
+        for message in ("unauthorized: token=secret", "manifest unknown", "digest mismatch", "unexpected EOF\nunauthorized: token=secret", "arbitrary failure"):
+            with self.subTest(message=message):
+                calls = []
+                def run(args, **_):
+                    calls.append(args.copy())
+                    raise subprocess.CalledProcessError(1, args, output=message)
+                with self.assertRaisesRegex(RuntimeError, "Image pull failed") as raised:
+                    self.pull(run)
+                self.assertEqual(len(calls), 1)
+                self.assertNotIn(message, str(raised.exception))
+
+    def test_stalled_pull_stops_after_two_attempts(self):
+        calls = []
+        def run(args, **_):
+            calls.append(args.copy())
+            raise subprocess.TimeoutExpired(args, 300)
+        with self.assertRaisesRegex(RuntimeError, "bounded retries exhausted"):
+            self.pull(run)
+        self.assertEqual(len(calls), 2)
+
+    def test_remaining_phase_budget_caps_attempt_and_prevents_another_retry(self):
+        times = iter([590, 600])
+        timeouts = []
+        def run(args, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        with self.assertRaisesRegex(RuntimeError, "bounded retries exhausted"):
+            self.pull(run, clock=lambda: next(times))
+        self.assertEqual(timeouts, [10])
+        with self.assertRaisesRegex(RuntimeError, "phase deadline exceeded"):
+            self.pull(lambda *_args, **_kwargs: self.fail("expired phase started a pull"), deadline=0)
 
 
 class WorkflowWiringTest(unittest.TestCase):

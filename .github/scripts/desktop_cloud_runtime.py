@@ -11,9 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tarfile
 import tempfile
+import time
 import tomllib
 from urllib.parse import parse_qs, urlsplit
 
@@ -26,13 +28,75 @@ SERVER_URL = "https://github.com/appflowy-io/appflowy-cloud-premium"
 CLIENT_URL = "https://github.com/appflowy-io/appflowy-client"
 
 
-def command(arguments, *, cwd=None, env=None, capture=True):
+def command(arguments, *, cwd=None, env=None, capture=True, timeout=None, merge_stderr=False):
     # Captured Compose configuration contains the job's credentials. Never echo
     # it, even if a subsequent validation fails.
+    if timeout is not None:
+        # Compose starts a CLI plugin. Kill its process group on timeout so a
+        # retry cannot leave the old pull running beside the new one.
+        with subprocess.Popen(arguments, cwd=cwd, env=env, text=True,
+                              stdout=subprocess.PIPE if capture else None,
+                              stderr=subprocess.STDOUT if merge_stderr else None,
+                              start_new_session=True) as process:
+            try:
+                output, _ = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, arguments, output=output)
+            return (output or "").strip()
     if capture:
         return subprocess.check_output(arguments, cwd=cwd, env=env, text=True, timeout=60).strip()
     subprocess.run(arguments, cwd=cwd, env=env, check=True)
     return ""
+
+
+# Bound the complete pull phase as well as each registry attempt. This preserves
+# time for native builds and tests inside the unchanged two-hour iOS job budget.
+PULL_ATTEMPT_TIMEOUT = 300
+PULL_PHASE_TIMEOUT = 1200
+PULL_ATTEMPTS = 2
+PULL_RETRY_DELAY = 5
+
+
+def pull_images(arguments, *, deadline, label, cwd=None, env=None, run=command,
+                clock=time.monotonic, sleep=time.sleep):
+    for attempt in range(1, PULL_ATTEMPTS + 1):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise RuntimeError(f"Image pull phase deadline exceeded before {label}")
+        print(f"Pulling {label} (attempt {attempt}/{PULL_ATTEMPTS}, "
+              f"deadline {min(PULL_ATTEMPT_TIMEOUT, remaining):.0f}s)", flush=True)
+        try:
+            run(arguments, cwd=cwd, env=env, timeout=min(PULL_ATTEMPT_TIMEOUT, remaining),
+                merge_stderr=True)
+            return
+        except subprocess.TimeoutExpired:
+            reason = "deadline exceeded"
+        except subprocess.CalledProcessError as error:
+            output = error.output or ""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            # Only transport/service failures can recover on the same immutable
+            # reference. Authentication, missing manifests and integrity failures
+            # fail immediately. Never expose raw registry output or credentials.
+            permanent = re.search(r"(?i)(?:unauthorized|authentication required|denied:|manifest unknown|"
+                                  r"no matching manifest|digest mismatch|verification failed|invalid reference format)", output)
+            if permanent or not re.search(r"(?i)(?:i/o timeout|context deadline exceeded|TLS handshake timeout|"
+                             r"connection reset by peer|connection refused|temporary failure in name resolution|"
+                             r"unexpected EOF|too many requests|toomanyrequests|"
+                             r"(?:502 bad gateway|503 service unavailable|504 gateway timeout))", output):
+                raise RuntimeError(f"Image pull failed for {label}; exit {error.returncode}") from None
+            reason = "transient registry or network failure"
+        if attempt == PULL_ATTEMPTS or deadline - clock() <= PULL_RETRY_DELAY:
+            raise RuntimeError(f"Image pull failed for {label}: {reason}; bounded retries exhausted") from None
+        print(f"Retrying {label} after {reason}", flush=True)
+        sleep(PULL_RETRY_DELAY)
 
 
 def validate_pair(source_sha, image_run_id):
@@ -483,9 +547,11 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
     expected_compose = {**references, **({"appflowy_cloud": image_tag("appflowy_cloud")} if timeline else {})}
     config = json.loads(run(compose + ["config", "--format", "json"], cwd=cloud, env=env))
     dependencies = dependency_services(config, env.get("COMPOSE_PROFILES", "").split(","), expected_compose)
+    pull_deadline = time.monotonic() + PULL_PHASE_TIMEOUT
     for service, reference in references.items():
         if release:
-            run(["docker", "pull", "--platform", "linux/amd64", reference], cwd=cloud, capture=False)
+            pull_images(["docker", "pull", "--platform", "linux/amd64", reference],
+                        deadline=pull_deadline, label=service, cwd=cloud, run=run)
         else:
             run(["docker", "load", "--input", str(archives / f"{service}.tar.gz")], cwd=cloud, capture=False)
         loaded = json.loads(run(["docker", "image", "inspect", reference]))[0]
@@ -500,7 +566,8 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
         else:
             images[service] = loaded["Id"]
     if dependencies:
-        run(compose + ["pull", *dependencies], cwd=cloud, env=env, capture=False)
+        pull_images(compose + ["pull", *dependencies], deadline=pull_deadline,
+                    label="Compose dependencies", cwd=cloud, env=env, run=run)
     if timeline:
         run(compose + ["build", "appflowy_cloud"], cwd=cloud, env=env, capture=False)
         built = json.loads(run(["docker", "image", "inspect", image_tag("appflowy_cloud")]))[0]
