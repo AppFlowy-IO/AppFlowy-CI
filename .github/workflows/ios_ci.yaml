@@ -16,6 +16,20 @@ on:
         required: false
         type: string
         default: "main"
+      test_runner:
+        description: "Run the usual four mobile suites, or only runner 4 for focused Cloud validation"
+        required: false
+        type: choice
+        default: "all"
+        options: ["all", "4"]
+      cloud_source_sha:
+        description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
+        required: false
+        type: string
+      cloud_image_run_id:
+        description: "Existing successful private image build for cloud_source_sha; never starts another build"
+        required: false
+        type: string
 
 env:
   FLUTTER_VERSION: "3.41.9"
@@ -33,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_number: [1, 2, 3, 4]
+        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || '[1,2,3,4]') }}
 
     # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
     # runner 4 runs its local suite first, then the focused Cloud row-page suite.
@@ -46,6 +60,8 @@ jobs:
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
       APPFLOWY_ADMIN_FRONTEND_VERSION: latest-amd64
+      CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+      CLOUD_IMAGE_RUN_ID: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
 
     steps:
       - name: Checkout private repository
@@ -134,6 +150,9 @@ jobs:
         run: |
           if [[ -f frontend/appflowy_flutter/integration_test/mobile_row_page_cloud_runner.dart ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$CLOUD_SOURCE_SHA" || -n "$CLOUD_IMAGE_RUN_ID" ]]; then
+            echo "::error::Exact Cloud validation requires the selected Desktop revision's focused mobile runner"
+            exit 1
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "Cloud row-page coverage is not applicable to this older Desktop revision: its focused mobile runner is absent. The existing local runner still ran." >> "$GITHUB_STEP_SUMMARY"
@@ -154,7 +173,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          ref: main
+          ref: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           path: .mobile-cloud
 
@@ -163,6 +182,7 @@ jobs:
         id: cloud-config
         run: |
           echo "MINIO_DATA_DIR=$RUNNER_TEMP/mobile-row-cloud-minio" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/mobile-row-cloud-minio"
           python3 .mobile-ci-tools/.github/scripts/mobile_row_cloud.py \
             --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
             --desktop "$GITHUB_WORKSPACE" --temporary "$RUNNER_TEMP"
@@ -180,17 +200,36 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Start job-owned Cloud services
+      - name: Start the verified exact Cloud runtime
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-login.outcome == 'success'"
+        id: exact-cloud
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/desktop-cloud-runtime
+        env:
+          AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+        with:
+          cloud-source-sha: ${{ env.CLOUD_SOURCE_SHA }}
+          image-run-id: ${{ env.CLOUD_IMAGE_RUN_ID }}
+          desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
+          cloud-path: .mobile-cloud
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+
+      - name: Start job-owned Cloud services
+        if: "!cancelled() && matrix.test_number == 4 && steps.exact-cloud.outcome == 'success'"
         id: cloud-start
         env:
           AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+          EXACT_CLOUD_ENABLED: ${{ steps.exact-cloud.outputs.enabled }}
         working-directory: .mobile-cloud
         timeout-minutes: 15
         run: |
-          mkdir -p "$MINIO_DATA_DIR"
-          docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d --no-build
+          if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
+            docker compose -f docker-compose-ci.yml pull
+            docker compose -f docker-compose-ci.yml up -d --no-build
+          elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
+            echo "::error::Cloud runtime selection did not complete"
+            exit 1
+          fi
           docker compose -f docker-compose-ci.yml images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
           git rev-parse HEAD > "$RUNNER_TEMP/mobile-row-cloud-compose-revision.txt"
 
@@ -227,6 +266,7 @@ jobs:
           path: |
             ${{ runner.temp }}/mobile-row-cloud-images.json
             ${{ runner.temp }}/mobile-row-cloud-compose-revision.txt
+            ${{ runner.temp }}/desktop-cloud-manifest.json
           if-no-files-found: ignore
           retention-days: 7
 

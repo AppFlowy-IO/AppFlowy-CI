@@ -126,7 +126,13 @@ class MobileCloudWorkflowTest(unittest.TestCase):
 
     def test_cloud_reuses_runner_four_after_the_existing_local_suite(self):
         self.assertEqual(list(self.workflow["jobs"]), ["integration-tests"])
-        self.assertEqual(self.job["strategy"]["matrix"], {"test_number": [1, 2, 3, 4]})
+        self.assertEqual(self.job["strategy"]["matrix"], {"test_number":
+            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' "
+            "&& '[4]' || '[1,2,3,4]') }}"})
+        inputs = self.workflow[True]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["test_runner"]["options"], ["all", "4"])
+        self.assertEqual(inputs["test_runner"]["default"], "all")
+        self.assertEqual(inputs["test_runner"]["type"], "choice")
         self.assertEqual(self.job["runs-on"],
                          "${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}")
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
@@ -152,7 +158,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         previous = tools
         for name in (
             "Checkout Cloud fixture", "Prepare private Cloud and simulator configuration",
-            "Setup Docker on macOS", "Log in to Docker Hub", "Start job-owned Cloud services",
+            "Setup Docker on macOS", "Log in to Docker Hub", "Start the verified exact Cloud runtime",
+            "Start job-owned Cloud services",
             "Wait for Cloud readiness", "Run Cloud row-page tests on iOS",
         ):
             step = self.step(name)
@@ -173,7 +180,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 summary = root / "summary"
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", discovery], cwd=root,
-                    env={**os.environ, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)},
+                    env={**os.environ, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary),
+                         "CLOUD_SOURCE_SHA": "", "CLOUD_IMAGE_RUN_ID": ""},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -182,6 +190,68 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     self.assertFalse(summary.exists())
                 else:
                     self.assertIn("not applicable", summary.read_text())
+
+    def test_exact_request_cannot_silently_skip_an_older_desktop(self):
+        discovery = self.step("Discover focused Cloud row-page runner")["run"]
+        for source, image in (("a" * 40, "123"), ("a" * 40, ""), ("", "123")):
+            with self.subTest(source=source, image=image), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / "output"
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", discovery], cwd=root,
+                    env={**os.environ, "GITHUB_OUTPUT": str(output),
+                         "GITHUB_STEP_SUMMARY": str(root / "summary"),
+                         "CLOUD_SOURCE_SHA": source, "CLOUD_IMAGE_RUN_ID": image},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Exact Cloud validation requires", result.stdout)
+                self.assertFalse(output.exists())
+
+    def test_exact_runtime_reuses_the_source_verified_composite(self):
+        inputs = self.workflow[True]["workflow_dispatch"]["inputs"]
+        for name in ("cloud_source_sha", "cloud_image_run_id"):
+            self.assertEqual(inputs[name]["type"], "string")
+            self.assertFalse(inputs[name]["required"])
+        exact = self.step("Start the verified exact Cloud runtime")
+        self.assertEqual(exact["uses"], "./.mobile-ci-tools/.github/actions/desktop-cloud-runtime")
+        self.assertEqual(exact["with"]["cloud-source-sha"], "${{ env.CLOUD_SOURCE_SHA }}")
+        self.assertEqual(exact["with"]["image-run-id"], "${{ env.CLOUD_IMAGE_RUN_ID }}")
+        self.assertEqual(exact["with"]["desktop-ref"],
+                         "${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}")
+        self.assertEqual(exact["with"]["cloud-path"], ".mobile-cloud")
+        self.assertEqual(self.step("Checkout Cloud fixture")["with"]["ref"],
+                         "${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}")
+        self.assertEqual(self.step("Checkout workflow tools")["with"]["ref"], "${{ github.sha }}")
+        self.assertIn("steps.exact-cloud.outcome == 'success'",
+                      self.step("Start job-owned Cloud services")["if"])
+        self.assertIn("desktop-cloud-manifest.json", self.step("Upload Cloud image identities")["with"]["path"])
+        self.assertNotIn("workflow run", WORKFLOW.read_text())
+
+    def test_exact_runtime_never_pulls_registry_services_or_falls_back_on_invalid_output(self):
+        script = self.step("Start job-owned Cloud services")["run"]
+        for enabled in ("true", "false", "", "unexpected"):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                calls = root / "calls"
+                prefix = 'docker() { echo "$*" >> "$CALLS"; }\ngit() { echo "fixture-sha"; }\n'
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", prefix + script], cwd=root,
+                    env={**os.environ, "EXACT_CLOUD_ENABLED": enabled,
+                         "RUNNER_TEMP": directory, "CALLS": str(calls)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                if enabled not in ("true", "false"):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(calls.exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                commands = calls.read_text().splitlines()
+                expected = ["compose -f docker-compose-ci.yml images --format json"]
+                if enabled == "false":
+                    expected = ["compose -f docker-compose-ci.yml pull",
+                                "compose -f docker-compose-ci.yml up -d --no-build", *expected]
+                self.assertEqual(commands, expected)
 
     def test_intel_rust_target_profile_and_simulator_match(self):
         env = self.job["env"]
