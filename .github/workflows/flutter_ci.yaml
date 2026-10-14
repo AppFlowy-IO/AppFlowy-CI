@@ -577,6 +577,8 @@ jobs:
     needs: [prepare-linux]
     strategy:
       fail-fast: false
+      # Keep capacity available for integration and mobile jobs.
+      max-parallel: 2
       matrix:
         os: [ubuntu-latest]
         shard: [0, 1, 2, 3]
