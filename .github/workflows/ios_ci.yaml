@@ -121,6 +121,17 @@ jobs:
           cargo make --profile "$IOS_BUILD_PROFILE" appflowy-core-dev-ios
           cargo make --profile "$IOS_BUILD_PROFILE" code_generation
 
+      - name: Prepare Intel simulator architecture
+        if: matrix.test_number == 4
+        run: |
+          test "$(lipo -archs frontend/appflowy_flutter/packages/appflowy_backend/ios/libdart_ffi.a)" = x86_64
+          # Desktop's Debug.xcconfig excludes Intel simulators. Override only this
+          # job's simulator builds; keep the checkout and host tool settings intact.
+          cat > "$RUNNER_TEMP/mobile-intel-simulator.xcconfig" <<'XCCONFIG'
+          ARCHS[sdk=iphonesimulator*] = x86_64
+          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
+          XCCONFIG
+
       - name: List simulators
         run: |
           xcrun simctl list --json devices available
@@ -134,12 +145,20 @@ jobs:
       # Integration tests
       - name: Pre-build iOS app for simulator
         working-directory: frontend/appflowy_flutter
-        run: flutter build ios --simulator --debug
+        run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
+          flutter build ios --simulator --debug
 
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
         working-directory: frontend/appflowy_flutter
-        run: flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
+          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
 
       # Keep checkouts below the Desktop root and after its checkout, which cleans
       # the workspace. A failed local test does not skip Cloud coverage, but a
@@ -254,6 +273,9 @@ jobs:
         working-directory: frontend/appflowy_flutter
         timeout-minutes: 20
         run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
           flutter test integration_test/mobile_row_page_cloud_runner.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
             --dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json"

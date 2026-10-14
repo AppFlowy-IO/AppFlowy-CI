@@ -8,6 +8,12 @@ that same host and runs `integration_test/mobile_row_page_cloud_runner.dart`.
 The focused runner initializes the integration-test binding and runs the two
 mobile row-page scenarios; the aggregate mobile suite is not repeated.
 
+Runner 4 verifies the built FFI archive is x86_64 and writes a simulator-only
+architecture override under `RUNNER_TEMP`. Its prebuild, local tests, and Cloud
+tests pass that file through `XCODE_XCCONFIG_FILE`, so Desktop's ARM-oriented
+`Debug.xcconfig` cannot exclude the Intel library. The checkout, ARM runners,
+physical-device builds, and macOS host-tool settings are unchanged.
+
 The Intel requirement follows the existing manual `ios_ci_test.yaml` approach:
 [setup-docker-macos-action](https://github.com/douglascamata/setup-docker-macos-action)
 supports hosted `macos-15-intel` nested virtualization and localhost forwarding.
