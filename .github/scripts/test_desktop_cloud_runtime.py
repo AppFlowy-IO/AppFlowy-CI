@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -920,6 +921,63 @@ class WorkflowWiringTest(unittest.TestCase):
             self.assertIn('"cloud_image_run_id"', step["with"]["client-payload"])
         ios = next(step for step in steps if step.get("name") == "Trigger iOS CI")
         self.assertNotIn("cloud_image_run_id", ios["with"]["client-payload"])
+
+    def test_receiver_reuses_an_explicit_image_run_without_requesting_a_build(self):
+        job = self.workflow("webhook_receiver")["jobs"]["dispatch-workflows"]
+        steps = {step.get("name"): step for step in job["steps"]}
+        build_condition = "steps.parse.outputs.cloud_source_sha != '' && steps.parse.outputs.cloud_image_run_id == ''"
+        for name in ("Check out the receiver's image request tools", "Build the exact Cloud image set once for Desktop"):
+            self.assertEqual(steps[name]["if"], build_condition)
+        image_selection = "${{ steps.parse.outputs.cloud_image_run_id || steps.cloud-images.outputs.run_id }}"
+        self.assertEqual(job["outputs"]["cloud_image_run_id"], image_selection)
+        for name in ("Trigger Flutter CI", "Trigger Rust CI"):
+            payload = json.loads(steps[name]["with"]["client-payload"])
+            self.assertEqual(payload["cloud_image_run_id"], image_selection)
+            self.assertEqual(payload["cloud_source_sha"], "${{ steps.parse.outputs.cloud_source_sha }}")
+        parse = steps["Parse event data"]
+        self.assertEqual(parse["env"]["CLOUD_IMAGE_RUN_ID"],
+                         "${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}")
+
+    def receiver_parse(self, source, image_run):
+        steps = self.workflow("webhook_receiver")["jobs"]["dispatch-workflows"]["steps"]
+        script = next(step["run"] for step in steps if step.get("name") == "Parse event data")
+        values = {
+            "github.event.action": "private-repo-webhook",
+            "github.event_name": "repository_dispatch",
+            "github.event.client_payload.event_type": "pr_sync",
+            "github.event.client_payload.pr_number": "1473",
+            "github.event.client_payload.pr_ref": DESKTOP,
+            "github.event.client_payload.workflows": "rust,flutter,ios",
+            "github.run_id": "900",
+        }
+        # Execute the actual receiver shell with inert event fields. The source
+        # and run ID still enter through its environment, exactly as in Actions.
+        script = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", lambda match: values.get(match[1], ""), script)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            result = subprocess.run(["bash", "-eo", "pipefail", "-c", script], text=True,
+                                    capture_output=True, env={**os.environ, "CLOUD_SOURCE_SHA": source,
+                                    "CLOUD_IMAGE_RUN_ID": image_run, "GITHUB_OUTPUT": str(output)})
+            fields = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+        return result, fields
+
+    def test_receiver_preserves_legacy_and_source_only_requests_and_accepts_release_pair(self):
+        for source, image_run in (("", ""), (SOURCE, ""), (SOURCE, "38420911278")):
+            with self.subTest(source=source, image_run=image_run):
+                result, fields = self.receiver_parse(source, image_run)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(fields["cloud_source_sha"], source)
+                self.assertEqual(fields["cloud_image_run_id"], image_run)
+                self.assertEqual(fields["pr_ref"], DESKTOP)
+
+    def test_receiver_refuses_unpaired_or_mutable_references_before_dispatch(self):
+        for source, image_run in (("", "123"), ("main", "123"), (SOURCE, "0"),
+                                  (SOURCE, "-1"), (SOURCE, "1\ncloud_source_sha=other"),
+                                  (SOURCE.upper(), "123")):
+            with self.subTest(source=source, image_run=image_run):
+                result, fields = self.receiver_parse(source, image_run)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(fields, {})
 
     def test_downstream_source_checkout_precedes_action_and_legacy_cannot_hide_failure(self):
         for workflow, job_name in (("rust_ci", "test"), ("flutter_ci", "cloud_integration_test")):

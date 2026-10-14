@@ -109,6 +109,16 @@ and failure logs. Runs use isolated Compose projects and do not cancel each othe
 
 ## Activation and premerge validation
 
+Desktop branches may select an existing release build in
+`.github/desktop-cloud-runtime.json`. The selection binds the shared repository
+and immutable Client revision to a Cloud source SHA and private image run ID.
+Desktop rejects a stale selection when its shared pins change. The receiver
+forwards that explicit run to Flutter and Rust without requesting another image
+build; each runtime lane still verifies the generated Client source, successful
+build, published digests and container revision. An unavailable or mismatched
+release fails the job without a new build or registry fallback. Branches without
+this selection retain their existing behavior.
+
 Automatic `repository_dispatch` runs use AppFlowy-CI's default branch. This CI PR
 must be reviewed and merged before the new receiver path can serve ordinary
 Desktop pushes. Publishing a Desktop direct-server pin does not activate an

@@ -25,6 +25,10 @@ on:
         description: "Optional immutable Cloud commit required by Desktop's shared protocol pins"
         required: false
         type: string
+      cloud_image_run_id:
+        description: "Optional successful private image build to reuse for cloud_source_sha"
+        required: false
+        type: string
       workflows:
         description: "Workflows to trigger (comma-separated: flutter,rust,mobile,ios,rust_coverage,docker,commit_lint,backend,frontend,e2e,cloud_docker,rustlint,integration)"
         required: true
@@ -46,7 +50,7 @@ jobs:
     timeout-minutes: 360
     outputs:
       cloud_source_sha: ${{ steps.parse.outputs.cloud_source_sha }}
-      cloud_image_run_id: ${{ steps.cloud-images.outputs.run_id }}
+      cloud_image_run_id: ${{ steps.parse.outputs.cloud_image_run_id || steps.cloud-images.outputs.run_id }}
       flutter_run_url: ${{ steps.get_run_urls.outputs.flutter_run_url }}
       rust_run_url: ${{ steps.get_run_urls.outputs.rust_run_url }}
       mobile_run_url: ${{ steps.get_run_urls.outputs.mobile_run_url }}
@@ -66,13 +70,20 @@ jobs:
         id: parse
         env:
           CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+          CLOUD_IMAGE_RUN_ID: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
         run: |
-          # The source trigger supplies only a revision, never an artifact ID.
+          # A supplied run selects an existing build, never an unchecked image or
+          # artifact. Each runtime lane still verifies its source and digests.
           if [[ -n "$CLOUD_SOURCE_SHA" && ! "$CLOUD_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
             echo "::error::cloud_source_sha must be an immutable 40-character commit"
             exit 1
           fi
+          if [[ -n "$CLOUD_IMAGE_RUN_ID" && ( -z "$CLOUD_SOURCE_SHA" || ! "$CLOUD_IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ) ]]; then
+            echo "::error::cloud_image_run_id requires its immutable Cloud source and a positive run ID"
+            exit 1
+          fi
           echo "cloud_source_sha=$CLOUD_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "cloud_image_run_id=$CLOUD_IMAGE_RUN_ID" >> "$GITHUB_OUTPUT"
 
           if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
             echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
@@ -120,7 +131,7 @@ jobs:
           [[ ",$WORKFLOWS," == *",rust,"* || ",$WORKFLOWS," == *",flutter,"* ]]
 
       - name: Check out the receiver's image request tools
-        if: steps.parse.outputs.cloud_source_sha != ''
+        if: steps.parse.outputs.cloud_source_sha != '' && steps.parse.outputs.cloud_image_run_id == ''
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -128,7 +139,7 @@ jobs:
 
       - name: Build the exact Cloud image set once for Desktop
         id: cloud-images
-        if: steps.parse.outputs.cloud_source_sha != ''
+        if: steps.parse.outputs.cloud_source_sha != '' && steps.parse.outputs.cloud_image_run_id == ''
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           SOURCE_SHA: ${{ steps.parse.outputs.cloud_source_sha }}
@@ -149,7 +160,7 @@ jobs:
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
-              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
+              "cloud_image_run_id": "${{ steps.parse.outputs.cloud_image_run_id || steps.cloud-images.outputs.run_id }}",
               "workflow_type": "flutter"
             }
 
@@ -166,7 +177,7 @@ jobs:
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
-              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
+              "cloud_image_run_id": "${{ steps.parse.outputs.cloud_image_run_id || steps.cloud-images.outputs.run_id }}",
               "workflow_type": "rust"
             }
 
