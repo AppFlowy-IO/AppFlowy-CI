@@ -3,13 +3,16 @@
 Desktop's source trigger can send an optional `cloud_source_sha` alongside its
 immutable Desktop `pr_ref`. Exact mode accepts consistent shared-crate pins to
 the generated `AppFlowy-Client` repository or directly to the requested private
-Server commit. Generated Client consumers currently omit the value in their
-automatic trigger and retain registry-image behavior; manual exact mode supplies
+Server commit. Generated Client consumers can select a Cloud SHA and an existing
+successful image run through the source metadata described under Activation below.
+Consumers
+without that selection retain registry-image behavior. Manual exact mode supplies
 the Cloud SHA and successful image run explicitly.
 
-The receiver requests the four images once with the existing private
-`build_ci_images_self_hosted.yml` workflow. It forwards the successful build's
-`cloud_image_run_id` and source SHA to Rust and Flutter; iOS remains unchanged.
+When no existing image run is selected, the receiver requests the four images
+once with the private `build_ci_images_self_hosted.yml` workflow. A supplied
+`cloud_image_run_id` skips that build. The receiver forwards the selected build
+and source SHA to Rust and Flutter; automatic iOS remains unchanged.
 The Desktop PR number is not passed as a Cloud PR number. This request omits
 `ci_tools_sha`, so it does not compile the unrelated Cloud integration binaries.
 
@@ -131,20 +134,21 @@ is needed, explicitly dispatch the existing private builder from `main`, supplyi
 `source_sha` and a unique numeric `<request>-<attempt>` request ID, and wait for its
 success. Do not supply a Desktop PR as `pr_number`.
 
-After publication is authorized, these commands validate the CI branch without
-merging it or adding a task-branch pin to Desktop's shipping workflow:
+After publication is authorized, set `CI_BRANCH` to the published CI repair
+branch. These commands validate that branch without merging it or adding a
+task-branch pin to Desktop's shipping workflow:
 
 ```bash
 gh workflow run rust_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
-  --ref codex/desktop-exact-cloud-artifacts \
+  --ref "$CI_BRANCH" \
   -f pr_ref="$DESKTOP_SHA" \
   -f cloud_source_sha="$CLOUD_SHA" -f cloud_image_run_id="$IMAGE_RUN_ID"
 gh workflow run flutter_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
-  --ref codex/desktop-exact-cloud-artifacts \
+  --ref "$CI_BRANCH" \
   -f pr_ref="$DESKTOP_SHA" \
   -f cloud_source_sha="$CLOUD_SHA" -f cloud_image_run_id="$IMAGE_RUN_ID"
 gh workflow run ios_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
-  --ref codex/desktop-exact-cloud-artifacts \
+  --ref "$CI_BRANCH" \
   -f pr_ref="$DESKTOP_SHA"
 ```
 
@@ -159,7 +163,7 @@ automatic receiver activation are separate decisions.
 
 ```bash
 gh run list --repo AppFlowy-IO/AppFlowy-CI --workflow rust_ci.yaml \
-  --branch codex/desktop-exact-cloud-artifacts --event workflow_dispatch \
+  --branch "$CI_BRANCH" --event workflow_dispatch \
   --json databaseId,headSha,status,conclusion,url,createdAt
 gh run view "$RUN_ID" --repo AppFlowy-IO/AppFlowy-CI \
   --json headSha,event,status,conclusion,jobs,url
