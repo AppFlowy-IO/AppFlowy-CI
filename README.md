@@ -121,6 +121,12 @@ Each topic has its own Docker stack. Modules and tests run serially within it; r
 topics finish with seeded account deletion. Database history and restore-search run on the Search
 stack before the other search modules, while the Databases topic skips those filters to avoid an
 indexing backlog. Auth enables both Authentik and OpenLDAP profiles and runs SCIM and LDAP serially.
+The four database WebSocket-loss regressions run after ordinary Realtime collaboration tests.
+The runner requires all four nonignored tests, temporarily recreates only Cloud with database
+history disabled, verifies the rendered configuration and live native server-info, and reuses the
+precompiled test binary. Ordinary suites retain history coverage. Both `collab::` and `database::`
+filters exclude this phase because libtest also matches nested module paths. Older Cloud revisions
+without `tests/collab/missing_user_updates/database.rs` have no separate phase.
 The standalone topic discovers every non-`main` Cargo test target, and the coverage gate requires a
 new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
 room for workflow setup, coverage and cache-contract jobs.

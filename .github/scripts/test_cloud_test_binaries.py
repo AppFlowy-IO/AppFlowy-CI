@@ -101,6 +101,16 @@ mod database {
     #[test]
     fn history() { panic!("database history must keep its own stack"); }
 }
+mod collab { mod missing_user_updates {
+    mod database {
+        #[test]
+        fn requires_history_disabled() { panic!("requires the separate WebSocket phase"); }
+    }
+    mod document {
+        #[test]
+        fn document_loss_stays_in_ordinary_phase() {}
+    }
+}}
 mod search {
     #[test]
     fn selected() {
@@ -287,6 +297,26 @@ APPFLOWY_CI_FINAL_ACCOUNT_DELETE=true cargo test --locked --test main "$@" "$tes
         self.assertIn("test database::database_index_test::selected ... ok", result.stdout)
         self.assertIn("test search::selected ... ok", result.stdout)
         self.assertNotIn("test database::history ...", result.stdout)
+
+    def test_ordinary_collab_and_database_filters_exclude_database_websocket_loss(self):
+        for service in ("appflowy_cloud_collab", "appflowy_cloud_database"):
+            with self.subTest(service=service):
+                lane = next(lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
+                            if lane["test_service"] == service)
+                script = step("test", "Run Tests")["run"]
+                script = script.replace("${{ matrix.test_service }}", service)
+                script = script.replace("${{ matrix.test_modules }}", lane["test_modules"])
+                # This synthetic archive's history case deliberately panics for the search
+                # ordering regression above. Leave the actual workflow's history selection intact.
+                skips = lane.get("test_skips", "") + " database::history"
+                result = self.call(["bash", "-e", "-o", "pipefail", "-c", script],
+                                   env={**self.run_env, "RUN_ROOT_UNIT_TESTS": "false",
+                                        "TEST_SKIPS": skips})
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn("test collab::missing_user_updates::database::", result.stdout)
+                if service == "appflowy_cloud_collab":
+                    self.assertIn("test collab::missing_user_updates::document::"
+                                  "document_loss_stays_in_ordinary_phase ... ok", result.stdout)
 
     def test_manifest_must_match_source_path_os_architecture_and_version(self):
         for key, value in (("source_sha", "wrong"), ("workspace", "/different/path"),

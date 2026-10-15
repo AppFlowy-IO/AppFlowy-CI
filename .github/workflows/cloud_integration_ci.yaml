@@ -1003,12 +1003,11 @@ jobs:
               -- --skip stress_test --skip commercial_test --test-threads=1
           else
             # Run root crate integration tests module by module.
-            # `${module}::` makes the filter a Rust path prefix rather than a
-            # substring, so a module like `workspace` only matches tests under
-            # `tests/workspace/` and not unrelated `mcp::*workspace*` or
-            # `search::*workspace*` tests.
+            # The trailing :: avoids matching words inside test-function names. Libtest
+            # still matches nested module paths: database:: also selects the collab loss
+            # tests. Run those only in the separate history-disabled phase below.
             # Skip whitelist tests — they run in the dedicated whitelist group.
-            skip_args=()
+            skip_args=(--skip collab::missing_user_updates::database::)
             for skipped_test in ${TEST_SKIPS:-}; do
               skip_args+=(--skip "${skipped_test}")
             done
@@ -1026,6 +1025,13 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-search -- --test-threads=1
           fi
+
+      - name: Database WebSocket loss regressions
+        if: matrix.test_service == 'appflowy_cloud_collab' && hashFiles('tests/collab/missing_user_updates/database.rs') != ''
+        timeout-minutes: 10
+        run: |
+          python3 ci-tools/.github/scripts/cloud_database_websocket_tests.py \
+            --features "$CLOUD_TEST_FEATURES"
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
       # ordinary modules in this lane or another matrix job. Older Cloud refs lack the runner.
