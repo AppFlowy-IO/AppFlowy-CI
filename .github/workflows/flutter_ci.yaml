@@ -1087,6 +1087,8 @@ jobs:
           path: |
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
+            /tmp/appflowy_cloud_row_snapshot_*/metadata.json
+            /tmp/appflowy_cloud_row_snapshot_*/response.json
           if-no-files-found: warn
           retention-days: 7
 
