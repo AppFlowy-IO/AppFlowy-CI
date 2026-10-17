@@ -324,9 +324,43 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn(output, result.stdout)
+                self.assertEqual(result.stdout.count(output), 1)
                 self.assertEqual(
                     (Path(directory) / "test_output.txt").read_text(), output + "\n",
                 )
+
+    def test_prerequisites_keep_full_logs_and_stop_at_the_first_failure(self):
+        step = next(step for step in self.cloud["steps"]
+                    if step.get("name") == "Install prerequisites")
+        stub = '''sudo() {
+          echo "setup-command: $*"
+          if [ "$*" = "apt-get update" ]; then
+            for ((i=0; i<150; i++)); do echo "package progress $i"; done
+            echo "package repository result"
+            return "$STUB_EXIT"
+          fi
+        }
+        '''
+        for code in (0, 17):
+            with self.subTest(exit_code=code), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", stub + step["run"]],
+                    env={**os.environ, "RUNNER_TEMP": directory, "STUB_EXIT": str(code)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                log = (Path(directory) / "flutter-prerequisites.log").read_text()
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn("package progress 0\n", log)
+                self.assertIn("package progress 149\n", log)
+                if code:
+                    self.assertIn("package repository result", result.stdout)
+                    self.assertNotIn("package progress 0\n", result.stdout)
+                    self.assertNotIn("libgstreamer", log)
+                    self.assertNotIn("prerequisites installed", result.stdout)
+                else:
+                    self.assertIn("libgstreamer", log)
+                    self.assertIn("network-manager postgresql-client", log)
+                    self.assertNotIn("package progress", result.stdout)
 
     def test_real_failure_is_not_masked_by_cleanup_exception(self):
         output = (
@@ -429,6 +463,7 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         self.assertEqual(upload["if"], "always()")
         self.assertIn("/tmp/test_output.txt", upload["with"]["path"])
         self.assertIn("/tmp/cloud-test-events.jsonl", upload["with"]["path"])
+        self.assertIn("${{ runner.temp }}/flutter-prerequisites.log", upload["with"]["path"])
         self.assertIn(
             "--file-reporter=json:/tmp/cloud-test-events.jsonl", self.test_step["run"],
         )

@@ -886,7 +886,7 @@ jobs:
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
           echo "Pulling and starting containers..."
-          docker compose -f docker-compose-ci.yml pull
+          docker compose -f docker-compose-ci.yml pull --quiet
           if [ "${{ matrix.cloud_test_suite }}" = "timeline" ]; then
             # Timeline scenarios use a seeded account and exercise creation on
             # self-hosted Cloud, where it does not require a hosted Pro plan.
@@ -979,19 +979,25 @@ jobs:
 
       - name: Install prerequisites
         working-directory: frontend
-        run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-          sudo apt-get update
-          sudo apt-get install -y --fix-broken
-          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-          sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
-          sudo apt-get install -y libmpv-dev mpv libasound2-dev
-          # Install GStreamer for audioplayers_linux
-          # Install libunwind-dev first to resolve dependency issues
-          sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
+        run: |
+          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
+          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
+          echo "Installing Flutter Linux prerequisites..."
+          {
+            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
+            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
+            sudo apt-get update
+            sudo apt-get install -y --fix-broken
+            sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+            sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
+            sudo apt-get install -y libmpv-dev mpv libasound2-dev
+            # Install GStreamer for audioplayers_linux
+            # Install libunwind-dev first to resolve dependency issues
+            sudo apt-get -y install libunwind-dev
+            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+          } > "$setup_log" 2>&1
+          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
 
       - name: Enable Flutter Desktop
         run: |
@@ -1013,11 +1019,6 @@ jobs:
           pkg-config --modversion mpv || true
           pkg-config --modversion epoxy || true
 
-      - name: Install workspace plan fixture client
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         # Leave time inside the 60-minute job limit to upload partial results.
         timeout-minutes: 45
@@ -1029,7 +1030,6 @@ jobs:
           trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          sudo apt-get install network-manager
           docker ps -a
 
           set +e
@@ -1062,11 +1062,6 @@ jobs:
             echo "❌ $FAIL_COUNT cloud integration test(s) failed, $PASS_COUNT test(s) passed"
           fi
 
-          echo ""
-          echo "::group::Failed tests (click to expand)"
-          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
-          echo "::endgroup::"
-
           exit $TEST_EXIT
 
       - name: Upload exact Cloud runtime manifest
@@ -1087,6 +1082,7 @@ jobs:
           path: |
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
+            ${{ runner.temp }}/flutter-prerequisites.log
           if-no-files-found: warn
           retention-days: 7
 

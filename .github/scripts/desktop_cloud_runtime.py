@@ -253,7 +253,7 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
         if loaded["Id"] != expected_id:
             raise ValueError(f"Loaded image differs from verified archive for {service}")
     if dependencies:
-        run(compose + ["pull", *dependencies], cwd=cloud, env=env, capture=False)
+        run(compose + ["pull", "--quiet", *dependencies], cwd=cloud, env=env, capture=False)
     override = manifest.with_suffix(".compose.json")
     protected = {service: {"pull_policy": "never"} for service in SERVICES}
     if timeline:
