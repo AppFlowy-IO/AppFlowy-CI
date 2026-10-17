@@ -432,7 +432,7 @@ class RuntimeTest(unittest.TestCase):
         self.start()
         pulls = [args for args, _ in self.calls if "pull" in args]
         self.assertEqual(len(pulls), 1)
-        self.assertEqual(pulls[0][pulls[0].index("pull") + 1:], ["nginx", "postgres"])
+        self.assertEqual(pulls[0][pulls[0].index("pull") + 1:], ["--quiet", "nginx", "postgres"])
         up = next(args for args, _ in self.calls if "up" in args)
         self.assertEqual(up[-5:], ["up", "-d", "--no-build", "--pull", "never"])
         state = json.loads(self.manifest.read_text())
