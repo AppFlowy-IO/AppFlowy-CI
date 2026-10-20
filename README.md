@@ -203,6 +203,14 @@ they cannot keep a failed image request running. The Rust runner first builds th
 library, then runs the selected cache and Worker tests.
 The dashboard job validates Prometheus queries and both CI Compose cache configurations.
 
+Cloud revisions advertising `script/cache_test_phases.json` with schema version 1 and exactly
+`["cache", "permission"]` run those phases on separate runners. Cache keeps Worker recovery and
+its reusable hosted binary; permission runs the source-owned component contracts. The manifest
+and both jobs use the same resolved Cloud SHA. Each phase keeps the 120-minute budget, owns its
+Cargo cache, and contributes to the existing aggregate result; a failure does not cancel its
+sibling. Older revisions without the manifest run one `all` phase. A malformed or unsupported
+manifest fails discovery before either phase starts.
+
 Older Cloud refs with none of `script/test_encoded_cache.sh`,
 `script/test_encoded_cache_dashboard.py`, and `script/test_encoded_cache_compose.py` skip these
 jobs. A partial suite fails setup. Cache, image-build, coverage, and integration failures all feed
