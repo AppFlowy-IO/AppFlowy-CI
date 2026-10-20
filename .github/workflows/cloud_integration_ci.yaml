@@ -135,6 +135,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       encoded_cache_available: ${{ steps.encoded_cache.outputs.enabled }}
+      encoded_cache_phases: ${{ steps.encoded_cache.outputs.phases }}
     steps:
       - name: Checkout CI Repo
         uses: actions/checkout@v4
@@ -167,14 +168,37 @@ jobs:
             fi
           done
           if (( present == 0 )); then
+            if [[ -e script/cache_test_phases.json ]]; then
+              echo '::error::Cache phase manifest requires the complete encoded cache suite.'
+              exit 1
+            fi
             echo '::notice::This Cloud ref predates the encoded cache suite; skipping its jobs.'
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            enabled=false
           elif (( present == ${#scripts[@]} )); then
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            enabled=true
           else
             echo '::error::Incomplete encoded cache suite; all three test scripts are required.'
             exit 1
           fi
+          # Only source revisions advertising the exact supported split run two jobs. Older
+          # revisions retain one all-phase invocation; malformed manifests never enable a job.
+          phases="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = Path("script/cache_test_phases.json")
+          phases = ["all"]
+          if manifest.exists():
+              data = json.loads(manifest.read_text())
+              if (not isinstance(data, dict)
+                      or type(data.get("schema_version")) is not int
+                      or data != {"schema_version": 1, "phases": ["cache", "permission"]}):
+                  raise SystemExit("::error::Unsupported encoded cache phase manifest")
+              phases = data["phases"]
+          print(json.dumps(phases, separators=(",", ":")))
+          PY
+          )"
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "phases=$phases" >> "$GITHUB_OUTPUT"
 
       - name: Every test-bearing module must be in a matrix
         run: |
@@ -184,20 +208,25 @@ jobs:
             --workflow appflowy-ci/.github/workflows/cloud_commercial_integration_ci.yaml
 
   cache-contracts:
-    name: Parallel cache and snapshot contracts
+    name: Parallel cache and snapshot contracts (${{ matrix.phase }})
     needs: [verify_test_module_coverage, image_source, image_build_gate]
     if: >-
       always() && !cancelled() &&
       needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true' &&
       needs.image_build_gate.result == 'success'
     runs-on: ubuntu-latest
-    # Cold package builds can exceed an hour before the Worker suites execute.
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: ${{ fromJSON(needs.verify_test_module_coverage.outputs.encoded_cache_phases || '["all"]') }}
+    # Source-owned phases separate cold permission builds from cache and Worker recovery.
     timeout-minutes: 120
     env:
       DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
       SQLX_OFFLINE: 'true'
       CARGO_BUILD_JOBS: '2'
       APPFLOWY_CACHE_TEST_THREADS: '4'
+      APPFLOWY_CACHE_TEST_PHASE: ${{ matrix.phase }}
       RUST_LOG: warn
       DISABLE_CI_TEST_LOG: 'true'
     services:
@@ -224,7 +253,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
         with:
-          key: encoded-cache-parallel-ci
+          key: encoded-cache-parallel-ci-${{ matrix.phase }}
       - name: Install required test dependencies
         run: |
           sudo apt-get update
