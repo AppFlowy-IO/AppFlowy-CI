@@ -416,8 +416,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                                                  "CLOUD_CACHE_GROUP": lane["cache_group"],
                                                  "CLOUD_RUN_ROOT": "false",
                                                  "RUN_SEARCH_PACKAGE": str(lane.get("test_package_search", False)).lower(),
-                                                 # The AI lane only runs on Cloud refs that carry the package.
-                                                 "AI_SERVICE_AVAILABLE": "true",
+                                                 # The AI lane only runs when the image build produced the AI archive.
+                                                 "AI_IMAGE_FROM_SOURCE": "true",
                                                  "AI_EVALUATOR_OPENAI_API_KEY": "",
                                                  "AI_TEST_HAS_FULL_PROVIDERS": "false"},
                                             capture_output=True, text=True)

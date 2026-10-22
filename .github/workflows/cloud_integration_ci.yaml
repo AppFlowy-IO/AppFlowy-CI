@@ -632,8 +632,17 @@ jobs:
           gunzip -c appflowy_worker.tar.gz | docker load
           gunzip -c appflowy_search.tar.gz | docker load
           gunzip -c appflowy_mcp.tar.gz | docker load
-          if [[ "${{ needs.image_source.outputs.ai_available }}" == true ]]; then
+          # The AI archive exists only when the Cloud image workflow on main builds it for this
+          # source. Decide from the artifact rather than the source tree, so a Cloud ref that
+          # adds the service before main's workflow builds it still runs with the published image.
+          if [[ -f appflowy_ai.tar.gz ]]; then
             gunzip -c appflowy_ai.tar.gz | docker load
+            echo 'AI_IMAGE_FROM_SOURCE=true' >> "$GITHUB_ENV"
+          else
+            echo 'AI_IMAGE_FROM_SOURCE=false' >> "$GITHUB_ENV"
+            if [[ "${{ needs.image_source.outputs.ai_available }}" == true ]]; then
+              echo "::warning::This Cloud ref carries services/appflowy-ai but the image build on Cloud main produced no appflowy_ai archive; using the published AI image and skipping the AI package tests."
+            fi
           fi
           echo "==> Loaded images:"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
@@ -777,11 +786,12 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=latest-amd64
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          if [ "${{ needs.image_source.outputs.ai_available }}" = "true" ]; then
+          if [ "${AI_IMAGE_FROM_SOURCE:-false}" = "true" ]; then
             # Built from this Cloud source by build_ci_images_self_hosted.yml.
             export APPFLOWY_AI_VERSION=latest-amd64
           else
-            # Last standalone AppFlowy-AI-Premium release, for Cloud refs before the merge.
+            # Last standalone AppFlowy-AI-Premium release, for Cloud sources whose image build
+            # produced no AI archive.
             export APPFLOWY_AI_VERSION=0.13.2-amd64
           fi
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
@@ -875,7 +885,6 @@ jobs:
           TEST_TARGETS: ${{ matrix.test_targets }}
           RUN_SEARCH_PACKAGE: ${{ matrix.test_package_search == true }}
           RUN_AI_PACKAGE: ${{ matrix.test_package_ai == true }}
-          AI_SERVICE_AVAILABLE: ${{ needs.image_source.outputs.ai_available }}
           # The AI integration tests grade answers with an OpenAI client of their own and only
           # exercise every provider when the DeepSeek, Gemini and Azure credentials exist.
           AI_EVALUATOR_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
@@ -1049,8 +1058,8 @@ jobs:
               --features "$CLOUD_TEST_FEATURES" "ldap::" \
               -- --skip stress_test --skip commercial_test --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ai_service" ]; then
-            if [[ "${AI_SERVICE_AVAILABLE:-false}" != true ]]; then
-              echo "==> Older Cloud source: services/appflowy-ai is not part of this ref"
+            if [[ "${AI_IMAGE_FROM_SOURCE:-false}" != true ]]; then
+              echo "==> The AI image was not built from this Cloud source; skipping the appflowy-ai package tests"
             else
               # Commercial license tests need the self-host-af build; the standalone AI CI
               # skipped them in this stack too.
