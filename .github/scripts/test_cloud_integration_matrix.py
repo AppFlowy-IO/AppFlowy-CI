@@ -344,13 +344,13 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         commands = calls.read_text().splitlines() if calls.exists() else []
         return result, commands
 
-    # Cloud refs that predate the merge have no package to test.
-    result, commands = execute({"AI_SERVICE_AVAILABLE": "false"})
+    # No AI archive from the Cloud image build: nothing to test, whatever the source carries.
+    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(commands, [])
-    self.assertIn("services/appflowy-ai is not part of this ref", result.stdout)
+    self.assertIn("was not built from this Cloud source", result.stdout)
     # Partial provider credentials: OpenAI and Anthropic models only, Gemini cases skipped.
-    result, commands = execute({"AI_SERVICE_AVAILABLE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
+    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), 1)
     self.assertIn("-p\tappflowy-ai\t", commands[0])
@@ -359,7 +359,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertTrue(commands[0].endswith("--test-threads=1\t"))
     self.assertIn("::warning::", result.stdout)
     # Every provider configured: the whole package runs.
-    result, commands = execute({"AI_SERVICE_AVAILABLE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
+    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), 1)
     self.assertNotIn("completion_test::no_context_test", commands[0])
