@@ -311,12 +311,13 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     coverage = (REPO / "scripts/check_test_module_coverage.py").read_text()
     self.assertIn('parse_covered_tokens(args.workflow, "test_targets")', coverage)
 
-  def test_ai_service_lane_runs_the_package_only_when_the_ref_carries_it(self):
-    ai = self.lane("appflowy_cloud_ai_service")
-    self.assertEqual(ai["topic"], "AI service")
+  def test_ai_lane_runs_root_modules_then_the_package_built_from_source(self):
+    ai = self.lane("appflowy_cloud_api")
+    self.assertEqual(ai["topic"], "AI and authentication")
     self.assertEqual(ai["cache_group"], "ai")
     self.assertTrue(ai["test_package_ai"])
-    self.assertEqual(ai["test_modules"], "")
+    self.assertIn("ai_test", ai["test_modules"].split())
+    self.assertFalse(any(lane["test_service"] == "appflowy_cloud_ai_service" for lane in self.lanes))
     run = render_run_tests(ai)
 
     def execute(extra_env):
@@ -333,6 +334,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
             "CARGO_CALLS": str(calls),
             "CLOUD_RUN_ROOT": "false",
             "RUN_SEARCH_PACKAGE": "false",
+            "RUN_AI_PACKAGE": "true",
             "TEST_SKIPS": "",
             "AI_EVALUATOR_OPENAI_API_KEY": "",
             **extra_env,
@@ -344,25 +346,28 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         commands = calls.read_text().splitlines() if calls.exists() else []
         return result, commands
 
-    # No AI archive from the Cloud image build: nothing to test, whatever the source carries.
+    modules = ai["test_modules"].split()
+    # No AI archive from the Cloud image build: the root modules run, the package does not.
     result, commands = execute({"AI_IMAGE_FROM_SOURCE": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertEqual(commands, [])
+    self.assertEqual(len(commands), len(modules))
+    self.assertFalse(any("-p\tappflowy-ai\t" in command for command in commands))
     self.assertIn("was not built from this Cloud source", result.stdout)
     # Partial provider credentials: OpenAI and Anthropic models only, Gemini cases skipped.
     result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertEqual(len(commands), 1)
-    self.assertIn("-p\tappflowy-ai\t", commands[0])
-    self.assertIn("--skip\tcommercial_test\t", commands[0])
-    self.assertIn("--skip\tcompletion_test::no_context_test\t", commands[0])
-    self.assertTrue(commands[0].endswith("--test-threads=1\t"))
+    self.assertEqual(len(commands), len(modules) + 1)
+    package = commands[-1]
+    self.assertIn("-p\tappflowy-ai\t", package)
+    self.assertIn("--skip\tcommercial_test\t", package)
+    self.assertIn("--skip\tcompletion_test::no_context_test\t", package)
+    self.assertTrue(package.endswith("--test-threads=1\t"))
     self.assertIn("::warning::", result.stdout)
-    # Every provider configured: the whole package runs.
+    # Every provider configured: the whole package runs after the root modules.
     result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertEqual(len(commands), 1)
-    self.assertNotIn("completion_test::no_context_test", commands[0])
+    self.assertEqual(len(commands), len(modules) + 1)
+    self.assertNotIn("completion_test::no_context_test", commands[-1])
     self.assertNotIn("::warning::", result.stdout)
 
   def test_search_admission_has_redis_without_application_consumers(self):

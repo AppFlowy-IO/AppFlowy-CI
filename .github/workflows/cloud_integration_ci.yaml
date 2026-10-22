@@ -313,7 +313,7 @@ jobs:
       MINIO_DATA_DIR: /tmp/minio-data
       CLOUD_CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
       CLOUD_CACHE_WRITER: ${{ matrix.cache_writer == true }}
-      CLOUD_RUN_ROOT: ${{ (matrix.cache_group || 'root') == 'root' || matrix.test_package_search == true || matrix.test_targets == '*' }}
+      CLOUD_RUN_ROOT: ${{ (matrix.cache_group || 'root') == 'root' || matrix.test_package_search == true || matrix.test_package_ai == true || matrix.test_targets == '*' }}
       CLOUD_COMPILE_TESTS: ${{ matrix.cache_group != '' || matrix.test_package_search == true || matrix.test_targets == '*' }}
       # Restore Cargo artifacts before enabling the optional compiler wrapper so
       # cache availability cannot change the Cargo snapshot's environment hash.
@@ -426,9 +426,16 @@ jobs:
           - test_service: "appflowy_cloud_collab"
             topic: "Realtime collaboration"
             test_modules: "collab"
+          # The AI service package (services/appflowy-ai) is tested here too, after the root
+          # modules, so one stack covers Cloud's AI proxy tests and the service's own suite. The
+          # package compiles on this runner, hence its own Cargo cache group; its tests run only
+          # when the AI image in the stack was built from this Cloud source.
           - test_service: "appflowy_cloud_api"
             topic: "AI and authentication"
             test_modules: "ai_test gotrue oidc user"
+            test_package_ai: true
+            cache_group: ai
+            cache_writer: true
           # Select the whole `sql_test` tree so a new SQL test module runs without
           # a workflow change. `sql_test::whitelist_test` is excluded here by
           # `--skip whitelist` and runs in the Signup whitelist topic.
@@ -462,16 +469,6 @@ jobs:
               search
             test_package_search: true
             cache_group: search
-            cache_writer: true
-          # The standalone AI service (services/appflowy-ai) runs against the stack built from
-          # this Cloud source. Its integration tests live in the package rather than under
-          # tests/, so the module-coverage check does not see them. The lane does nothing on
-          # Cloud refs that predate the merge.
-          - test_service: "appflowy_cloud_ai_service"
-            topic: "AI service"
-            test_modules: ""
-            test_package_ai: true
-            cache_group: ai
             cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
           - test_service: "appflowy_cloud_whitelist"
@@ -1057,26 +1054,6 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               --features "$CLOUD_TEST_FEATURES" "ldap::" \
               -- --skip stress_test --skip commercial_test --test-threads=1
-          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ai_service" ]; then
-            if [[ "${AI_IMAGE_FROM_SOURCE:-false}" != true ]]; then
-              echo "==> The AI image was not built from this Cloud source; skipping the appflowy-ai package tests"
-            else
-              # Commercial license tests need the self-host-af build; the standalone AI CI
-              # skipped them in this stack too.
-              ai_skips=(--skip stress_test --skip commercial_test)
-              if [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
-                echo "==> Testing appflowy-ai against every configured provider"
-              else
-                # Without the DeepSeek, Gemini and Azure credentials only OpenAI and Anthropic
-                # models can answer, and the parametrised no-context completion cases name
-                # Gemini models explicitly.
-                echo "::warning::CI_DEEPSEEK_API_KEY, CI_GEMINI_API_KEY or CI_AZURE_OPENAI_API_KEY is missing; testing appflowy-ai with OpenAI and Anthropic models only"
-                export TEST_MODELS="gpt-5-mini,claude-sonnet-4.5"
-                ai_skips+=(--skip completion_test::no_context_test)
-              fi
-              OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
-                cargo test --locked -p appflowy-ai -- "${ai_skips[@]}" --test-threads=1
-            fi
           else
             # Run root crate integration tests module by module.
             # `${module}::` makes the filter a Rust path prefix rather than a
@@ -1101,6 +1078,29 @@ jobs:
             echo "==> Testing appflowy-search package"
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
               -p appflowy-search -- --test-threads=1
+          fi
+
+          if [[ "${RUN_AI_PACKAGE:-false}" == true ]]; then
+            if [[ "${AI_IMAGE_FROM_SOURCE:-false}" != true ]]; then
+              echo "==> The AI image was not built from this Cloud source; skipping the appflowy-ai package tests"
+            else
+              # Commercial license tests need the self-host-af build; the standalone AI CI
+              # skipped them in this stack too.
+              ai_skips=(--skip stress_test --skip commercial_test)
+              if [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
+                echo "==> Testing appflowy-ai package against every configured provider"
+              else
+                # Without the DeepSeek, Gemini and Azure credentials only OpenAI and Anthropic
+                # models can answer, and the parametrised no-context completion cases name
+                # Gemini models explicitly.
+                echo "::warning::CI_DEEPSEEK_API_KEY, CI_GEMINI_API_KEY or CI_AZURE_OPENAI_API_KEY is missing; testing appflowy-ai with OpenAI and Anthropic models only"
+                export TEST_MODELS="gpt-5-mini,claude-sonnet-4.5"
+                ai_skips+=(--skip completion_test::no_context_test)
+              fi
+              echo "==> Testing appflowy-ai package"
+              OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
+                cargo test --locked -p appflowy-ai -- "${ai_skips[@]}" --test-threads=1
+            fi
           fi
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
