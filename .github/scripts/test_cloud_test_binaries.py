@@ -399,7 +399,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
     def test_package_lanes_still_use_cargo_and_their_original_package_selections(self):
         lanes = [lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
                  if lane.get("cache_group")]
-        self.assertEqual({lane["cache_group"] for lane in lanes}, {"worker", "search", "members", "directory-self-host"})
+        self.assertEqual({lane["cache_group"] for lane in lanes},
+                         {"worker", "search", "members", "directory-self-host", "ai"})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cargo = root / "cargo"
@@ -414,7 +415,11 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                                             env={**os.environ, "PATH": f'{root}:{os.environ["PATH"]}',
                                                  "CLOUD_CACHE_GROUP": lane["cache_group"],
                                                  "CLOUD_RUN_ROOT": "false",
-                                                 "RUN_SEARCH_PACKAGE": str(lane.get("test_package_search", False)).lower()},
+                                                 "RUN_SEARCH_PACKAGE": str(lane.get("test_package_search", False)).lower(),
+                                                 # The AI lane only runs on Cloud refs that carry the package.
+                                                 "AI_SERVICE_AVAILABLE": "true",
+                                                 "AI_EVALUATOR_OPENAI_API_KEY": "",
+                                                 "AI_TEST_HAS_FULL_PROVIDERS": "false"},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     if lane["cache_group"] == "directory-self-host":
@@ -424,7 +429,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                     if lane.get("test_package_search"):
                         self.assertIn("-p\nappflowy-search\n", result.stdout)
                     else:
-                        expected = {"worker": "appflowy-worker", "members": "workspace-folder"}[lane["cache_group"]]
+                        expected = {"worker": "appflowy-worker", "members": "workspace-folder",
+                                    "ai": "appflowy-ai"}[lane["cache_group"]]
                         self.assertIn(f"-p\n{expected}\n", result.stdout)
                     self.assertIn("--test-threads=1", result.stdout)
 
