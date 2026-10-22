@@ -311,6 +311,60 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     coverage = (REPO / "scripts/check_test_module_coverage.py").read_text()
     self.assertIn('parse_covered_tokens(args.workflow, "test_targets")', coverage)
 
+  def test_ai_service_lane_runs_the_package_only_when_the_ref_carries_it(self):
+    ai = self.lane("appflowy_cloud_ai_service")
+    self.assertEqual(ai["topic"], "AI service")
+    self.assertEqual(ai["cache_group"], "ai")
+    self.assertTrue(ai["test_package_ai"])
+    self.assertEqual(ai["test_modules"], "")
+    run = render_run_tests(ai)
+
+    def execute(extra_env):
+      with tempfile.TemporaryDirectory() as directory:
+        calls = Path(directory) / "cargo-calls"
+        fake_cargo = (
+          'cargo() { printf "%s\\t" "$@" >> "$CARGO_CALLS"; '
+          'printf "\\n" >> "$CARGO_CALLS"; }\n' + run
+        )
+        result = subprocess.run(
+          ["bash", "-e", "-o", "pipefail", "-c", fake_cargo],
+          env={
+            **os.environ,
+            "CARGO_CALLS": str(calls),
+            "CLOUD_RUN_ROOT": "false",
+            "RUN_SEARCH_PACKAGE": "false",
+            "TEST_SKIPS": "",
+            "AI_EVALUATOR_OPENAI_API_KEY": "",
+            **extra_env,
+          },
+          capture_output=True,
+          text=True,
+          check=False,
+        )
+        commands = calls.read_text().splitlines() if calls.exists() else []
+        return result, commands
+
+    # Cloud refs that predate the merge have no package to test.
+    result, commands = execute({"AI_SERVICE_AVAILABLE": "false"})
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(commands, [])
+    self.assertIn("services/appflowy-ai is not part of this ref", result.stdout)
+    # Partial provider credentials: OpenAI and Anthropic models only, Gemini cases skipped.
+    result, commands = execute({"AI_SERVICE_AVAILABLE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(len(commands), 1)
+    self.assertIn("-p\tappflowy-ai\t", commands[0])
+    self.assertIn("--skip\tcommercial_test\t", commands[0])
+    self.assertIn("--skip\tcompletion_test::no_context_test\t", commands[0])
+    self.assertTrue(commands[0].endswith("--test-threads=1\t"))
+    self.assertIn("::warning::", result.stdout)
+    # Every provider configured: the whole package runs.
+    result, commands = execute({"AI_SERVICE_AVAILABLE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(len(commands), 1)
+    self.assertNotIn("completion_test::no_context_test", commands[0])
+    self.assertNotIn("::warning::", result.stdout)
+
   def test_search_admission_has_redis_without_application_consumers(self):
     steps = self.job["steps"]
     start = next(step for step in steps if step.get("name") == "Start Search admission test Redis")

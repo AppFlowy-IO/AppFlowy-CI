@@ -524,7 +524,7 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v4
         with:
-          repository: AppFlowy-IO/AppFlowy-AI-Premium
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.inputs.branch }}
           fetch-depth: 1
@@ -552,12 +552,11 @@ jobs:
           echo "::group::build-appflowy-ai-${{ matrix.job.name }}"
           docker buildx build \
             --platform ${{ matrix.job.docker_platform }} \
-            -f ./Dockerfile \
+            -f ./services/appflowy-ai/Dockerfile \
             -t ${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}-${{ matrix.job.name }} \
             -t ${{ env.IMAGE_NAME }}:${{ env.GIT_TAG }}-${{ matrix.job.name }} \
             --cache-from type=gha,scope=appflowy_ai-${{ matrix.job.name }} \
             --cache-to type=gha,mode=max,scope=appflowy_ai-${{ matrix.job.name }} \
-            --build-arg GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }} \
             --build-arg PROFILE=release \
             --build-arg FEATURES=${{ secrets.CI_APPFLOWY_CLOUD_FEATURES }} \
             --build-arg APP_VERSION=${{ env.GIT_TAG }} \

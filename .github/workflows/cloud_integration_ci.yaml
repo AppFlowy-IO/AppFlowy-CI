@@ -62,6 +62,7 @@ jobs:
       sha: ${{ steps.source.outputs.sha }}
       ref: ${{ steps.source.outputs.ref }}
       backup_available: ${{ steps.backup.outputs.enabled }}
+      ai_available: ${{ steps.ai.outputs.enabled }}
     steps:
       - name: Checkout requested Cloud ref
         uses: actions/checkout@v4
@@ -101,6 +102,20 @@ jobs:
           else
             echo '::error::Incomplete Backup integration stack: docker-compose-backup.yml and script/ci/test_backup.sh must both exist.'
             exit 1
+          fi
+
+      - name: Detect the merged AI service
+        id: ai
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cloud refs that carry services/appflowy-ai build the AI image from source together
+          # with the other images; older refs keep the last standalone AI release.
+          if [[ -f services/appflowy-ai/Dockerfile ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::This Cloud ref predates the merged AI service; using the standalone AI image.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
           fi
 
   build_self_hosted:
@@ -448,6 +463,16 @@ jobs:
             test_package_search: true
             cache_group: search
             cache_writer: true
+          # The standalone AI service (services/appflowy-ai) runs against the stack built from
+          # this Cloud source. Its integration tests live in the package rather than under
+          # tests/, so the module-coverage check does not see them. The lane does nothing on
+          # Cloud refs that predate the merge.
+          - test_service: "appflowy_cloud_ai_service"
+            topic: "AI service"
+            test_modules: ""
+            test_package_ai: true
+            cache_group: ai
+            cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
           - test_service: "appflowy_cloud_whitelist"
             topic: "Signup whitelist"
@@ -607,11 +632,14 @@ jobs:
           gunzip -c appflowy_worker.tar.gz | docker load
           gunzip -c appflowy_search.tar.gz | docker load
           gunzip -c appflowy_mcp.tar.gz | docker load
+          if [[ "${{ needs.image_source.outputs.ai_available }}" == true ]]; then
+            gunzip -c appflowy_ai.tar.gz | docker load
+          fi
           echo "==> Loaded images:"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
 
       - name: Remove downloaded image archives
-        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz
+        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz appflowy_ai.tar.gz
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -655,6 +683,14 @@ jobs:
           sed -i 's|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=.*|APPFLOWY_EMBEDDING_CHUNK_OVERLAP=50|' .env
           sed -i 's|ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${{ secrets.CI_AI_ANTHROPIC_API_KEY }}|' .env
           sed -i 's|AI_APPFLOWY_HOST=.*|AI_APPFLOWY_HOST=http://localhost|' .env
+          # Provider credentials for the AI service container. A missing secret leaves the
+          # variable empty, which the service treats as "provider not configured".
+          sed -i 's|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=${{ secrets.CI_DEEPSEEK_API_KEY }}|' .env
+          sed -i 's|^DEEPSEEK_API_BASE=.*|DEEPSEEK_API_BASE=${{ secrets.CI_DEEPSEEK_API_BASE }}|' .env
+          sed -i 's|^GEMINI_API_KEY=.*|GEMINI_API_KEY=${{ secrets.CI_GEMINI_API_KEY }}|' .env
+          sed -i 's|^AZURE_OPENAI_API_KEY=.*|AZURE_OPENAI_API_KEY=${{ secrets.CI_AZURE_OPENAI_API_KEY }}|' .env
+          sed -i 's|^AZURE_OPENAI_ENDPOINT=.*|AZURE_OPENAI_ENDPOINT=${{ secrets.CI_AZURE_OPENAI_ENDPOINT }}|' .env
+          sed -i 's|^AZURE_OPENAI_API_VERSION=.*|AZURE_OPENAI_API_VERSION=${{ secrets.CI_AZURE_OPENAI_API_VERSION }}|' .env
           sed -i 's|^#* *ASSEMBLYAI_API_KEY=.*|ASSEMBLYAI_API_KEY=${{ secrets.CI_ASSEMBLYAI_API_KEY }}|' .env
 
           sed -i 's|APPFLOWY_WEB_URL=.*|APPFLOWY_WEB_URL=http://localhost:3000|' .env
@@ -741,8 +777,13 @@ jobs:
           export APPFLOWY_CLOUD_VERSION=latest-amd64
           export APPFLOWY_SEARCH_VERSION=latest-amd64
           export APPFLOWY_ADMIN_FRONTEND_VERSION=latest-amd64
-          # Keep this aligned with AppFlowy-Cloud-Premium's integration workflow.
-          export APPFLOWY_AI_VERSION=0.13.2-amd64
+          if [ "${{ needs.image_source.outputs.ai_available }}" = "true" ]; then
+            # Built from this Cloud source by build_ci_images_self_hosted.yml.
+            export APPFLOWY_AI_VERSION=latest-amd64
+          else
+            # Last standalone AppFlowy-AI-Premium release, for Cloud refs before the merge.
+            export APPFLOWY_AI_VERSION=0.13.2-amd64
+          fi
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ldap"
@@ -833,6 +874,12 @@ jobs:
           TEST_SKIPS: ${{ matrix.test_skips }}
           TEST_TARGETS: ${{ matrix.test_targets }}
           RUN_SEARCH_PACKAGE: ${{ matrix.test_package_search == true }}
+          RUN_AI_PACKAGE: ${{ matrix.test_package_ai == true }}
+          AI_SERVICE_AVAILABLE: ${{ needs.image_source.outputs.ai_available }}
+          # The AI integration tests grade answers with an OpenAI client of their own and only
+          # exercise every provider when the DeepSeek, Gemini and Azure credentials exist.
+          AI_EVALUATOR_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+          AI_TEST_HAS_FULL_PROVIDERS: ${{ secrets.CI_DEEPSEEK_API_KEY != '' && secrets.CI_GEMINI_API_KEY != '' && secrets.CI_AZURE_OPENAI_API_KEY != '' }}
         run: |
           set -e
           cargo_command=(cargo)
@@ -1001,6 +1048,26 @@ jobs:
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
               --features "$CLOUD_TEST_FEATURES" "ldap::" \
               -- --skip stress_test --skip commercial_test --test-threads=1
+          elif [ "${{ matrix.test_service }}" = "appflowy_cloud_ai_service" ]; then
+            if [[ "${AI_SERVICE_AVAILABLE:-false}" != true ]]; then
+              echo "==> Older Cloud source: services/appflowy-ai is not part of this ref"
+            else
+              # Commercial license tests need the self-host-af build; the standalone AI CI
+              # skipped them in this stack too.
+              ai_skips=(--skip stress_test --skip commercial_test)
+              if [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
+                echo "==> Testing appflowy-ai against every configured provider"
+              else
+                # Without the DeepSeek, Gemini and Azure credentials only OpenAI and Anthropic
+                # models can answer, and the parametrised no-context completion cases name
+                # Gemini models explicitly.
+                echo "::warning::CI_DEEPSEEK_API_KEY, CI_GEMINI_API_KEY or CI_AZURE_OPENAI_API_KEY is missing; testing appflowy-ai with OpenAI and Anthropic models only"
+                export TEST_MODELS="gpt-5-mini,claude-sonnet-4.5"
+                ai_skips+=(--skip completion_test::no_context_test)
+              fi
+              OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
+                cargo test --locked -p appflowy-ai -- "${ai_skips[@]}" --test-threads=1
+            fi
           else
             # Run root crate integration tests module by module.
             # `${module}::` makes the filter a Rust path prefix rather than a
