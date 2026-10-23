@@ -388,8 +388,9 @@ class RuntimeTest(unittest.TestCase):
         self.wrong_container = False
         self.wrong_loaded_image = False
         self.fail_load = False
-        self.timeline_id = "sha256:commercial-source-build"
-        self.built = False
+        self.timeline_image = "appflowyinc/timeline-ci:published-amd64"
+        self.timeline_id = "sha256:prebuilt-commercial-image"
+        self.timeline_source = SOURCE
         runtime.write_manifest(self.manifest, {
             "cloud_source_sha": SOURCE, "desktop_source_sha": DESKTOP,
             "image_build_url": "https://example.invalid/build/123", "image_run_attempt": 1,
@@ -409,24 +410,26 @@ class RuntimeTest(unittest.TestCase):
                 raise RuntimeError("load failed")
             return "loaded"
         if args[:3] == ["docker", "image", "inspect"]:
+            if args[-1] == self.timeline_image:
+                return json.dumps([{"Id": self.timeline_id, "Os": "linux", "Architecture": "amd64",
+                                    "Config": {"Labels": {"org.opencontainers.image.revision": self.timeline_source}}}])
             service = next(name for name in runtime.SERVICES if args[-1] == runtime.image_tag(name))
-            image_id = self.timeline_id if service == "appflowy_cloud" and self.built else self.images[service]
+            image_id = self.images[service]
             if self.wrong_loaded_image:
                 image_id = "sha256:unexpected-loaded-image"
             return json.dumps([{"Id": image_id, "Os": "linux", "Architecture": "amd64",
                                 "Config": {"Labels": {"org.opencontainers.image.revision": SOURCE}}}])
-        if args[-2:] == ["build", "appflowy_cloud"]:
-            self.assertEqual(kwargs["env"]["APPFLOWY_CLOUD_BUILD_FEATURES"], "self-host-af,commercial-ci,ci-test")
-            self.built = True
         if "ps" in args:
             return args[-1]
         if args[:2] == ["docker", "inspect"]:
-            image_id = self.timeline_id if args[-1] == "appflowy_cloud" and self.built else self.images[args[-1]]
+            pulled_timeline = any(call == ["docker", "pull", self.timeline_image] for call, _ in self.calls)
+            image_id = self.timeline_id if args[-1] == "appflowy_cloud" and pulled_timeline else self.images[args[-1]]
             return json.dumps([{"Image": "wrong" if self.wrong_container else image_id}])
         return ""
 
     def start(self, timeline=False):
-        runtime.start_runtime(self.root, self.root, self.manifest, timeline, self.run_command)
+        runtime.start_runtime(self.root, self.root, self.manifest, timeline, self.run_command,
+                              timeline_image=self.timeline_image if timeline else "")
 
     def test_real_archives_dependency_only_pull_and_actual_container_ids(self):
         self.start()
@@ -470,15 +473,27 @@ class RuntimeTest(unittest.TestCase):
             self.start()
         self.assertFalse(any("pull" in args or "up" in args for args, _ in self.calls))
 
-    def test_timeline_keeps_same_source_commercial_build_with_revision_label(self):
+    def test_timeline_pulls_same_source_prebuilt_image_and_pins_its_container_id(self):
         self.start(timeline=True)
         override = json.loads(self.manifest.with_suffix(".compose.json").read_text())
-        self.assertEqual(override["services"]["appflowy_cloud"]["build"]["labels"],
-                         {"org.opencontainers.image.revision": SOURCE})
+        self.assertEqual(override["services"]["appflowy_cloud"]["image"], self.timeline_id)
+        self.assertTrue(any(args == ["docker", "pull", self.timeline_image] for args, _ in self.calls))
+        self.assertFalse(any("build" in args for args, _ in self.calls))
         self.assertTrue(all(value["pull_policy"] == "never" for value in override["services"].values()))
         state = json.loads(self.manifest.read_text())
         self.assertEqual(state["images"]["appflowy_cloud"], self.timeline_id)
-        self.assertTrue(state["timeline_source_build"])
+        self.assertEqual(state["timeline_image"], self.timeline_image)
+
+    def test_timeline_missing_image_fails_before_any_command(self):
+        with self.assertRaisesRegex(ValueError, "prebuilt"):
+            runtime.start_runtime(self.root, self.root, self.manifest, True, self.run_command)
+        self.assertEqual(self.calls, [])
+
+    def test_timeline_wrong_source_refuses_start_without_build_fallback(self):
+        self.timeline_source = "f" * 40
+        with self.assertRaisesRegex(ValueError, "source revision"):
+            self.start(timeline=True)
+        self.assertFalse(any("up" in args or "build" in args for args, _ in self.calls))
 
     def test_profile_dependencies_are_selected_without_protected_images(self):
         self.assertEqual(runtime.dependency_services(self.config, ["opt-in"]), ["inactive", "nginx", "postgres"])
@@ -489,20 +504,144 @@ class WorkflowWiringTest(unittest.TestCase):
     def workflow(self, name):
         return yaml.safe_load((ROOT / f".github/workflows/{name}.yaml").read_text())
 
-    def test_receiver_requests_one_image_set_and_forwards_only_to_desktop_runtime_lanes(self):
+    def test_receiver_forwards_prebuilt_images_without_requesting_a_build(self):
         job = self.workflow("webhook_receiver")["jobs"]["dispatch-workflows"]
         steps = job["steps"]
-        requests = [step for step in steps if "request_image_build.py" in step.get("run", "")]
-        self.assertEqual(len(requests), 1)
-        self.assertNotIn("CI_TOOLS_SHA", requests[0]["env"])
-        self.assertNotIn("PR_NUMBER", requests[0]["env"])
+        self.assertFalse(any("request_image_build.py" in step.get("run", "") for step in steps))
+        self.assertFalse(any(step.get("uses", "").startswith("actions/checkout@") for step in steps))
+        self.assertLessEqual(job["timeout-minutes"], 20)
+        self.assertEqual(job["outputs"]["cloud_image_run_id"], "${{ steps.parse.outputs.cloud_image_run_id }}")
+        inputs = self.workflow("webhook_receiver")[True]["workflow_dispatch"]["inputs"]
+        self.assertIn("cloud_image_run_id", inputs)
+        result, outputs = self.parse_receiver(CLOUD_SOURCE_SHA=SOURCE, CLOUD_IMAGE_RUN_ID="123456789")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for name in ("Trigger Flutter CI", "Trigger Rust CI"):
             step = next(step for step in steps if step.get("name") == name)
-            self.assertLess(steps.index(requests[0]), steps.index(step))
+            payload_text = step["with"]["client-payload"]
+            for key, value in outputs.items():
+                payload_text = payload_text.replace("${{ steps.parse.outputs." + key + " }}", value)
+            payload = json.loads(payload_text)
+            self.assertEqual(payload["cloud_source_sha"], SOURCE)
+            self.assertEqual(payload["cloud_image_run_id"], "123456789")
+            self.assertEqual(payload["pr_ref"], DESKTOP)
             self.assertIn('"cloud_source_sha"', step["with"]["client-payload"])
             self.assertIn('"cloud_image_run_id"', step["with"]["client-payload"])
         ios = next(step for step in steps if step.get("name") == "Trigger iOS CI")
         self.assertNotIn("cloud_image_run_id", ios["with"]["client-payload"])
+
+    def parse_receiver(self, **overrides):
+        """Execute the production YAML parser without GitHub or image builders."""
+        steps = self.workflow("webhook_receiver")["jobs"]["dispatch-workflows"]["steps"]
+        step = next(step for step in steps if step.get("id") == "parse")
+        # Payloads must enter the shell as data, not workflow-expression code.
+        self.assertNotIn("${{", step["run"])
+        env = {
+            "PATH": os.environ["PATH"],
+            "EVENT_ACTION": "private-repo-webhook",
+            "REQUEST_SOURCE_REPO": "AppFlowy-Premium",
+            "EVENT_TYPE": "pr_sync",
+            "PR_NUMBER": "42",
+            "PR_REF": DESKTOP,
+            "WORKFLOWS": "flutter,rust",
+            "RECEIVER_RUN_ID": "900",
+            "CLOUD_SOURCE_SHA": "",
+            "CLOUD_IMAGE_RUN_ID": "",
+            **overrides,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            result = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+                env={**env, "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True, timeout=10,
+            )
+            outputs = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+        return result, outputs
+
+    def test_receiver_defaults_to_registry_images(self):
+        for action in ("private-repo-webhook", ""):
+            with self.subTest(action=action):
+                result, outputs = self.parse_receiver(EVENT_ACTION=action, PR_REF="main")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(outputs["source_repo"], "AppFlowy-Premium")
+                self.assertEqual(outputs["pr_ref"], "main")
+                self.assertEqual(outputs["cloud_source_sha"], "")
+                self.assertEqual(outputs["cloud_image_run_id"], "")
+
+    def test_receiver_normalizes_legacy_desktop_source_only_to_registry(self):
+        for ref in (DESKTOP, "main"):
+            with self.subTest(ref=ref):
+                result, outputs = self.parse_receiver(CLOUD_SOURCE_SHA=SOURCE, PR_REF=ref)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(outputs["cloud_source_sha"], "")
+                self.assertEqual(outputs["cloud_image_run_id"], "")
+                self.assertEqual(outputs["pr_ref"], ref)
+                self.assertIn("::notice::", result.stdout)
+                self.assertIn("using registry images", result.stdout)
+                self.assertIn("No image build will be requested", result.stdout)
+
+    def test_receiver_preserves_explicit_pair_for_each_desktop_runtime_lane(self):
+        for action in ("private-repo-webhook", ""):
+            for lanes in ("rust", "flutter", "flutter,rust,ios"):
+                with self.subTest(action=action, lanes=lanes):
+                    result, outputs = self.parse_receiver(
+                        EVENT_ACTION=action, WORKFLOWS=lanes,
+                        CLOUD_SOURCE_SHA=SOURCE, CLOUD_IMAGE_RUN_ID="123456789",
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(outputs["cloud_source_sha"], SOURCE)
+                    self.assertEqual(outputs["cloud_image_run_id"], "123456789")
+                    self.assertEqual(outputs["workflows"], lanes)
+
+    def test_receiver_rejects_incomplete_and_malformed_image_requests(self):
+        cases = [
+            {"CLOUD_IMAGE_RUN_ID": "123"},
+            *({"CLOUD_SOURCE_SHA": value} for value in ("main", "A" * 40, SOURCE + "\n")),
+            *({"CLOUD_SOURCE_SHA": SOURCE, "CLOUD_IMAGE_RUN_ID": value}
+              for value in ("0", "01", "-1", "12x", "123\n")),
+        ]
+        for request in cases:
+            with self.subTest(request=request):
+                result, outputs = self.parse_receiver(**request)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::", result.stdout)
+                self.assertEqual(outputs, {})
+
+    def test_exact_pair_requires_desktop_source_immutable_ref_and_runtime_lane(self):
+        cases = [
+            {"EVENT_ACTION": "cloud-premium-webhook"},
+            {"EVENT_ACTION": "", "REQUEST_SOURCE_REPO": "AppFlowy-Cloud-Premium"},
+            {"EVENT_ACTION": "", "REQUEST_SOURCE_REPO": "other"},
+            {"PR_REF": "main"},
+            {"PR_REF": "refs/pull/42/head"},
+            *({"WORKFLOWS": value} for value in ("ios", "rustlint", "rust_coverage", "flutter-extra", "")),
+        ]
+        for request in cases:
+            with self.subTest(request=request):
+                result, outputs = self.parse_receiver(
+                    CLOUD_SOURCE_SHA=SOURCE, CLOUD_IMAGE_RUN_ID="123", **request,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::", result.stdout)
+                self.assertEqual(outputs, {})
+
+    def test_receiver_keeps_standard_server_dispatch_metadata(self):
+        for action in ("cloud-premium-webhook", ""):
+            with self.subTest(action=action):
+                result, outputs = self.parse_receiver(
+                    EVENT_ACTION=action, REQUEST_SOURCE_REPO="AppFlowy-Cloud-Premium",
+                    EVENT_TYPE="push", PR_NUMBER="", PR_REF="main", WORKFLOWS="backend,integration",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(outputs["source_repo"], "AppFlowy-Cloud-Premium")
+                self.assertEqual(outputs["event_type"], "push")
+                self.assertEqual(outputs["pr_number"], "")
+                self.assertEqual(outputs["pr_ref"], "main")
+                self.assertEqual(outputs["workflows"], "backend,integration")
+                self.assertEqual(outputs["cloud_source_sha"], "")
+                self.assertEqual(outputs["cloud_image_run_id"], "")
+        # Source-only normalization is for old Desktop senders, not Server requests.
+        result, _ = self.parse_receiver(EVENT_ACTION="cloud-premium-webhook", CLOUD_SOURCE_SHA=SOURCE)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_downstream_source_checkout_precedes_action_and_legacy_cannot_hide_failure(self):
         for workflow, job_name in (("rust_ci", "test"), ("flutter_ci", "cloud_integration_test")):
@@ -516,7 +655,7 @@ class WorkflowWiringTest(unittest.TestCase):
             exact = next(step for step in steps if step.get("id") == "exact-cloud")
             for name in ("Checkout private repository", "Check out the exact CI runtime tools", "Checkout AppFlowy-Cloud-Premium code"):
                 self.assertLess(steps.index(next(step for step in steps if step.get("name") == name)), steps.index(exact))
-            legacy = next(step for step in steps if "legacy registry" in step.get("name", ""))
+            legacy = next(step for step in steps if "published registry" in step.get("name", ""))
             self.assertEqual(legacy["if"], "steps.exact-cloud.outputs.enabled == 'false'")
             self.assertNotIn("continue-on-error", exact)
             manifest = next(step for step in steps if step.get("name") == "Upload exact Cloud runtime manifest")

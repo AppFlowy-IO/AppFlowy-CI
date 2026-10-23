@@ -22,7 +22,11 @@ on:
         required: true
         type: string
       cloud_source_sha:
-        description: "Optional immutable Cloud commit required by Desktop's shared protocol pins"
+        description: "Optional immutable Cloud commit; pair with cloud_image_run_id to use prebuilt exact images"
+        required: false
+        type: string
+      cloud_image_run_id:
+        description: "Optional completed Cloud image build run; requires cloud_source_sha"
         required: false
         type: string
       workflows:
@@ -43,10 +47,10 @@ concurrency:
 jobs:
   dispatch-workflows:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 20
     outputs:
       cloud_source_sha: ${{ steps.parse.outputs.cloud_source_sha }}
-      cloud_image_run_id: ${{ steps.cloud-images.outputs.run_id }}
+      cloud_image_run_id: ${{ steps.parse.outputs.cloud_image_run_id }}
       flutter_run_url: ${{ steps.get_run_urls.outputs.flutter_run_url }}
       rust_run_url: ${{ steps.get_run_urls.outputs.rust_run_url }}
       mobile_run_url: ${{ steps.get_run_urls.outputs.mobile_run_url }}
@@ -65,39 +69,68 @@ jobs:
       - name: Parse event data
         id: parse
         env:
+          EVENT_ACTION: ${{ github.event.action }}
+          REQUEST_SOURCE_REPO: ${{ inputs.source_repo || 'AppFlowy-Premium' }}
+          EVENT_TYPE: ${{ github.event.client_payload.event_type || inputs.event_type }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number }}
+          PR_REF: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          WORKFLOWS: ${{ github.event.client_payload.workflows || inputs.workflows }}
+          RECEIVER_RUN_ID: ${{ github.run_id }}
           CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+          CLOUD_IMAGE_RUN_ID: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
         run: |
-          # The source trigger supplies only a revision, never an artifact ID.
+          case "$EVENT_ACTION" in
+            cloud-premium-webhook) SOURCE_REPO=AppFlowy-Cloud-Premium ;;
+            private-repo-webhook) SOURCE_REPO=AppFlowy-Premium ;;
+            *) SOURCE_REPO="$REQUEST_SOURCE_REPO" ;;
+          esac
+
           if [[ -n "$CLOUD_SOURCE_SHA" && ! "$CLOUD_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
             echo "::error::cloud_source_sha must be an immutable 40-character commit"
             exit 1
           fi
-          echo "cloud_source_sha=$CLOUD_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-          if [ "${{ github.event.action }}" = "cloud-premium-webhook" ]; then
-            echo "source_repo=AppFlowy-Cloud-Premium" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.action }}" = "private-repo-webhook" ]; then
-            echo "source_repo=AppFlowy-Premium" >> $GITHUB_OUTPUT
-          else
-
-            echo "source_repo=${{ github.event.inputs.source_repo || 'AppFlowy-Premium' }}" >> $GITHUB_OUTPUT
+          if [[ -n "$CLOUD_IMAGE_RUN_ID" && ! "$CLOUD_IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::cloud_image_run_id must be a positive integer"
+            exit 1
+          fi
+          if [[ -n "$CLOUD_IMAGE_RUN_ID" ]]; then
+            if [[ -z "$CLOUD_SOURCE_SHA" ]]; then
+              echo "::error::cloud_image_run_id requires cloud_source_sha"
+              exit 1
+            fi
+            if [[ "$SOURCE_REPO" != AppFlowy-Premium ]]; then
+              echo "::error::exact Cloud images are only supported for Desktop requests"
+              exit 1
+            fi
+            if [[ ! "$PR_REF" =~ ^[a-f0-9]{40}$ ]]; then
+              echo "::error::exact Cloud images require an immutable Desktop pr_ref"
+              exit 1
+            fi
+            if [[ ",$WORKFLOWS," != *",rust,"* && ",$WORKFLOWS," != *",flutter,"* ]]; then
+              echo "::error::exact Cloud images require a Desktop rust or flutter lane"
+              exit 1
+            fi
+          elif [[ -n "$CLOUD_SOURCE_SHA" ]]; then
+            if [[ "$SOURCE_REPO" != AppFlowy-Premium ]]; then
+              echo "::error::cloud_source_sha is only supported for Desktop requests"
+              exit 1
+            fi
+            # Older Desktop triggers send only a protocol revision. They now
+            # use registry images; only an explicit prebuilt pair selects exact mode.
+            echo "::notice::Ignoring legacy Desktop cloud_source_sha without cloud_image_run_id; using registry images. No image build will be requested."
+            CLOUD_SOURCE_SHA=""
           fi
 
-
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "event_type=${{ github.event.client_payload.event_type }}" >> $GITHUB_OUTPUT
-            echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
-            echo "pr_ref=${{ github.event.client_payload.pr_ref }}" >> $GITHUB_OUTPUT
-            echo "workflows=${{ github.event.client_payload.workflows }}" >> $GITHUB_OUTPUT
-          else
-            echo "event_type=${{ github.event.inputs.event_type }}" >> $GITHUB_OUTPUT
-            echo "pr_number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
-            echo "pr_ref=${{ github.event.inputs.pr_ref }}" >> $GITHUB_OUTPUT
-            echo "workflows=${{ github.event.inputs.workflows }}" >> $GITHUB_OUTPUT
-          fi
-
-
-          echo "execution_id=exec-$(date +%s)-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          {
+            echo "source_repo=$SOURCE_REPO"
+            echo "event_type=$EVENT_TYPE"
+            echo "pr_number=$PR_NUMBER"
+            echo "pr_ref=$PR_REF"
+            echo "workflows=$WORKFLOWS"
+            echo "cloud_source_sha=$CLOUD_SOURCE_SHA"
+            echo "cloud_image_run_id=$CLOUD_IMAGE_RUN_ID"
+            echo "execution_id=exec-$(date +%s)-$RECEIVER_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Display event information
         run: |
@@ -107,34 +140,6 @@ jobs:
           echo "Git Ref: ${{ steps.parse.outputs.pr_ref }}"
           echo "Workflows: ${{ steps.parse.outputs.workflows }}"
           echo "Execution ID: ${{ steps.parse.outputs.execution_id }}"
-
-      - name: Validate the optional Desktop Cloud request
-        if: steps.parse.outputs.cloud_source_sha != ''
-        env:
-          SOURCE_REPO: ${{ steps.parse.outputs.source_repo }}
-          DESKTOP_REF: ${{ steps.parse.outputs.pr_ref }}
-          WORKFLOWS: ${{ steps.parse.outputs.workflows }}
-        run: |
-          [[ "$SOURCE_REPO" == AppFlowy-Premium ]]
-          [[ "$DESKTOP_REF" =~ ^[a-f0-9]{40}$ ]]
-          [[ ",$WORKFLOWS," == *",rust,"* || ",$WORKFLOWS," == *",flutter,"* ]]
-
-      - name: Check out the receiver's image request tools
-        if: steps.parse.outputs.cloud_source_sha != ''
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Build the exact Cloud image set once for Desktop
-        id: cloud-images
-        if: steps.parse.outputs.cloud_source_sha != ''
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ steps.parse.outputs.cloud_source_sha }}
-        # Deliberately omit CI_TOOLS_SHA (Cloud test compilation) and PR_NUMBER:
-        # this PR belongs to Desktop, not the private server repository.
-        run: python3 .github/scripts/request_image_build.py
 
       - name: Trigger Flutter CI
         if: contains(steps.parse.outputs.workflows, 'flutter')
@@ -149,7 +154,7 @@ jobs:
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
-              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
+              "cloud_image_run_id": "${{ steps.parse.outputs.cloud_image_run_id }}",
               "workflow_type": "flutter"
             }
 
@@ -166,7 +171,7 @@ jobs:
               "event_type": "${{ steps.parse.outputs.event_type }}",
               "execution_id": "${{ steps.parse.outputs.execution_id }}",
               "cloud_source_sha": "${{ steps.parse.outputs.cloud_source_sha }}",
-              "cloud_image_run_id": "${{ steps.cloud-images.outputs.run_id }}",
+              "cloud_image_run_id": "${{ steps.parse.outputs.cloud_image_run_id }}",
               "workflow_type": "rust"
             }
 

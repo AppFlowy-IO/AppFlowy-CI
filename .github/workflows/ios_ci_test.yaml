@@ -77,7 +77,7 @@ jobs:
 
           echo "Pulling and starting containers..."
           docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d
+          docker compose -f docker-compose-ci.yml up -d --no-build --pull never
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 

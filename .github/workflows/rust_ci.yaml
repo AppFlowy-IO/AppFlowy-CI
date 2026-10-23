@@ -267,7 +267,7 @@ jobs:
         env:
           APP_ENVIRONMENT: local
 
-      - name: Run Server from legacy registry images
+      - name: Run Server from published registry images
         if: steps.exact-cloud.outputs.enabled == 'false'
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -278,7 +278,7 @@ jobs:
           APPFLOWY_AI_VERSION: ${{ env.CLOUD_VERSION }}
         run: |
           docker compose -f docker-compose-ci.yml pull
-          docker compose -f docker-compose-ci.yml up -d
+          docker compose -f docker-compose-ci.yml up -d --no-build --pull never
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 
