@@ -369,14 +369,15 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         self.assertNotIn("build_test_binaries", jobs)
 
     def test_consumers_download_the_producers_source_specific_artifact(self):
-        download = step("test", "Download shared Cloud test binaries")["with"]
+        download = step("test", "Download shared Cloud test binaries")
         images = step("test", "Download Docker Images")["with"]
-        for key in ("repository", "run-id", "github-token"):
-            self.assertEqual(download[key], images[key])
-        self.assertEqual(download["repository"], "AppFlowy-IO/AppFlowy-Cloud-Premium")
-        self.assertEqual(download["run-id"], "${{ needs.build_self_hosted.outputs.run_id }}")
-        self.assertEqual(download["github-token"], "${{ secrets.ADMIN_GITHUB_TOKEN }}")
-        self.assertIn("needs.image_source.outputs.sha", download["name"])
+        self.assertEqual(download["env"]["PRIVATE_BUILD_RUN_ID"], images["run-id"])
+        self.assertEqual(download["env"]["GH_TOKEN"], images["github-token"])
+        self.assertEqual(download["env"]["SOURCE_SHA"], "${{ needs.image_source.outputs.sha }}")
+        self.assertEqual(download["timeout-minutes"], 35)
+        self.assertIn("download_cloud_test_binaries.py", download["run"])
+        self.assertEqual(step("test", "Restore and verify shared Cloud test binaries")["if"],
+                         download["if"])
 
     def test_cross_build_rejects_host_architecture_executables(self):
         with tempfile.TemporaryDirectory() as directory:

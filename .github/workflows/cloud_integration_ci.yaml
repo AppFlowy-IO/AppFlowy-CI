@@ -286,6 +286,11 @@ jobs:
         run: python3 script/test_encoded_cache_dashboard.py
       - name: Verify both CI stacks activate all cache tiers
         run: python3 script/test_encoded_cache_compose.py
+      - name: Verify deterministic AI web-search fixture when available
+        run: |
+          if [[ -f script/ci/test_ai_web_search_fixture.py ]]; then
+            python3 -B -m unittest discover -s script/ci -p test_ai_web_search_fixture.py
+          fi
 
   image_build_gate:
     name: Confirm self-hosted image build completed
@@ -597,13 +602,12 @@ jobs:
 
       - name: Download shared Cloud test binaries
         if: env.CLOUD_RUN_ROOT == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: cloud-test-binaries-${{ needs.image_source.outputs.sha }}
-          path: ${{ runner.temp }}/cloud-test-binaries
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          run-id: ${{ needs.build_self_hosted.outputs.run_id }}
-          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        timeout-minutes: 35
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+          PRIVATE_BUILD_RUN_ID: ${{ needs.build_self_hosted.outputs.run_id }}
+        run: python3 ci-tools/.github/scripts/download_cloud_test_binaries.py
 
       - name: Restore and verify shared Cloud test binaries
         if: env.CLOUD_RUN_ROOT == 'true'
