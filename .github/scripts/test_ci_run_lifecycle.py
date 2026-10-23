@@ -3,21 +3,18 @@
 from contextlib import redirect_stdout
 import copy
 import io
-import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs
 
-import yaml
-
 import ci_run_lifecycle as lifecycle
 
 
 CLIENT_REPO = "AppFlowy-IO/AppFlowy-Premium"
-# Include the workflows that received metadata in #42, even though future runs
-# no longer carry it. Already queued/running titles must also be ignored.
+# These workflows received unversioned metadata in #42. Those old titles did
+# not distinguish PR dispatches from pushes and must remain outside PR cleanup.
 UNRELATED_WORKFLOWS = {
     CLIENT_REPO: (
         "flutter_ci.yaml", "ios_ci.yaml", "rust_ci.yaml", "mobile_ci.yml",
@@ -36,12 +33,12 @@ UNRELATED_WORKFLOWS = {
 
 def run(run_id, *, source=lifecycle.CLOUD_REPO, pr=123, parent=None,
         workflow="cloud_integration_ci.yaml", event="repository_dispatch", status="queued",
-        attempt=1):
+        attempt=1, legacy=False):
     return {
         "id": run_id, "run_attempt": attempt, "status": status, "event": event,
         "path": f".github/workflows/{workflow}",
         "display_title": (
-            f"[ci source={source} pr={pr or 'none'} "
+            f"[{'ci' if legacy else 'ci-v2'} source={source} pr={pr or 'none'} "
             f"parent={f'{parent[0]}-{parent[1]}' if parent else 'none'}] Example"
         ),
     }
@@ -53,6 +50,20 @@ def image(run_id, parent, *, attempt=1, pr_number=None, **kwargs):
     )
     suffix = f" [PR #{pr_number}]" if pr_number else ""
     result["display_title"] = f"CI images {parent}-{attempt} ({'a' * 40}){suffix}"
+    return result
+
+
+def native_run(run_id, *, pr=90, workflow="workflow_checks.yaml", **kwargs):
+    result = run(
+        run_id, source=lifecycle.CI_REPO, pr=pr, workflow=workflow,
+        event="pull_request", **kwargs,
+    )
+    result["display_title"] = "An ordinary PR title, unrelated to lifecycle metadata"
+    result["pull_requests"] = [{
+        "number": pr,
+        "url": f"https://api.github.com/repos/{lifecycle.CI_REPO}/pulls/{pr}",
+        "base": {"repo": {"url": f"https://api.github.com/repos/{lifecycle.CI_REPO}"}},
+    }]
     return result
 
 
@@ -76,7 +87,8 @@ class FakeGitHub:
                 raise lifecycle.ApiError("cancellation failed")
             return None
         if parts[3] == "pulls":
-            return {"state": self.prs[(repo, int(parts[4]))]}
+            value = self.prs[(repo, int(parts[4]))]
+            return copy.deepcopy(value) if isinstance(value, dict) else {"state": value}
         if "/attempts/" in path:
             return copy.deepcopy(self.parents[(int(parts[5]), int(parts[7]))])
         if not query:
@@ -102,13 +114,16 @@ class FakeGitHub:
 class CleanupTests(unittest.TestCase):
     def setUp(self):
         self.api = FakeGitHub()
-        self.api.prs[(lifecycle.CLOUD_REPO, 123)] = "closed"
+        self.api.prs[(lifecycle.CLOUD_REPO, 123)] = {"state": "closed", "merged": True}
+        self.api.prs[(lifecycle.CI_REPO, 90)] = {
+            "state": "closed", "merged": True, "merged_at": "2026-10-23T13:00:00Z",
+        }
 
     def cleanup(self, apply=True):
         with redirect_stdout(io.StringIO()):
             return lifecycle.cleanup(self.api.request, apply=apply)
 
-    def test_closed_pr_cancels_running_and_queued_jobs_and_laptop_build(self):
+    def test_merged_pr_cancels_running_and_queued_jobs_and_laptop_build(self):
         self.api.runs[lifecycle.CI_REPO] = [
             run(1), run(2, status="in_progress"), run(3, status="pending"),
         ]
@@ -135,7 +150,7 @@ class CleanupTests(unittest.TestCase):
                     self.api.calls.clear()
                     self.api.prs[(source, 123)] = "closed"
                     self.api.runs[lifecycle.CI_REPO] = [
-                        run(1, source=source, workflow=workflow, parent=(9, 1)),
+                        run(1, source=source, workflow=workflow, parent=(9, 1), legacy=True),
                     ]
                     self.assertEqual(self.cleanup(), [])
                     self.assertFalse(any(
@@ -158,6 +173,76 @@ class CleanupTests(unittest.TestCase):
         self.api.prs[(lifecycle.CLOUD_REPO, 123)] = "open"
         self.api.runs[lifecycle.CI_REPO] = [run(1)]
         self.assertEqual(self.cleanup(), [])
+
+    def test_v2_allowlisted_source_workflows_are_cancelled_only_after_merge(self):
+        for source, workflows in lifecycle.SOURCE_WORKFLOWS.items():
+            for workflow in workflows:
+                with self.subTest(source=source, workflow=workflow):
+                    self.api.calls.clear()
+                    self.api.runs[lifecycle.CI_REPO] = [run(1, source=source, workflow=workflow)]
+                    self.api.prs[(source, 123)] = {"state": "closed", "merged": False}
+                    self.assertEqual(self.cleanup(), [])
+                    self.assertEqual(self.api.cancellations, [])
+                    self.api.prs[(source, 123)] = {"state": "closed", "merged": True}
+                    self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1)])
+
+    def test_v2_rejects_unlisted_sources_workflows_and_events(self):
+        for source, workflow, event in (
+            (lifecycle.CI_REPO, "workflow_checks.yaml", "repository_dispatch"),
+            ("AppFlowy-IO/other", "flutter_ci.yaml", "repository_dispatch"),
+            (CLIENT_REPO, "cloud_backend_ci.yaml", "repository_dispatch"),
+            (lifecycle.CLOUD_REPO, "flutter_ci.yaml", "repository_dispatch"),
+            (CLIENT_REPO, "flutter_ci.yaml", "push"),
+            (lifecycle.CLOUD_REPO, "cloud_integration_ci.yaml", "release"),
+            (lifecycle.CLOUD_REPO, "cloud_integration_ci.yaml", "pull_request_target"),
+        ):
+            with self.subTest(source=source, workflow=workflow, event=event):
+                self.api.calls.clear()
+                self.api.runs[lifecycle.CI_REPO] = [run(1, source=source, workflow=workflow, event=event)]
+                self.assertEqual(self.cleanup(), [])
+                self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
+
+    def test_equal_pr_numbers_in_different_repositories_are_independent(self):
+        sources = (lifecycle.CI_REPO, CLIENT_REPO, lifecycle.CLOUD_REPO)
+        self.api.runs[lifecycle.CI_REPO] = [
+            native_run(1, pr=123),
+            run(2, source=CLIENT_REPO, workflow="flutter_ci.yaml"),
+            run(3, workflow="cloud_backend_ci.yaml"),
+        ]
+        for run_id, merged_source in enumerate(sources, 1):
+            with self.subTest(merged_source=merged_source):
+                self.api.calls.clear()
+                for source in sources:
+                    merged = source == merged_source
+                    self.api.prs[(source, 123)] = {
+                        "state": "closed" if merged else "open", "merged": merged,
+                    }
+                self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, run_id)])
+
+    def test_legacy_cloud_pr_number_cannot_authorize_pr_cleanup(self):
+        self.api.runs[lifecycle.CI_REPO] = [run(1, legacy=True)]
+        self.assertEqual(self.cleanup(), [])
+        self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
+
+    def test_legacy_cloud_parent_cancellation_still_cascades_to_images(self):
+        self.api.parents[(9, 1)] = {"status": "completed", "conclusion": "cancelled"}
+        self.api.runs[lifecycle.CI_REPO] = [run(1, parent=(9, 1), legacy=True)]
+        self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1)]
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1), (lifecycle.CLOUD_REPO, 10)])
+        self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
+
+    def test_other_v2_workflows_cannot_authorize_image_or_parent_cancellation(self):
+        for source, workflow in (
+            (CLIENT_REPO, "flutter_ci.yaml"), (lifecycle.CLOUD_REPO, "cloud_backend_ci.yaml"),
+        ):
+            with self.subTest(source=source, workflow=workflow):
+                self.api.calls.clear()
+                self.api.prs[(source, 123)] = {"state": "closed", "merged": True}
+                candidate = run(1, source=source, workflow=workflow)
+                self.api.runs[lifecycle.CI_REPO] = [candidate, run(2, pr=None, parent=(1, 1))]
+                self.api.parents[(1, 1)] = candidate
+                self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1)]
+                self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1)])
 
     def test_completed_runs_are_not_cancelled(self):
         self.api.runs[lifecycle.CI_REPO] = [run(1, status="completed")]
@@ -257,7 +342,7 @@ class CleanupTests(unittest.TestCase):
         ]
         self.assertEqual(self.cleanup(), [])
 
-    def test_native_ci_pr_is_outside_cloud_cleanup(self):
+    def test_native_ci_pr_title_without_api_association_is_not_trusted(self):
         self.api.prs[(lifecycle.CI_REPO, 123)] = "closed"
         self.api.runs[lifecycle.CI_REPO] = [
             run(1, source=lifecycle.CI_REPO, event="pull_request", workflow="flutter_ci.yaml"),
@@ -266,13 +351,122 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.cleanup(), [])
         self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
 
+    def test_merged_native_pr_cancels_all_its_workflows_using_api_associations(self):
+        workflows = (
+            "flutter_ci.yaml", "rust_ci.yaml", "ios_ci.yaml",
+            "workflow_checks.yaml", "cloud_integration_ci.yaml",
+        )
+        self.api.runs[lifecycle.CI_REPO] = [
+            native_run(index, workflow=workflow, status=status)
+            for index, (workflow, status) in enumerate(zip(workflows, lifecycle.ACTIVE), 1)
+        ]
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, index) for index in range(1, 6)])
+        self.assertEqual(
+            [path for _, path in self.api.calls if "/pulls/" in path],
+            [f"repos/{lifecycle.CI_REPO}/pulls/90"],
+        )
+
+    def test_native_pr_requires_a_fresh_closed_and_merged_response(self):
+        for response in (
+            {"state": "open", "merged": False},
+            {"state": "open", "merged": True},
+            {"state": "closed", "merged": False, "merged_at": None},
+            {"state": "closed"},
+            {"state": "closed", "merged": "true", "merged_at": ""},
+            {"merged": True},
+        ):
+            with self.subTest(response=response):
+                self.api.calls.clear()
+                self.api.prs[(lifecycle.CI_REPO, 90)] = response
+                self.api.runs[lifecycle.CI_REPO] = [native_run(1)]
+                self.assertEqual(self.cleanup(), [])
+                self.assertEqual(self.api.cancellations, [])
+                self.assertIn(("GET", f"repos/{lifecycle.CI_REPO}/pulls/90"), self.api.calls)
+
+        for marker in ({"merged": True}, {"merged_at": "2026-10-23T13:00:00Z"}):
+            with self.subTest(marker=marker):
+                self.api.prs[(lifecycle.CI_REPO, 90)] = {"state": "closed", **marker}
+                self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1)])
+
+    def test_non_native_events_cannot_claim_a_merged_native_association(self):
+        for event in ("push", "release", "workflow_dispatch", "repository_dispatch",
+                      "pull_request_target", "schedule"):
+            with self.subTest(event=event):
+                self.api.calls.clear()
+                candidate = native_run(1)
+                candidate["event"] = event
+                self.api.runs[lifecycle.CI_REPO] = [candidate]
+                self.assertEqual(self.cleanup(), [])
+                self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
+
+    def test_missing_malformed_ambiguous_and_foreign_native_associations_are_skipped(self):
+        valid = native_run(1)["pull_requests"][0]
+        invalid_associations = [None, [], {}, "90", [None], [valid, valid]]
+        for number in (None, True, 0, -1, "90", "90/../../actions/runs"):
+            invalid_associations.append([{**valid, "number": number}])
+        for url in (
+            None, "https://api.github.com/repos/other/repo/pulls/90",
+            f"https://api.github.com/repos/{lifecycle.CI_REPO}/pulls/91",
+            f"https://github.com/{lifecycle.CI_REPO}/pull/90",
+        ):
+            invalid_associations.append([{**valid, "url": url}])
+        for base in (
+            None, {}, {"repo": None}, {"repo": {"url": "https://api.github.com/repos/other/repo"}},
+            {"repo": {"url": f"https://api.github.com/repos/{lifecycle.CI_REPO}.other"}},
+        ):
+            invalid_associations.append([{**valid, "base": base}])
+        for association in invalid_associations:
+            with self.subTest(association=association):
+                self.api.calls.clear()
+                candidate = native_run(1)
+                candidate["pull_requests"] = association
+                self.api.runs[lifecycle.CI_REPO] = [candidate]
+                self.assertEqual(self.cleanup(), [])
+                self.assertFalse(any("/pulls/" in path for _, path in self.api.calls))
+
+    def test_native_run_is_rechecked_for_retry_completion_and_association_changes(self):
+        original = native_run(1)
+        changed_event = {**original, "event": "push"}
+        missing_association = {**original, "pull_requests": []}
+        for current in (
+            native_run(1, attempt=2), native_run(1, status="completed"),
+            native_run(1, pr=91), changed_event, missing_association,
+        ):
+            with self.subTest(current=current):
+                self.api.calls.clear()
+                self.api.runs[lifecycle.CI_REPO] = [original]
+                self.api.current[1] = current
+                self.assertEqual(self.cleanup(), [])
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_native_cancellation_does_not_authorize_a_private_image_cancellation(self):
+        for workflow in ("workflow_checks.yaml", "cloud_integration_ci.yaml"):
+            with self.subTest(workflow=workflow):
+                native = native_run(1, workflow=workflow)
+                self.api.runs[lifecycle.CI_REPO] = [native]
+                self.api.parents[(1, 1)] = {**native, "status": "completed", "conclusion": "cancelled"}
+                self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 1)]
+                self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, 1)])
+
+    def test_native_pr_pagination_and_other_pr_are_preserved(self):
+        self.api.runs[lifecycle.CI_REPO] = [native_run(index) for index in range(1, 102)]
+        self.api.runs[lifecycle.CI_REPO].append(native_run(102, pr=91))
+        self.api.prs[(lifecycle.CI_REPO, 91)] = {"state": "open", "merged": False}
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, index) for index in range(1, 102)])
+        self.assertEqual(sum("/pulls/" in path for _, path in self.api.calls), 2)
+
+    def test_native_dry_run_does_not_write(self):
+        self.api.runs[lifecycle.CI_REPO] = [native_run(1)]
+        self.assertEqual(self.cleanup(apply=False), [(lifecycle.CI_REPO, 1)])
+        self.assertEqual(self.api.cancellations, [])
+
     def test_rejects_unexpected_source_and_invalid_pr_before_request(self):
         for source, number in (
-            (CLIENT_REPO, 123), (lifecycle.CI_REPO, 123), ("evil/repo", 123),
-            (lifecycle.CLOUD_REPO, "123/../../runs"),
+            ("evil/repo", 123), (lifecycle.CLOUD_REPO, "123/../../runs"),
+            (CLIENT_REPO, True), (lifecycle.CI_REPO, 0),
         ):
             with self.assertRaises(ValueError):
-                lifecycle.pr_is_open(source, number, self.api.request)
+                lifecycle.pr_is_merged(source, number, self.api.request)
         self.assertEqual(self.api.calls, [])
 
 
@@ -320,6 +514,19 @@ class LegacyDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(self.api.cancellations, [])
 
+    def test_old_dispatcher_finds_v2_workflows_without_parent_metadata(self):
+        self.api.runs[lifecycle.CI_REPO] = [
+            run(1, workflow="cloud_rustlint_ci.yaml"), run(2, parent=(9, 2)),
+        ]
+        self.assertEqual(
+            lifecycle.find_children(
+                ["rustlint", "integration"], (9, 2), self.api.request,
+                now=iter((0, 181)).__next__,
+            ),
+            {"rustlint": 1, "integration": 2},
+        )
+        self.assertEqual(self.api.cancellations, [])
+
     def test_old_client_dispatcher_prefers_exact_metadata_when_available(self):
         restored = run(1, source=CLIENT_REPO, workflow="flutter_ci.yaml")
         restored["display_title"] = "private-repo-flutter-ci"
@@ -343,51 +550,6 @@ class LegacyDispatcherTests(unittest.TestCase):
                         cleanup.assert_not_called()
                     api.assert_not_called()
             self.assertEqual(output.read_text(), "active=true\n")
-
-
-class WorkflowTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        directory = Path(__file__).resolve().parents[1] / "workflows"
-        cls.workflows = {
-            path.name: yaml.load(path.read_text(), Loader=yaml.BaseLoader)
-            for path in directory.iterdir()
-        }
-
-    def test_only_cloud_integration_exposes_lifecycle_identity(self):
-        title = self.workflows[lifecycle.INTEGRATION_WORKFLOW]["run-name"]
-        self.assertIn("[ci source=", title)
-        self.assertIn("pr=", title)
-        self.assertIn("parent_run_attempt", title)
-        for workflows in UNRELATED_WORKFLOWS.values():
-            for name in workflows:
-                with self.subTest(workflow=name):
-                    self.assertNotIn("[ci source=", self.workflows[name].get("run-name", ""))
-
-    def test_only_integration_dispatch_forwards_the_exact_parent(self):
-        job = self.workflows["webhook_receiver.yaml"]["jobs"]["dispatch-workflows"]
-        for step in job["steps"]:
-            if step.get("uses", "").startswith("peter-evans/repository-dispatch@"):
-                with self.subTest(step=step["name"]):
-                    payload = json.loads(step["with"]["client-payload"])
-                    if step["with"]["event-type"] == "cloud-premium-integration-ci":
-                        self.assertEqual(payload["parent_run_id"], "${{ github.run_id }}")
-                        self.assertEqual(payload["parent_run_attempt"], "${{ github.run_attempt }}")
-                    else:
-                        self.assertNotIn("parent_run_id", payload)
-                        self.assertNotIn("parent_run_attempt", payload)
-                    self.assertNotIn("steps.lifecycle", step["if"])
-        # New dispatchers no longer depend on the legacy metadata lookup.
-        self.assertFalse(any("ci_run_lifecycle.py" in step.get("run", "") for step in job["steps"]))
-
-    def test_privileged_cleanup_uses_only_default_branch_code(self):
-        workflow = self.workflows["cancel_obsolete_ci.yaml"]
-        self.assertNotIn("pull_request_target", workflow["on"])
-        self.assertEqual(workflow["on"]["repository_dispatch"]["types"], ["ci-pr-closed"])
-        self.assertEqual(workflow["on"]["workflow_run"]["types"], ["completed"])
-        checkout = workflow["jobs"]["cancel"]["steps"][0]
-        self.assertEqual(checkout["with"]["ref"], "${{ github.event.repository.default_branch }}")
-        self.assertEqual(checkout["with"]["persist-credentials"], "false")
 
 
 if __name__ == "__main__":

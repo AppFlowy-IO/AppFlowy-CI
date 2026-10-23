@@ -1,4 +1,9 @@
 name: Webhook Receiver for Private Repos
+run-name: >-
+  [ci-v2 source=${{ github.event.action == 'cloud-premium-webhook' && 'AppFlowy-IO/AppFlowy-Cloud-Premium' || format('AppFlowy-IO/{0}', inputs.source_repo || 'AppFlowy-Premium') }}
+  pr=${{ (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || (inputs.event_type == 'pr_opened' || inputs.event_type == 'pr_sync') && inputs.pr_number || 'none' }}
+  parent=none]
+  ${{ github.workflow }}
 
 on:
   repository_dispatch:
@@ -41,7 +46,7 @@ on:
         default: "AppFlowy-Premium"
 
 concurrency:
-  group: webhook-pr-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || format('push-{0}', github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.run_id) }}
+  group: webhook-${{ github.event.action == 'cloud-premium-webhook' && 'AppFlowy-Cloud-Premium' || inputs.source_repo || 'AppFlowy-Premium' }}-${{ (github.event.client_payload.event_type || inputs.event_type) == 'push' && 'push' || 'pr' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.event.client_payload.pr_ref || inputs.pr_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:

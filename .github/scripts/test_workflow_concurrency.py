@@ -1,14 +1,11 @@
-"""Exercise the actual concurrency fallback expressions without GitHub jobs.
-
-The three client workflows use only dotted context lookups and logical OR.
-Reject unsupported syntax rather than silently modeling a different expression.
-"""
+"""Exercise the actual concurrency expressions without GitHub jobs."""
 
 from pathlib import Path
-import re
 import unittest
 
 import yaml
+
+from test_pr_cleanup_workflows import SOURCE_WORKFLOWS, event_context, render_expression
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
@@ -16,27 +13,8 @@ CLIENT_WORKFLOWS = ("flutter_ci.yaml", "rust_ci.yaml", "ios_ci.yaml")
 
 
 def concurrency_group(workflow, *, payload=None, inputs=None, ref="refs/heads/main"):
-    context = {
-        "github": {
-            "workflow": workflow["name"],
-            "ref": ref,
-            "event": {"client_payload": payload or {}, "inputs": inputs or {}},
-        },
-    }
-
-    def evaluate(match):
-        for operand in match.group(1).split("||"):
-            path = operand.strip()
-            if not re.fullmatch(r"github(?:\.[a-z_]+)+", path):
-                raise ValueError(f"Unsupported concurrency expression: {path}")
-            value = context
-            for part in path.split("."):
-                value = value.get(part, "") if isinstance(value, dict) else ""
-            if value:
-                return str(value)
-        return ""
-
-    rendered = re.sub(r"\$\{\{(.*?)\}\}", evaluate, workflow["concurrency"]["group"])
+    context = event_context(workflow, payload=payload, inputs=inputs, ref=ref)
+    rendered = render_expression(workflow["concurrency"]["group"], context)
     # GitHub compares concurrency groups case-insensitively.
     return rendered.lower()
 
@@ -107,7 +85,7 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertEqual(
                     concurrency_group(workflow, ref="refs/pull/29/merge"),
-                    f"{workflow['name']}-refs/pull/29/merge".lower(),
+                    f"{workflow['name']}-validation-refs/pull/29/merge".lower(),
                 )
 
     def test_client_workflows_do_not_cancel_each_other(self):
@@ -116,6 +94,19 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
             for workflow in self.workflows.values()
         }
         self.assertEqual(len(groups), len(CLIENT_WORKFLOWS))
+
+    def test_late_pr_dispatch_cannot_cancel_post_merge_push_for_any_source_workflow(self):
+        for name in SOURCE_WORKFLOWS:
+            workflow = yaml.safe_load((WORKFLOWS / name).read_text())
+            with self.subTest(workflow=name):
+                push = concurrency_group(workflow, payload={
+                    "event_type": "push", "pr_number": "1329", "pr_ref": "main",
+                })
+                groups = [concurrency_group(workflow, payload={
+                    "event_type": kind, "pr_number": "1329", "pr_ref": "old-sha",
+                }) for kind in ("pr_opened", "pr_sync")]
+                self.assertNotIn(push, groups)
+                self.assertEqual(groups[0], groups[1])
 
 
 if __name__ == "__main__":

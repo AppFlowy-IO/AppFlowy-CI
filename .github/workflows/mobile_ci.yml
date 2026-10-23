@@ -1,4 +1,9 @@
 name: Mobile-CI
+run-name: >-
+  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
+  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
+  parent=none]
+  ${{ github.workflow }}
 
 on:
   repository_dispatch:
@@ -29,7 +34,7 @@ env:
   CLOUD_VERSION: latest-amd64
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
