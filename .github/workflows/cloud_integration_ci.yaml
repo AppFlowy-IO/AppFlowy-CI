@@ -757,7 +757,8 @@ jobs:
           # No application process receives this endpoint. Tests lease its empty logical DBs.
           fixture_name="search-admission-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ strategy.job-index }}"
           docker run --detach --name "$fixture_name" --publish 127.0.0.1::6379 \
-            redis:7-alpine redis-server --save '' --appendonly no
+            redis:7-alpine redis-server --save '' --appendonly no \
+            --maxmemory 512mb --maxmemory-policy noeviction
           echo "SEARCH_ADMISSION_REDIS_CONTAINER=$fixture_name" >> "$GITHUB_ENV"
           fixture_port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "6379/tcp") 0).HostPort}}' "$fixture_name")
           for attempt in $(seq 1 30); do
