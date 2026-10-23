@@ -73,9 +73,17 @@ invoking a compiler. The archive includes helper executables, generated runtime 
 libraries, and expires after one day.
 Compilation uses `/home/runner/work/AppFlowy-CI/AppFlowy-CI` inside Docker to match GitHub's checkout
 path. Consumers verify the source SHA, checkout path and Ubuntu 24.04 AMD64 runtime before use.
-A missing or mismatched archive fails the job.
+Consumers select the exact source-named artifact from the recorded private build, then verify its
+recorded byte count, SHA256 digest when available, ZIP CRC and inner gzip trailer before making it
+available to restore. Interrupted, short or checksum-mismatched downloads get at most three fresh
+attempts of ten minutes each; API authorization, malformed artifacts and source/manifest mismatches
+fail without retries. The token is removed before following signed blob-storage redirects. This
+addresses partial downloads that previously reported success and failed later with gzip EOF; test
+failures are never retried by this handoff. A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
+The configuration job also runs the source-owned AI web-search fixture tests when that test file
+exists; older Cloud revisions remain supported, while present fixture failures fail the job.
 
 The Search, Worker, Shared libraries and Directory self-host contracts lanes start a separate Redis
 on a random loopback port and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,

@@ -72,6 +72,21 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
                 path.write_text("fixture\n")
             return run_step(step, directory)
 
+    def test_ai_fixture_checks_are_optional_for_old_refs_and_enforced_when_present(self):
+        step = next(item for item in self.jobs["cache-observability"]["steps"]
+                    if item.get("name") == "Verify deterministic AI web-search fixture when available")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result, _ = run_step(step, directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            test = directory / "script/ci/test_ai_web_search_fixture.py"
+            test.parent.mkdir(parents=True)
+            test.write_text("import unittest\nclass Fixture(unittest.TestCase):\n"
+                            "    def test_contract(self): self.fail('fixture regression')\n")
+            result, _ = run_step(step, directory)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("fixture regression", result.stderr)
+
     def test_older_cloud_ref_explicitly_disables_absent_suite(self):
         result, outputs = self.detect_suite(())
         self.assertEqual(result.returncode, 0, result.stderr)
