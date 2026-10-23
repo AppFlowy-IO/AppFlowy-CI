@@ -428,21 +428,21 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
                 arguments.read_text().splitlines(),
             )
 
-    def test_timeline_suite_builds_and_verifies_self_hosted_cloud(self):
-        run_scripts = [step.get("run", "") for step in self.cloud["steps"]]
-        timeline_build = next(
-            script for script in run_scripts if "APPFLOWY_CLOUD_BUILD_FEATURES" in script
-        )
-        self.assertIn('matrix.cloud_test_suite', timeline_build)
-        feature_export = next(
-            line.strip() for line in timeline_build.splitlines()
-            if line.strip().startswith("export APPFLOWY_CLOUD_BUILD_FEATURES=")
-        )
-        features = shlex.split(feature_export)[1].split("=", 1)[1].split(",")
-        # Cloud removed disposable-email-domains when registration domain
-        # restrictions became unconditional. Extra obsolete features fail the
-        # release build before any Timeline scenario can run.
-        self.assertEqual(set(features), {"self-host-af", "commercial-ci", "ci-test"})
+    def test_timeline_suite_uses_prebuilt_image_and_verifies_self_hosted_cloud(self):
+        environment = yaml.safe_load(WORKFLOW.read_text())["env"]
+        self.assertEqual(environment["CLOUD_VERSION"], "latest-amd64")
+        self.assertEqual(environment["TIMELINE_CLOUD_IMAGE"],
+                         "${{ inputs.timeline_cloud_image || vars.DESKTOP_TIMELINE_CLOUD_IMAGE || "
+                         "'appflowyinc/appflowy_cloud:latest-amd64' }}")
+        registry = next(step for step in self.cloud["steps"]
+                        if "published registry" in step.get("name", ""))
+        self.assertEqual(registry["env"]["TIMELINE"], "${{ matrix.cloud_test_suite == 'timeline' }}")
+        self.assertEqual(registry["env"]["TIMELINE_IMAGE"],
+                         "${{ env.TIMELINE_CLOUD_IMAGE }}")
+        self.assertIn("desktop_cloud_runtime.py registry", registry["run"])
+        for step in self.cloud["steps"]:
+            self.assertNotIn("APPFLOWY_CLOUD_BUILD_FEATURES", step.get("run", ""))
+            self.assertNotIn("build appflowy_cloud", step.get("run", ""))
 
         verification = next(
             step for step in self.cloud["steps"]

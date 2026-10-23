@@ -24,6 +24,10 @@ on:
         description: "Successful private image build for cloud_source_sha (manual premerge validation)"
         required: false
         type: string
+      timeline_cloud_image:
+        description: "Optional self-hosted image override; defaults to public appflowy_cloud:latest-amd64"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +35,7 @@ env:
   RUST_TOOLCHAIN: "1.92.0"
   CARGO_MAKE_VERSION: "0.37.18"
   CLOUD_VERSION: latest-amd64
+  TIMELINE_CLOUD_IMAGE: ${{ inputs.timeline_cloud_image || vars.DESKTOP_TIMELINE_CLOUD_IMAGE || 'appflowyinc/appflowy_cloud:latest-amd64' }}
   # Speed up crate downloads with sparse registry
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   # Disable incremental compilation in CI (faster clean builds)
@@ -913,8 +918,9 @@ jobs:
           desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           timeline: ${{ matrix.cloud_test_suite == 'timeline' }}
+          timeline-image: ${{ env.TIMELINE_CLOUD_IMAGE }}
 
-      - name: Run Docker-Compose from legacy registry images
+      - name: Run Docker-Compose from published registry images
         if: steps.exact-cloud.outputs.enabled == 'false'
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -922,18 +928,14 @@ jobs:
           APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
           APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+          TIMELINE: ${{ matrix.cloud_test_suite == 'timeline' }}
+          TIMELINE_IMAGE: ${{ env.TIMELINE_CLOUD_IMAGE }}
         run: |
           echo "Pulling and starting containers..."
-          docker compose -f docker-compose-ci.yml pull --quiet
-          if [ "${{ matrix.cloud_test_suite }}" = "timeline" ]; then
-            # Timeline scenarios use a seeded account and exercise creation on
-            # self-hosted Cloud, where it does not require a hosted Pro plan.
-            # Build that deployment from the checked-out server source.
-            export APPFLOWY_CLOUD_BUILD_FEATURES="self-host-af,commercial-ci,ci-test"
-            echo "Building the self-hosted Cloud image for Timeline tests"
-            docker compose -f docker-compose-ci.yml build appflowy_cloud
-          fi
-          docker compose -f docker-compose-ci.yml up -d
+          args=()
+          if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
+          python3 ../.desktop-ci-tools/.github/scripts/desktop_cloud_runtime.py registry \
+            --cloud . --timeline-image "$TIMELINE_IMAGE" "${args[@]}"
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
 

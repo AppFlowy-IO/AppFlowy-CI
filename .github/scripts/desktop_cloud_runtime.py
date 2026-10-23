@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Desktop against one verified Cloud image set without publishing tags.
+"""Run Desktop with published images or an explicitly selected verified image set.
 
 The optional pair is deliberately all-or-nothing. Once supplied, every failed
 provenance check stops the job; a registry image is never a recovery fallback.
@@ -230,7 +230,30 @@ def dependency_services(config, profiles=()):
                                               or active.intersection(value["profiles"])))
 
 
-def start_runtime(cloud, archives, manifest, timeline=False, run=command):
+def require_timeline_image(timeline, image):
+    if timeline and (not image or image.startswith('-') or any(c.isspace() for c in image)):
+        raise ValueError(
+            "Timeline requires a prebuilt self-hosted image. "
+            "Supply timeline_cloud_image or DESKTOP_TIMELINE_CLOUD_IMAGE; "
+            "Desktop CI never builds the server from source."
+        )
+
+
+def start_registry_runtime(cloud, timeline=False, timeline_image="", run=command):
+    require_timeline_image(timeline, timeline_image)
+    compose = ["docker", "compose", "-f", str(cloud / "docker-compose-ci.yml")]
+    if timeline:
+        override = cloud / "desktop-timeline-image.compose.json"
+        write_manifest(override, {"services": {"appflowy_cloud": {"image": timeline_image}}})
+        compose += ["-f", str(override)]
+    # Compose files contain build sections. A missing registry image must fail,
+    # never turn a Desktop test into an implicit server compilation.
+    run(compose + ["pull", "--quiet"], cwd=cloud, capture=False)
+    run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, capture=False)
+
+
+def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, timeline_image=""):
+    require_timeline_image(timeline, timeline_image)
     state = json.loads(manifest.read_text())
     source_sha = state["cloud_source_sha"]
     if run(["git", "rev-parse", "HEAD"], cwd=cloud) != source_sha:
@@ -241,8 +264,6 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
     env = dict(os.environ)
     for service in SERVICES:
         env[f"{service.upper()}_VERSION"] = "latest-amd64"
-    if timeline:
-        env["APPFLOWY_CLOUD_BUILD_FEATURES"] = "self-host-af,commercial-ci,ci-test"
     compose = ["docker", "compose", "-f", str(cloud / "docker-compose-ci.yml")]
     config = json.loads(run(compose + ["config", "--format", "json"], cwd=cloud, env=env))
     dependencies = dependency_services(config, env.get("COMPOSE_PROFILES", "").split(","))
@@ -257,19 +278,16 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
     override = manifest.with_suffix(".compose.json")
     protected = {service: {"pull_policy": "never"} for service in SERVICES}
     if timeline:
-        # Preserve the Timeline lane's commercial self-hosted contract while
-        # building it from exactly the same source as the other three images.
-        protected["appflowy_cloud"]["build"] = {
-            "labels": {"org.opencontainers.image.revision": source_sha},
-        }
+        # The dedicated flavor must already exist and match the exact source.
+        # Pin its local ID after pulling so a tag move cannot change the runtime.
+        run(["docker", "pull", timeline_image], capture=False)
+        pulled = json.loads(run(["docker", "image", "inspect", timeline_image]))[0]
+        verify_image(pulled, source_sha)
+        images["appflowy_cloud"] = pulled["Id"]
+        protected["appflowy_cloud"]["image"] = pulled["Id"]
     write_manifest(override, {"services": protected})
     compose += ["-f", str(override)]
-    if timeline:
-        run(compose + ["build", "appflowy_cloud"], cwd=cloud, env=env, capture=False)
-        built = json.loads(run(["docker", "image", "inspect", image_tag("appflowy_cloud")]))[0]
-        verify_image(built, source_sha)
-        images["appflowy_cloud"] = built["Id"]
-    state.update(stage="images_verified", images=images, timeline_source_build=timeline)
+    state.update(stage="images_verified", images=images, timeline_image=timeline_image if timeline else None)
     write_manifest(manifest, state)
     run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, env=env, capture=False)
     # Verify the images actually attached to the containers, not only local tags.
@@ -287,7 +305,7 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command):
         with open(summary, "a", encoding="utf-8") as handle:
             handle.write(f"Desktop `{state['desktop_source_sha']}` tested against Cloud `{source_sha}` "
                          f"from [image build]({state['image_build_url']}) "
-                         f"attempt {state['image_run_attempt']}. Timeline source build: {timeline}.\n")
+                         f"attempt {state['image_run_attempt']}. Timeline image: {state['timeline_image']}.\n")
 
 
 def main():
@@ -311,6 +329,11 @@ def main():
     start.add_argument("--archives", type=Path, required=True)
     start.add_argument("--manifest", type=Path, required=True)
     start.add_argument("--timeline", action="store_true")
+    start.add_argument("--timeline-image", default="")
+    registry = sub.add_parser("registry")
+    registry.add_argument("--cloud", type=Path, required=True)
+    registry.add_argument("--timeline", action="store_true")
+    registry.add_argument("--timeline-image", default="")
     args = parser.parse_args()
     if args.operation == "pins":
         revision = ""
@@ -332,8 +355,11 @@ def main():
                 state = json.loads(args.manifest.read_text())
                 ids = ",".join(str(value) for value in state["image_artifacts"].values())
                 print(f"artifact-ids={ids}", file=output)
+    elif args.operation == "registry":
+        start_registry_runtime(args.cloud.resolve(), args.timeline, args.timeline_image)
     else:
-        start_runtime(args.cloud.resolve(), args.archives, args.manifest, args.timeline)
+        start_runtime(args.cloud.resolve(), args.archives, args.manifest, args.timeline,
+                      timeline_image=args.timeline_image)
 
 
 if __name__ == "__main__":

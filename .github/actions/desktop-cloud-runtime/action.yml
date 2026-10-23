@@ -20,8 +20,11 @@ inputs:
     description: Existing token with read access to private Client source and Cloud Actions/artifacts.
     required: true
   timeline:
-    description: Build the commercial self-hosted Cloud flavor from the verified source.
+    description: Use a prebuilt self-hosted Cloud image for Timeline tests.
     default: 'false'
+  timeline-image:
+    description: Prebuilt Timeline image matching cloud-source-sha; required for Timeline.
+    default: ''
 outputs:
   enabled:
     description: True only when the exact runtime has passed all provenance checks.
@@ -82,9 +85,11 @@ runs:
       env:
         CLOUD_PATH: ${{ inputs.cloud-path }}
         TIMELINE: ${{ inputs.timeline }}
+        TIMELINE_IMAGE: ${{ inputs.timeline-image }}
       run: |
         args=()
         if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" start \
           --cloud "$CLOUD_PATH" --archives "$RUNNER_TEMP/desktop-cloud-images" \
-          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" "${args[@]}"
+          --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" \
+          --timeline-image "$TIMELINE_IMAGE" "${args[@]}"
