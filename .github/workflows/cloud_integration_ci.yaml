@@ -313,7 +313,9 @@ jobs:
       always() && !cancelled() &&
       needs.image_source.result == 'success' &&
       needs.build_self_hosted.result == 'success'
-    timeout-minutes: 60
+    # SQL execution shares its job budget with a bounded 35-minute artifact transfer.
+    # Retain the 50-minute Run Tests deadline while allowing setup and cleanup to finish.
+    timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     env:
       MINIO_DATA_DIR: /tmp/minio-data
       CLOUD_CACHE_GROUP: ${{ matrix.cache_group || 'root' }}
@@ -446,6 +448,7 @@ jobs:
           # `--skip whitelist` and runs in the Signup whitelist topic.
           - test_service: "appflowy_cloud_sql"
             topic: "SQL persistence"
+            timeout_minutes: 90
             test_modules: >-
               sql_test
               test_pg_pool

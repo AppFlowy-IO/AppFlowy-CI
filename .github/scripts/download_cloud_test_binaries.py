@@ -29,6 +29,10 @@ CHUNK_BYTES = 1024 * 1024
 class TransferFailure(RuntimeError):
     """An incomplete or damaged transfer may succeed with a fresh signed download URL."""
 
+    def __init__(self, message, *, resumable=False):
+        super().__init__(message)
+        self.resumable = resumable
+
 
 class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, url):
@@ -68,37 +72,61 @@ def select_artifact(source_sha, run_id, request=api):
 
 def transfer(url, destination, artifact, token, *, timeout=ATTEMPT_SECONDS):
     """Stream to an unpublished file, bounding each read and the whole transfer."""
+    expected_size = artifact["size_in_bytes"]
+    received = destination.stat().st_size if destination.exists() else 0
+    if received >= expected_size:
+        destination.unlink()
+        received = 0
     request = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "AppFlowy-CI-test-artifact",
     })
+    if received:
+        request.add_header("Range", f"bytes={received}-")
     opener = urllib.request.build_opener(ArtifactRedirect())
     deadline = time.monotonic() + timeout
-    expected_size = artifact["size_in_bytes"]
     digest = hashlib.sha256()
-    received = 0
-    try:
-        with opener.open(request, timeout=min(timeout, 30)) as response, destination.open("wb") as output:
-            while chunk := response.read1(CHUNK_BYTES):
-                received += len(chunk)
-                if received > expected_size:
-                    raise TransferFailure("Downloaded bytes exceed the recorded artifact size")
-                if time.monotonic() >= deadline:
-                    raise TransferFailure("Artifact download exceeded its attempt deadline")
+    if received:
+        with destination.open("rb") as prefix:
+            while chunk := prefix.read(CHUNK_BYTES):
                 digest.update(chunk)
-                output.write(chunk)
+    try:
+        with opener.open(request, timeout=min(timeout, 30)) as response:
+            if response.status == 206:
+                expected_range = f"bytes {received}-{expected_size - 1}/{expected_size}"
+                if not received or response.headers.get("Content-Range") != expected_range:
+                    raise ValueError("Artifact download returned an inconsistent byte range")
+            elif response.status == 200:
+                # Some storage endpoints ignore Range. Never append a full response to a prefix.
+                received = 0
+                digest = hashlib.sha256()
+            else:
+                raise ValueError(f"Artifact download returned unexpected HTTP {response.status}")
+            with destination.open("ab" if received else "wb") as output:
+                while chunk := response.read1(CHUNK_BYTES):
+                    received += len(chunk)
+                    if received > expected_size:
+                        raise TransferFailure("Downloaded bytes exceed the recorded artifact size")
+                    digest.update(chunk)
+                    output.write(chunk)
+                    if received < expected_size and time.monotonic() >= deadline:
+                        raise TransferFailure(
+                            f"Artifact download exceeded its attempt deadline ({received}/{expected_size} bytes)",
+                            resumable=True,
+                        )
     except urllib.error.HTTPError as error:
         # Throttling and server failures can succeed on a fresh request.
         if error.code in (408, 429) or error.code >= 500:
-            raise TransferFailure(f"Artifact download HTTP {error.code}") from None
+            raise TransferFailure(f"Artifact download HTTP {error.code}", resumable=True) from None
         raise ValueError(f"Artifact download HTTP {error.code}; verify artifact access") from None
     except (urllib.error.URLError, http.client.HTTPException, socket.timeout, ConnectionError):
         # Do not include signed URLs, request headers or access tokens in diagnostics.
-        raise TransferFailure("Artifact download was interrupted") from None
+        raise TransferFailure("Artifact download was interrupted", resumable=True) from None
     if received != expected_size:
-        raise TransferFailure(f"Incomplete artifact: received {received} of {expected_size} bytes")
+        raise TransferFailure(f"Incomplete artifact: received {received} of {expected_size} bytes",
+                              resumable=True)
     actual = "sha256:" + digest.hexdigest()
     if artifact.get("digest") and actual != artifact["digest"]:
         raise TransferFailure("Artifact SHA256 differs from GitHub's recorded digest")
@@ -134,7 +162,10 @@ def download_artifact(artifact, destination, token, *, attempts=ATTEMPTS,
                 transfer(url, downloaded, artifact, token, timeout=timeout)
                 break
             except TransferFailure as error:
-                downloaded.unlink(missing_ok=True)
+                # The immutable artifact ID and final digest still fence the complete payload.
+                # Keep an interrupted prefix so a slow 3 GiB transfer can progress across attempts.
+                if not error.resumable:
+                    downloaded.unlink(missing_ok=True)
                 print(f"Artifact download attempt {attempt}/{attempts} failed: {error}", flush=True)
                 if attempt == attempts:
                     raise TransferFailure("Cloud test artifact download exhausted its attempts") from None

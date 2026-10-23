@@ -136,6 +136,41 @@ class DownloadTest(unittest.TestCase):
         self.assertTrue((self.workspace / "target/fixture").exists())
         self.assert_scratch_removed()
 
+    def test_interrupted_transfer_resumes_verified_artifact_without_restarting(self):
+        requests = []
+        payload = self.zipped
+        part_size = len(payload) // 3 + 1
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested = self.headers.get("Range")
+                requests.append(requested)
+                offset = int(requested.removeprefix("bytes=").removesuffix("-")) if requested else 0
+                self.send_response(206 if offset else 200)
+                self.send_header("Content-Length", str(len(payload) - offset))
+                if offset:
+                    self.send_header("Content-Range", f"bytes {offset}-{len(payload)-1}/{len(payload)}")
+                self.end_headers()
+                self.wfile.write(payload[offset:offset + part_size])
+                self.wfile.flush()
+                self.close_connection = True
+
+            def log_message(self, *_arguments):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.fetch(f"http://127.0.0.1:{server.server_port}/artifact")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(requests, [None, f"bytes={part_size}-", f"bytes={part_size * 2}-"])
+        self.assertEqual(self.destination.read_bytes(), self.payload)
+        self.assert_scratch_removed()
+
     def test_permanent_truncation_exhausts_three_attempts_without_publishing(self):
         with endpoint([(self.zipped[:500], len(self.zipped), 200)]) as (url, _requests, blobs):
             with self.assertRaisesRegex(download.TransferFailure, "exhausted"):
@@ -178,6 +213,15 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual(len(blobs), 1)
         self.assertFalse(self.destination.exists())
         self.assert_scratch_removed()
+
+    def test_resume_rejects_a_partial_response_without_the_expected_range(self):
+        partial = self.root / "partial.zip"
+        partial.write_bytes(self.zipped[:500])
+        with endpoint([(self.zipped[500:], len(self.zipped) - 500, 206)]) as (url, _, _):
+            with self.assertRaisesRegex(ValueError, "inconsistent byte range"):
+                download.transfer(url, partial, self.artifact, TOKEN)
+        self.assertEqual(partial.read_bytes(), self.zipped[:500])
+        self.assertFalse(self.destination.exists())
 
     def test_server_failure_is_retried(self):
         with endpoint([(b"busy", 4, 503),

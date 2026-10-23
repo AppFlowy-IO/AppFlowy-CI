@@ -48,6 +48,12 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
   def lane(self, service):
     return next(lane for lane in self.lanes if lane["test_service"] == service)
 
+  def test_sql_job_budget_includes_artifact_transfer_without_relaxing_test_deadline(self):
+    self.assertEqual(self.job["timeout-minutes"], "${{ matrix.timeout_minutes || 60 }}")
+    self.assertEqual(self.lane("appflowy_cloud_sql")["timeout_minutes"], 90)
+    run_tests = next(step for step in self.job["steps"] if step.get("name") == "Run Tests")
+    self.assertEqual(run_tests["timeout-minutes"], 50)
+
   def test_auth_is_one_serial_topic_with_both_profiles(self):
     auth = self.lane("appflowy_cloud_auth")
     self.assertEqual(auth["topic"], "Auth")
@@ -275,7 +281,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertTrue(self_host["cache_writer"])
     self.assertEqual(self_host["test_modules"], "")
     self.assertEqual(self.job["runs-on"], "ubuntu-24.04")
-    self.assertEqual(self.job["timeout-minutes"], 60)
+    self.assertEqual(self.job["timeout-minutes"], "${{ matrix.timeout_minutes || 60 }}")
+    self.assertNotIn("timeout_minutes", self.lane("appflowy_cloud_directory_self_host"))
     self.assertEqual(self.job["strategy"]["max-parallel"], 15)
     steps = self.job["steps"]
     self.assertEqual(next(step for step in steps if step.get("name") == "Run Tests")["timeout-minutes"], 50)
