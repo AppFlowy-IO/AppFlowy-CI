@@ -406,6 +406,13 @@ class SharedBuildWorkflowTest(unittest.TestCase):
             cargo = root / "cargo"
             cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             cargo.chmod(0o755)
+            docker = root / "docker"
+            docker.write_text(
+                '#!/bin/sh\n'
+                'test "$*" = "compose -f docker-compose-ci.yml exec -T ai printenv APPFLOWY_GOTRUE_JWT_SECRET" || exit 1\n'
+                'printf "%s" "ai-container-test-secret"\n'
+            )
+            docker.chmod(0o755)
             for lane in lanes:
                 with self.subTest(service=lane["test_service"]):
                     script = step("test", "Run Tests")["run"]

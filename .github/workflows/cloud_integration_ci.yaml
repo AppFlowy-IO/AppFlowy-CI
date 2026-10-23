@@ -1084,6 +1084,13 @@ jobs:
             if [[ "${AI_IMAGE_FROM_SOURCE:-false}" != true ]]; then
               echo "==> The AI image was not built from this Cloud source; skipping the appflowy-ai package tests"
             else
+              # Compose maps GOTRUE_JWT_SECRET into the AI container, but Cargo runs on
+              # the host. Use that container's actual secret for authenticated admin tests.
+              if ! ai_jwt_secret="$(docker compose -f docker-compose-ci.yml exec -T ai printenv APPFLOWY_GOTRUE_JWT_SECRET)" ||
+                 [[ -z "${ai_jwt_secret//[[:space:]]/}" ]]; then
+                echo "::error::Could not read a nonempty AI container JWT secret for the AI package tests"
+                exit 1
+              fi
               # Commercial license tests need the self-host-af build; the standalone AI CI
               # skipped them in this stack too.
               ai_skips=(--skip stress_test --skip commercial_test)
@@ -1098,7 +1105,8 @@ jobs:
                 ai_skips+=(--skip completion_test::no_context_test)
               fi
               echo "==> Testing appflowy-ai package"
-              OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
+              APPFLOWY_GOTRUE_JWT_SECRET="$ai_jwt_secret" OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" \
+                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
                 cargo test --locked -p appflowy-ai -- "${ai_skips[@]}" --test-threads=1
             fi
           fi

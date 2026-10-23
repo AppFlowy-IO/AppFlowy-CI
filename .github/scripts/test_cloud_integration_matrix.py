@@ -323,15 +323,33 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     def execute(extra_env):
       with tempfile.TemporaryDirectory() as directory:
         calls = Path(directory) / "cargo-calls"
-        fake_cargo = (
-          'cargo() { printf "%s\\t" "$@" >> "$CARGO_CALLS"; '
-          'printf "\\n" >> "$CARGO_CALLS"; }\n' + run
-        )
+        docker_calls = Path(directory) / "docker-calls"
+        package_secret = Path(directory) / "package-secret"
+        fake_cargo = r'''
+          cargo() {
+            printf '%s\t' "$@" >> "$CARGO_CALLS"
+            printf '\n' >> "$CARGO_CALLS"
+            if [[ " $* " == *" -p appflowy-ai "* ]]; then
+              printf '%s' "${APPFLOWY_GOTRUE_JWT_SECRET:-}" > "$PACKAGE_SECRET"
+              return "${MOCK_AI_EXIT:-0}"
+            fi
+          }
+          docker() {
+            printf '%s\t' "$@" >> "$DOCKER_CALLS"
+            printf '\n' >> "$DOCKER_CALLS"
+            printf '%s' "$MOCK_AI_JWT_SECRET"
+            return "${MOCK_DOCKER_EXIT:-0}"
+          }
+        ''' + run
         result = subprocess.run(
           ["bash", "-e", "-o", "pipefail", "-c", fake_cargo],
           env={
             **os.environ,
             "CARGO_CALLS": str(calls),
+            "DOCKER_CALLS": str(docker_calls),
+            "PACKAGE_SECRET": str(package_secret),
+            "MOCK_AI_JWT_SECRET": "ai-container-test-secret",
+            "APPFLOWY_GOTRUE_JWT_SECRET": "stale-host-test-secret",
             "CLOUD_RUN_ROOT": "false",
             "RUN_SEARCH_PACKAGE": "false",
             "RUN_AI_PACKAGE": "true",
@@ -344,17 +362,22 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           check=False,
         )
         commands = calls.read_text().splitlines() if calls.exists() else []
-        return result, commands
+        container_commands = docker_calls.read_text().splitlines() if docker_calls.exists() else []
+        secret = package_secret.read_text() if package_secret.exists() else None
+        self.assertNotIn("ai-container-test-secret", result.stdout + result.stderr)
+        return result, commands, container_commands, secret
 
     modules = ai["test_modules"].split()
     # No AI archive from the Cloud image build: the root modules run, the package does not.
-    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "false"})
+    result, commands, container_commands, secret = execute({"AI_IMAGE_FROM_SOURCE": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), len(modules))
     self.assertFalse(any("-p\tappflowy-ai\t" in command for command in commands))
+    self.assertEqual(container_commands, [])
+    self.assertIsNone(secret)
     self.assertIn("was not built from this Cloud source", result.stdout)
     # Partial provider credentials: OpenAI and Anthropic models only, Gemini cases skipped.
-    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
+    result, commands, container_commands, secret = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), len(modules) + 1)
     package = commands[-1]
@@ -363,12 +386,30 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn("--skip\tcompletion_test::no_context_test\t", package)
     self.assertTrue(package.endswith("--test-threads=1\t"))
     self.assertIn("::warning::", result.stdout)
+    self.assertEqual(container_commands, [
+      "compose\t-f\tdocker-compose-ci.yml\texec\t-T\tai\tprintenv\tAPPFLOWY_GOTRUE_JWT_SECRET\t"
+    ])
+    self.assertEqual(secret, "ai-container-test-secret")
     # Every provider configured: the whole package runs after the root modules.
-    result, commands = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
+    result, commands, _, secret = execute({"AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "true"})
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), len(modules) + 1)
     self.assertNotIn("completion_test::no_context_test", commands[-1])
     self.assertNotIn("::warning::", result.stdout)
+    self.assertEqual(secret, "ai-container-test-secret")
+    # A missing/blank secret or failed container read must stop before package execution.
+    for extra in ({"MOCK_AI_JWT_SECRET": ""}, {"MOCK_AI_JWT_SECRET": " \t\n"},
+                  {"MOCK_DOCKER_EXIT": "1"}):
+      with self.subTest(extra=extra):
+        result, commands, _, secret = execute({"AI_IMAGE_FROM_SOURCE": "true", **extra})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(commands), len(modules))
+        self.assertIsNone(secret)
+        self.assertIn("AI container JWT secret", result.stdout + result.stderr)
+    result, commands, _, secret = execute({"AI_IMAGE_FROM_SOURCE": "true", "MOCK_AI_EXIT": "101"})
+    self.assertEqual(result.returncode, 101)
+    self.assertEqual(len(commands), len(modules) + 1)
+    self.assertEqual(secret, "ai-container-test-secret")
 
   def test_search_admission_has_redis_without_application_consumers(self):
     steps = self.job["steps"]
