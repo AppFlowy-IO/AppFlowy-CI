@@ -879,6 +879,32 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
           df -h
 
+      - name: Configure deterministic AI web-search proof when available
+        if: matrix.test_package_ai == true
+        run: |
+          python3 -B - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import subprocess
+          from urllib.parse import urlsplit
+
+          fixture = Path("script/ci/ai_web_search_fixture.py")
+          if fixture.is_file():
+              result = subprocess.check_output(
+                  ["python3", "-B", str(fixture), "--print-test-source-url"], text=True,
+                  timeout=10,
+              )
+              lines = result.splitlines()
+              if len(lines) != 1 or any(ord(char) <= 32 for char in lines[0]):
+                  raise ValueError("AI web-search fixture must print exactly one HTTPS URL")
+              url = lines[0]
+              parsed = urlsplit(url)
+              if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                  raise ValueError("AI web-search fixture must print an HTTPS URL without credentials")
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+                  print(f"APPFLOWY_TEST_WEB_SEARCH_SOURCE_URL={url}", file=output)
+          PYTHON
+
       - name: Run Tests
         timeout-minutes: 50
         env:
