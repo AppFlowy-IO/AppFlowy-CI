@@ -19,7 +19,9 @@ def configure_apt(apt_root: Path) -> int:
     # Keep suites, components, signatures and third-party repositories intact.
     # The Azure mirror stalled for 42–59 minutes in run 39783354102; use
     # Ubuntu's primary archive instead of retrying that mirror for every .deb.
-    sources = [apt_root / "sources.list"]
+    # GitHub runner sources use mirror+file:/etc/apt/apt-mirrors.txt. Rewriting
+    # only .list/.sources files leaves its preferred Azure mirror unchanged.
+    sources = [apt_root / "sources.list", apt_root / "apt-mirrors.txt"]
     for extension in ("*.list", "*.sources"):
         sources.extend(sorted((apt_root / "sources.list.d").glob(extension)))
 

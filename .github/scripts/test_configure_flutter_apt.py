@@ -10,6 +10,50 @@ from configure_flutter_apt import configure_apt
 
 
 class FlutterAptConfigurationTest(unittest.TestCase):
+    def test_runner_mirrorlist_uses_primary_archive_without_changing_sources(self):
+        # GitHub's Ubuntu images select mirrors through this file, rather than
+        # embedding the Azure archive URL in sources.list or ubuntu.sources.
+        mirrorlist = (
+            "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+            "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+            "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+        )
+        source_layouts = {
+            "sources.list": (
+                "deb mirror+file:/etc/apt/apt-mirrors.txt noble main universe\n"
+                "deb mirror+file:/etc/apt/apt-mirrors.txt noble-security main\n"
+            ),
+            "sources.list.d/ubuntu.sources": (
+                "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\n"
+                "Suites: noble noble-updates noble-backports noble-security\n"
+                "Components: main universe restricted multiverse\n"
+                "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+            ),
+        }
+        for source_name, contents in source_layouts.items():
+            with self.subTest(source_name=source_name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / source_name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(contents)
+                mirrors = root / "apt-mirrors.txt"
+                mirrors.write_text(mirrorlist)
+                backup = root / "apt-mirrors.txt.bak"
+                backup.write_text(mirrorlist)
+
+                self.assertEqual(configure_apt(root), 1)
+
+                self.assertEqual(source.read_text(), contents)
+                self.assertEqual(
+                    mirrors.read_text(),
+                    mirrorlist.replace(
+                        "http://azure.archive.ubuntu.com/",
+                        "https://archive.ubuntu.com/",
+                    ),
+                )
+                self.assertEqual(backup.read_text(), mirrorlist)
+                self.assertEqual(configure_apt(root), 0)
+
     def test_legacy_and_deb822_sources_preserve_security_and_vendor_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
