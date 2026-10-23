@@ -83,7 +83,9 @@ failures are never retried by this handoff. A missing or mismatched archive fail
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 The configuration job also runs the source-owned AI web-search fixture tests when that test file
-exists; older Cloud revisions remain supported, while present fixture failures fail the job.
+exists; older Cloud revisions remain supported, while present fixture failures fail the job. The
+AI lane reads the fixture's opaque source URL and passes it to the strict citation assertions, so
+an answer containing a guessed public URL cannot stand in for a successful tool response.
 
 The Search, Worker, Shared libraries and Directory self-host contracts lanes start a separate Redis
 on a random loopback port and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,

@@ -379,6 +379,35 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         self.assertEqual(step("test", "Restore and verify shared Cloud test binaries")["if"],
                          download["if"])
 
+    def test_ai_fixture_source_proof_is_optional_and_requires_one_https_url(self):
+        config = step("test", "Configure deterministic AI web-search proof when available")
+        self.assertEqual(config["if"], "matrix.test_package_ai == true")
+        self.assertLess(WORKFLOW["jobs"]["test"]["steps"].index(config),
+                        WORKFLOW["jobs"]["test"]["steps"].index(step("test", "Run Tests")))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "github-env"
+            environment = {"PATH": os.environ["PATH"], "GITHUB_ENV": str(output)}
+            def invoke():
+                return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", config["run"]],
+                                      cwd=root, env=environment, capture_output=True, text=True)
+            self.assertEqual(invoke().returncode, 0)
+            self.assertFalse(output.exists())
+            fixture = root / "script/ci/ai_web_search_fixture.py"
+            fixture.parent.mkdir(parents=True)
+            url = "https://example.test/source?proof=opaque"
+            fixture.write_text(f"print({url!r})\n")
+            result = invoke()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), f"APPFLOWY_TEST_WEB_SEARCH_SOURCE_URL={url}\n")
+            output.unlink()
+            for invalid in ("http://example.test", "https://example.test\nINJECTED=1",
+                            "https://user:password@example.test", "https://example.test/a b"):
+                with self.subTest(invalid=invalid):
+                    fixture.write_text(f"print({invalid!r})\n")
+                    self.assertNotEqual(invoke().returncode, 0)
+                    self.assertFalse(output.exists())
+
     def test_cross_build_rejects_host_architecture_executables(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "binary"
