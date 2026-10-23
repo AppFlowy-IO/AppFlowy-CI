@@ -75,12 +75,16 @@ Compilation uses `/home/runner/work/AppFlowy-CI/AppFlowy-CI` inside Docker to ma
 path. Consumers verify the source SHA, checkout path and Ubuntu 24.04 AMD64 runtime before use.
 Consumers select the exact source-named artifact from the recorded private build, then verify its
 recorded byte count, SHA256 digest when available, ZIP CRC and inner gzip trailer before making it
-available to restore. Interrupted, short or checksum-mismatched downloads get at most three fresh
-attempts of ten minutes each; API authorization, malformed artifacts and source/manifest mismatches
-fail without retries. The token is removed before following signed blob-storage redirects. This
+available to restore. Downloads get at most three attempts of ten minutes each. Interrupted or
+slow transfers resume their unpublished prefix using a fresh signed URL and a validated HTTP byte
+range; checksum mismatches restart from zero. Servers that ignore Range also restart from zero.
+API authorization, malformed artifacts and source/manifest mismatches fail without retries.
+The token is removed before following signed blob-storage redirects. This
 addresses partial downloads that previously reported success and failed later with gzip EOF; test
 failures are never retried by this handoff. A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
+The SQL persistence topic has a 90-minute job budget for artifact transfer, setup and cleanup;
+its test execution still has the same 50-minute deadline as the other topics.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 The configuration job also runs the source-owned AI web-search fixture tests when that test file
 exists; older Cloud revisions remain supported, while present fixture failures fail the job. The
