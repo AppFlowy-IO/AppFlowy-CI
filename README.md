@@ -125,6 +125,13 @@ The standalone topic discovers every non-`main` Cargo test target, and the cover
 new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
 room for workflow setup, coverage and cache-contract jobs.
 
+The AI package runs on the host against the AI container built from the same Cloud source.
+Before that package runs, CI reads `APPFLOWY_GOTRUE_JWT_SECRET` from the running `ai` container
+and passes it only to the package test process. Compose derives it from `GOTRUE_JWT_SECRET`;
+the host's `.env` does not contain the service-side name. A failed read or blank secret stops
+the lane before admin tests run. The secret is not printed, and older Cloud sources without
+an AI image continue to skip the package without reading container configuration.
+
 **Backup** is an additional integration topic with a dedicated private deployment. After the
 shared image/test-binary build finishes, the public `Integration Tests (Backup)` job dispatches
 Cloud Premium's existing `backup-release-tests.yml` with `suite=ci`, the immutable source SHA,
