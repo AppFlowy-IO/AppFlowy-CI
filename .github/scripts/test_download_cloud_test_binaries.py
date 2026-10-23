@@ -200,7 +200,9 @@ class DownloadTest(unittest.TestCase):
 
     def test_attempt_deadline_is_checked_during_a_real_response(self):
         with endpoint([(self.zipped, len(self.zipped), 200)]) as (url, _requests, blobs):
-            with patch.object(download.time, "monotonic", side_effect=[0, 11]), \
+            # Force an intermediate read even when localhost delivers the full body at once.
+            with patch.object(download, "CHUNK_BYTES", 1024), \
+                    patch.object(download.time, "monotonic", side_effect=[0, 11]), \
                     self.assertRaisesRegex(download.TransferFailure, "deadline"):
                 download.transfer(url, self.root / "deadline.zip", self.artifact, TOKEN, timeout=10)
         self.assertEqual(len(blobs), 1)
