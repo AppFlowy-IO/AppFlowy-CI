@@ -67,6 +67,33 @@ def native_run(run_id, *, pr=90, workflow="workflow_checks.yaml", **kwargs):
     return result
 
 
+def merged_native_fixture():
+    # Minimal fields captured from run 39962255688 and commit-to-PR lookup
+    # after PR #90 merged. GitHub had removed run.pull_requests by then.
+    repo = {
+        "id": 992973801,
+        "full_name": "AppFlowy-IO/AppFlowy-CI",
+        "url": "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI",
+    }
+    head_sha = "20ff58d2be365063e91aa070ef1d4b443c7d0187"
+    head_ref = "codex/fix-flutter-apt-mirrorlist-20261023"
+    candidate = {
+        "id": 39962255688, "run_attempt": 1, "status": "queued",
+        "event": "pull_request", "path": ".github/workflows/ios_ci.yaml",
+        "display_title": "iOS-CI", "pull_requests": [],
+        "head_sha": head_sha, "head_branch": head_ref,
+        "head_repository": copy.deepcopy(repo),
+    }
+    pr = {
+        "number": 90,
+        "url": f"{repo['url']}/pulls/90",
+        "state": "closed", "merged_at": "2026-10-23T15:52:52Z",
+        "base": {"repo": copy.deepcopy(repo)},
+        "head": {"sha": head_sha, "ref": head_ref, "repo": copy.deepcopy(repo)},
+    }
+    return candidate, pr
+
+
 class FakeGitHub:
     def __init__(self):
         self.runs = {lifecycle.CI_REPO: [], lifecycle.CLOUD_REPO: []}
@@ -75,6 +102,7 @@ class FakeGitHub:
         self.calls = []
         self.failed_cancels = {}
         self.current = {}
+        self.commit_prs = {}
 
     def request(self, method, path):
         self.calls.append((method, path))
@@ -89,6 +117,8 @@ class FakeGitHub:
         if parts[3] == "pulls":
             value = self.prs[(repo, int(parts[4]))]
             return copy.deepcopy(value) if isinstance(value, dict) else {"state": value}
+        if parts[3] == "commits":
+            return copy.deepcopy(self.commit_prs[(repo, parts[4])])
         if "/attempts/" in path:
             return copy.deepcopy(self.parents[(int(parts[5]), int(parts[7]))])
         if not query:
@@ -468,6 +498,164 @@ class CleanupTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lifecycle.pr_is_merged(source, number, self.api.request)
         self.assertEqual(self.api.calls, [])
+
+
+class NativeCommitFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeGitHub()
+        self.run, self.pr = merged_native_fixture()
+        self.api.runs[lifecycle.CI_REPO] = [self.run]
+        self.api.commit_prs[(lifecycle.CI_REPO, self.run["head_sha"])] = [self.pr]
+        self.api.prs[(lifecycle.CI_REPO, 90)] = {**self.pr, "merged": True}
+
+    def cleanup(self, apply=True, request=None):
+        with redirect_stdout(io.StringIO()):
+            return lifecycle.cleanup(request or self.api.request, apply=apply)
+
+    def test_actual_post_merge_run_uses_exact_commit_and_rechecks_before_cancel(self):
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, self.run["id"])])
+        lookups = [path for method, path in self.api.calls if "/commits/" in path]
+        self.assertEqual(len(lookups), 2)
+        self.assertTrue(all(
+            path.startswith(f"repos/{lifecycle.CI_REPO}/commits/{self.run['head_sha']}/pulls?")
+            for path in lookups
+        ))
+        self.assertIn(("GET", f"repos/{lifecycle.CI_REPO}/pulls/90"), self.api.calls)
+        self.assertEqual(self.api.cancellations, [
+            f"repos/{lifecycle.CI_REPO}/actions/runs/{self.run['id']}/cancel",
+        ])
+
+    def test_fallback_dry_run_permits_only_get_requests(self):
+        def read_only(method, path):
+            self.assertEqual(method, "GET", "A dry run must never reach a write API")
+            return self.api.request(method, path)
+
+        self.assertEqual(self.cleanup(apply=False, request=read_only), [
+            (lifecycle.CI_REPO, self.run["id"]),
+        ])
+        self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_is_only_for_native_empty_associations_and_valid_run_identity(self):
+        cases = []
+        for event in ("push", "workflow_dispatch", "repository_dispatch", "pull_request_target"):
+            cases.append({"event": event})
+        for value in (None, {}, "[]", [None], native_run(1)["pull_requests"] * 2):
+            cases.append({"pull_requests": value})
+        for value in (None, "main", "a" * 39, "A" * 40, "a" * 40 + "\n", "../../pulls/90"):
+            cases.append({"head_sha": value})
+        for value in (None, "", 123):
+            cases.append({"head_branch": value})
+        for value in (None, {}, {**self.run["head_repository"], "id": True},
+                      {**self.run["head_repository"], "url": "https://evil.example/repo"},
+                      {**self.run["head_repository"], "full_name": "owner/repo/extra"}):
+            cases.append({"head_repository": value})
+        foreign = copy.deepcopy(native_run(1)["pull_requests"])
+        foreign[0]["base"]["repo"]["url"] = "https://api.github.com/repos/other/repo"
+        cases.append({"pull_requests": foreign})
+        for change in cases:
+            with self.subTest(change=change):
+                self.api.calls.clear()
+                self.api.runs[lifecycle.CI_REPO] = [{**self.run, **change}]
+                self.assertEqual(self.cleanup(), [])
+                self.assertFalse(any("/commits/" in path for _, path in self.api.calls))
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_rejects_missing_ambiguous_and_mismatched_candidates(self):
+        other = copy.deepcopy(self.pr)
+        other.update(number=91, url=self.pr["url"].replace("/90", "/91"),
+                     state="open", merged_at=None)
+        cases = [None, {}, [], [None], [self.pr, self.pr], [self.pr, other], [other, self.pr]]
+        for path, value in (
+            (("number",), True), (("number",), 0),
+            (("url",), "https://api.github.com/repos/other/repo/pulls/90"),
+            (("url",), self.pr["url"] + "?other=1"),
+            (("base", "repo", "url"), "https://api.github.com/repos/other/repo"),
+            (("head",), None), (("head", "sha"), "b" * 40),
+            (("head", "ref"), "other-branch"), (("head", "repo"), None),
+            (("head", "repo", "id"), 123),
+            (("head", "repo", "url"), "https://api.github.com/repos/other/repo"),
+            (("head", "repo", "full_name"), "other/repo"),
+        ):
+            candidate = copy.deepcopy(self.pr)
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            cases.append([candidate])
+        for candidates in cases:
+            with self.subTest(candidates=candidates):
+                self.api.calls.clear()
+                self.api.commit_prs[(lifecycle.CI_REPO, self.run["head_sha"])] = candidates
+                self.assertEqual(self.cleanup(), [])
+                self.assertNotIn(("GET", f"repos/{lifecycle.CI_REPO}/pulls/90"), self.api.calls)
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_requires_fresh_merged_status_not_commit_list_status(self):
+        for response in ({"state": "open", "merged": False},
+                         {"state": "closed", "merged": False, "merged_at": None}):
+            with self.subTest(response=response):
+                self.api.calls.clear()
+                self.api.prs[(lifecycle.CI_REPO, 90)] = response
+                self.assertEqual(self.cleanup(), [])
+                self.assertIn(("GET", f"repos/{lifecycle.CI_REPO}/pulls/90"), self.api.calls)
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_rechecks_attempt_event_head_and_associations_before_post(self):
+        for change in (
+            {"run_attempt": 2}, {"status": "completed"}, {"event": "push"},
+            {"head_sha": "b" * 40}, {"head_branch": "another-pr"},
+            {"head_repository": {**self.run["head_repository"], "id": 123}},
+            {"pull_requests": native_run(1, pr=91)["pull_requests"]},
+        ):
+            with self.subTest(change=change):
+                self.api.calls.clear()
+                self.api.current[self.run["id"]] = {**self.run, **change}
+                self.assertEqual(self.cleanup(), [])
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_commit_association_is_refetched_before_post(self):
+        commit_reads = 0
+
+        def changed_association(method, path):
+            nonlocal commit_reads
+            if "/commits/" in path:
+                commit_reads += 1
+                if commit_reads == 2:
+                    self.api.calls.append((method, path))
+                    return []
+            return self.api.request(method, path)
+
+        self.assertEqual(self.cleanup(request=changed_association), [])
+        self.assertEqual(commit_reads, 2)
+        self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_api_failures_stay_visible_without_cancelling_the_native_run(self):
+        for failure_read in (1, 2):
+            with self.subTest(failure_read=failure_read):
+                self.api.calls.clear()
+                reads = 0
+
+                def failed_lookup(method, path):
+                    nonlocal reads
+                    if "/commits/" in path:
+                        reads += 1
+                        if reads == failure_read:
+                            self.api.calls.append((method, path))
+                            raise lifecycle.ApiError("commit association unavailable")
+                    return self.api.request(method, path)
+
+                with self.assertRaisesRegex(RuntimeError, "commit association unavailable"):
+                    self.cleanup(request=failed_lookup)
+                self.assertEqual(self.api.cancellations, [])
+
+    def test_fallback_native_cancellation_does_not_authorize_private_images(self):
+        self.run["path"] = f".github/workflows/{lifecycle.INTEGRATION_WORKFLOW}"
+        self.api.parents[(self.run["id"], 1)] = {
+            **self.run, "status": "completed", "conclusion": "cancelled",
+        }
+        self.api.runs[lifecycle.CLOUD_REPO] = [image(10, self.run["id"])]
+        self.assertEqual(self.cleanup(), [(lifecycle.CI_REPO, self.run["id"])])
+        self.assertFalse(any(lifecycle.CLOUD_REPO in path for path in self.api.cancellations))
 
 
 class LegacyDispatcherTests(unittest.TestCase):
