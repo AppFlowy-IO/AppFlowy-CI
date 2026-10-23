@@ -73,6 +73,20 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - name: Configure Ubuntu package downloads
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+
       - name: Select desktop test runners from the tested revision
         id: desktop-test-runners
         shell: bash
@@ -178,6 +192,8 @@ jobs:
           tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
 
       - name: Install prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
         working-directory: frontend
         shell: bash
         run: |
@@ -597,6 +613,20 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - name: Configure Ubuntu package downloads
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+
       - name: Install Rust toolchain
         id: rust_toolchain
         uses: actions-rs/toolchain@v1
@@ -626,6 +656,8 @@ jobs:
           tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
 
       - name: Install prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
         working-directory: frontend
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
@@ -783,6 +815,12 @@ jobs:
           ref: ${{ github.sha }}
           path: .desktop-ci-tools
           persist-credentials: false
+
+      - name: Configure Ubuntu package downloads
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
 
       - name: Checkout AppFlowy-Cloud-Premium code
         uses: actions/checkout@v4
@@ -978,6 +1016,8 @@ jobs:
           tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
 
       - name: Install prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
         working-directory: frontend
         shell: bash
         run: |
@@ -1132,6 +1172,20 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - name: Configure Ubuntu package downloads
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+
       - name: Install Rust toolchain
         id: rust_toolchain
         uses: actions-rs/toolchain@v1
@@ -1154,6 +1208,8 @@ jobs:
           tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
 
       - name: Install prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
         working-directory: frontend
         run: |
           sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub

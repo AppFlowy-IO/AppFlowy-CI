@@ -4,6 +4,16 @@ Desktop can optionally test direct shared-crate server pins against an exact
 private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
 for input provenance, legacy behavior and CI-branch validation before receiver activation.
 
+Flutter's Linux jobs configure APT from the same CI revision as the workflow.
+Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent
+42–59 minutes downloading prerequisites; recent successful test steps took
+17–31 minutes. The disposable runners now use Ubuntu's primary archive for
+those mirror entries, with one retry and 20-second HTTP/HTTPS inactivity limits.
+Prerequisite installation has a separate 10-minute deadline. The test matrix,
+45-minute test limits, package signatures, and repository suites stay intact.
+The configuration script refuses to run outside a GitHub Linux runner; its
+local tests use temporary files without root or network access.
+
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
 run on GitHub runners; the Backup topic uses the private isolated VM for restore qualification.

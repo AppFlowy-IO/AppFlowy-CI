@@ -30,6 +30,28 @@ SPLIT_SUITES = [
 LEGACY_SUITES = ["core_workspace", "sidebar", "database", "document"]
 
 
+class FlutterPrerequisitesWorkflowTest(unittest.TestCase):
+    def test_linux_jobs_configure_bounded_downloads_from_the_workflow_revision(self):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        for name in ("prepare-linux", "unit_test", "cloud_integration_test", "integration_test"):
+            with self.subTest(job=name):
+                steps = jobs[name]["steps"]
+                checkout = next(step for step in steps if step.get("name") == "Check out the exact CI runtime tools")
+                configure = next(step for step in steps if step.get("name") == "Configure Ubuntu package downloads")
+                install = next(step for step in steps if step.get("name") == "Install prerequisites")
+                self.assertEqual(checkout["with"]["repository"], "AppFlowy-IO/AppFlowy-CI")
+                self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+                self.assertFalse(checkout["with"]["persist-credentials"])
+                self.assertEqual(configure["if"], "runner.os == 'Linux'")
+                self.assertIn(
+                    checkout["with"]["path"] + "/.github/scripts/configure_flutter_apt.py",
+                    configure["run"],
+                )
+                self.assertLess(steps.index(checkout), steps.index(configure))
+                self.assertLess(steps.index(configure), steps.index(install))
+                self.assertEqual(install["timeout-minutes"], 10)
+
+
 class DesktopRunnerWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
