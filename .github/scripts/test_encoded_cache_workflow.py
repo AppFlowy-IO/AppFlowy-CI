@@ -17,6 +17,8 @@ SUITE_FILES = (
     "script/test_encoded_cache_dashboard.py",
     "script/test_encoded_cache_compose.py",
 )
+PHASE_MANIFEST = "script/cache_test_phases.json"
+SUPPORTED_PHASES = {"schema_version": 1, "phases": ["cache", "permission"]}
 CACHE_JOBS = ("cache-contracts", "cache-observability")
 REPORTED_JOBS = (
     "image_source",
@@ -62,7 +64,7 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         cls.workflow = yaml.safe_load(WORKFLOW.read_text())
         cls.jobs = cls.workflow["jobs"]
 
-    def detect_suite(self, files):
+    def detect_suite(self, files, manifest=None):
         step = step_by_id(self.jobs["verify_test_module_coverage"], "encoded_cache")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -70,6 +72,10 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
                 path = directory / file
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("fixture\n")
+            if manifest is not None:
+                path = directory / PHASE_MANIFEST
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(manifest)
             return run_step(step, directory)
 
     def test_ai_fixture_checks_are_optional_for_old_refs_and_enforced_when_present(self):
@@ -91,11 +97,48 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         result, outputs = self.detect_suite(())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(outputs.get("enabled"), "false")
+        self.assertEqual(json.loads(outputs["phases"]), ["all"])
 
     def test_complete_suite_is_enabled(self):
         result, outputs = self.detect_suite(SUITE_FILES)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(outputs.get("enabled"), "true")
+        self.assertEqual(json.loads(outputs["phases"]), ["all"])
+
+    def test_supported_source_phases_run_once_each(self):
+        result, outputs = self.detect_suite(SUITE_FILES, json.dumps(SUPPORTED_PHASES))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs.get("enabled"), "true")
+        self.assertEqual(json.loads(outputs["phases"]), ["cache", "permission"])
+
+    def test_incomplete_or_unsupported_phase_manifests_fail_closed(self):
+        manifests = (
+            "{invalid json", "null", "[]", '"cache"', "{}",
+            json.dumps({**SUPPORTED_PHASES, "schema_version": 2}),
+            json.dumps({**SUPPORTED_PHASES, "schema_version": True}),
+            json.dumps({**SUPPORTED_PHASES, "schema_version": 1.0}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["cache"]}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["permission"]}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["cache", "cache", "permission"]}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["all", "cache", "permission"]}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["permission", "cache"]}),
+            json.dumps({**SUPPORTED_PHASES, "phases": ["cache", "permission", "unknown"]}),
+            json.dumps({**SUPPORTED_PHASES, "unknown": True}),
+        )
+        for manifest in manifests:
+            with self.subTest(manifest=manifest):
+                result, outputs = self.detect_suite(SUITE_FILES, manifest)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(outputs.get("enabled"), "true")
+                self.assertNotIn("phases", outputs)
+
+    def test_phase_manifest_without_its_suite_fails_instead_of_skipping(self):
+        for count in range(len(SUITE_FILES)):
+            for files in itertools.combinations(SUITE_FILES, count):
+                with self.subTest(files=files):
+                    result, outputs = self.detect_suite(files, json.dumps(SUPPORTED_PHASES))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotEqual(outputs.get("enabled"), "true")
 
     def test_every_partial_suite_fails_instead_of_silently_skipping(self):
         for count in range(1, len(SUITE_FILES)):
@@ -112,6 +155,10 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         self.assertEqual(
             verification["outputs"]["encoded_cache_available"],
             "${{ steps.encoded_cache.outputs.enabled }}",
+        )
+        self.assertEqual(
+            verification["outputs"]["encoded_cache_phases"],
+            "${{ steps.encoded_cache.outputs.phases }}",
         )
         private_checkout = next(
             step for step in verification["steps"]
@@ -155,6 +202,27 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         )
         self.assertNotIn("continue-on-error", runner)
         self.assertNotIn("|| true", runner["run"])
+
+    def test_matrix_requires_both_phases_without_cancelling_or_combining_their_work(self):
+        job = self.jobs["cache-contracts"]
+        self.assertEqual(job["strategy"], {
+            "fail-fast": False,
+            "matrix": {"phase": "${{ fromJSON(needs.verify_test_module_coverage.outputs.encoded_cache_phases) }}"},
+        })
+        self.assertEqual(job["timeout-minutes"], 120)
+        self.assertEqual(job["env"]["APPFLOWY_CACHE_TEST_PHASE"], "${{ matrix.phase }}")
+        self.assertNotIn("continue-on-error", job)
+        self.assertTrue(all("continue-on-error" not in step for step in job["steps"]))
+        cache = next(step for step in job["steps"]
+                     if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+        self.assertEqual(cache["with"]["key"], "encoded-cache-parallel-ci-${{ matrix.phase }}")
+        runner = next(step for step in job["steps"]
+                      if "bash script/test_encoded_cache.sh" in step.get("run", ""))
+        self.assertEqual(runner["run"].strip(), "bash script/test_encoded_cache.sh")
+        # The existing required dependency consumes GitHub's aggregate matrix result.
+        self.assertIn("cache-contracts", self.jobs["notify-webhook"]["needs"])
+        self.assertEqual(self.aggregate({"cache-contracts": "failure"}), "failure")
+        self.assertEqual(self.aggregate({"cache-contracts": "cancelled"}), "cancelled")
 
     def test_image_gate_requires_the_private_self_hosted_build(self):
         gate = self.jobs["image_build_gate"]

@@ -10,7 +10,7 @@ class FinalAccountDeletionTest(unittest.TestCase):
     def test_no_ordinary_tests_run_after_seeded_account_deletion(self):
         workflow = Path(__file__).resolve().parents[1] / "workflows/cloud_integration_ci.yaml"
         jobs = yaml.safe_load(workflow.read_text())["jobs"]
-        integration = next(job for job in jobs.values() if "strategy" in job)
+        integration = jobs["test"]
         steps = integration["steps"]
         final_steps = [
             index for index, step in enumerate(steps)
