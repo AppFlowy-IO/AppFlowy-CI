@@ -72,6 +72,8 @@ on a random loopback port and export `APPFLOWY_TEST_REDIS_URL` only to tests. Ap
 so they cannot drain admission-test streams and hide unexpected enqueueing. An always-run step
 removes this fixture, including failed jobs. Shared libraries also runs the MCP and generic Redis
 worker package regressions.
+The fixture starts with `maxmemory=512mb` and `maxmemory-policy=noeviction`: percentage-based
+Search admission requires a known capacity, and collaborative stream entries must not be evicted.
 Search mutation/recovery fixtures create their own empty databases through Cloud's history-aware
 migration runner; an explicitly supplied migrated template is only a local optimization.
 

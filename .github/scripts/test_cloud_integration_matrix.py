@@ -421,6 +421,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       self.assertIn("matrix.test_service == 'appflowy_cloud_directory_self_host'", step["if"])
       self.assertIn("matrix.test_package_search == true", step["if"])
     self.assertIn("--publish 127.0.0.1::6379", start["run"])
+    self.assertIn("--maxmemory 512mb --maxmemory-policy noeviction", start["run"])
     self.assertIn("APPFLOWY_TEST_REDIS_URL=redis://127.0.0.1:$fixture_port", start["run"])
     self.assertIn('>> "$GITHUB_ENV"', start["run"])
     self.assertLess(steps.index(start), next(i for i, step in enumerate(steps)
