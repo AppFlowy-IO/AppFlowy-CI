@@ -1,10 +1,15 @@
 name: AppFlowy-Cloud Commercial Integrations
+run-name: >-
+  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Cloud-Premium' }}
+  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
+  parent=none]
+  ${{ github.workflow }}
 on:
   repository_dispatch:
     types: [commercial-cloud-integration-ci]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.run_id }}
   cancel-in-progress: true
 
 env:

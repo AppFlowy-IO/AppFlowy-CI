@@ -1,6 +1,8 @@
-name: Cancel obsolete Cloud integration CI
+name: Cancel obsolete PR CI
 
 on:
+  pull_request_target:
+    types: [closed]
   repository_dispatch:
     types: [ci-pr-closed]
   workflow_run:
@@ -21,8 +23,9 @@ concurrency:
 jobs:
   cancel:
     if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) &&
       (github.event_name != 'repository_dispatch' ||
-       github.event.client_payload.source_repository == 'AppFlowy-IO/AppFlowy-Cloud-Premium') &&
+       contains(fromJSON('["AppFlowy-IO/AppFlowy-Cloud-Premium", "AppFlowy-IO/AppFlowy-Premium"]'), github.event.client_payload.source_repository)) &&
       (github.event_name != 'workflow_run' ||
        contains(fromJSON('["cancelled", "timed_out"]'), github.event.workflow_run.conclusion))
     runs-on: ubuntu-latest
@@ -33,7 +36,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Cancel obsolete Cloud integration runs and their laptop image builds
+      - name: Cancel merged PR runs and obsolete Cloud integration builds
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: python3 .github/scripts/ci_run_lifecycle.py --apply

@@ -1,7 +1,7 @@
 name: AppFlowy-Cloud Integration Tests
 run-name: >-
-  [ci source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Cloud-Premium' }}
-  pr=${{ github.event.pull_request.number || github.event.client_payload.pr_number || inputs.pr_number || 'none' }}
+  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Cloud-Premium' }}
+  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=${{ github.event.client_payload.parent_run_id && format('{0}-{1}', github.event.client_payload.parent_run_id, github.event.client_payload.parent_run_attempt) || 'none' }}]
   ${{ github.workflow }}
 
@@ -24,7 +24,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 env:
