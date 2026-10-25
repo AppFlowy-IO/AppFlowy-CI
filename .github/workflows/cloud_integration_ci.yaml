@@ -337,6 +337,9 @@ jobs:
       CLOUD_CACHE_WRITER: ${{ matrix.cache_writer == true }}
       CLOUD_RUN_ROOT: ${{ (matrix.cache_group || 'root') == 'root' || matrix.test_package_search == true || matrix.test_package_ai == true || matrix.test_targets == '*' }}
       CLOUD_COMPILE_TESTS: ${{ matrix.cache_group != '' || matrix.test_package_search == true || matrix.test_targets == '*' }}
+      # Search reads the Admin AI models at this interval. The image search tests wait one refresh
+      # after adding or removing their vision model; the Compose Search service reads it too.
+      APPFLOWY_AI_PROVIDER_REFRESH_INTERVAL_SECS: ${{ matrix.fake_vision == true && '2' || '15' }}
       # Restore Cargo artifacts before enabling the optional compiler wrapper so
       # cache availability cannot change the Cargo snapshot's environment hash.
       RUSTC_WRAPPER: ""
@@ -491,6 +494,9 @@ jobs:
               database::database_history_test::search_restore
               search
             test_package_search: true
+            # The image search tests use the source's tests/support/fake_openai_provider.py as
+            # the Admin vision model; other AI calls keep the configured provider.
+            fake_vision: true
             cache_group: search
             cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
@@ -818,6 +824,9 @@ jobs:
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ldap"
           fi
+          if [ "${{ matrix.fake_vision == true }}" = "true" ]; then
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}fake-ai"
+          fi
 
           sudo rm -rf /tmp/minio-data || true
           echo "Starting services (using locally built images, pulling only missing ones)..."
@@ -842,6 +851,16 @@ jobs:
             sleep 5
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
+
+      - name: Wait for the fake AI provider
+        if: matrix.fake_vision == true
+        run: |
+          # Cloud sources from before the fake provider existed start no such service.
+          if ! grep -q '^  fake_ai_provider:' docker-compose-ci.yml; then
+            echo "This Cloud source has no fake_ai_provider service; skipping."
+            exit 0
+          fi
+          timeout 60 bash -c 'until curl -fsS http://localhost:4010/health >/dev/null; do sleep 2; done'
 
       - name: Wait for Authentik
         if: matrix.test_service == 'appflowy_cloud_auth'
@@ -931,6 +950,7 @@ jobs:
           TEST_TARGETS: ${{ matrix.test_targets }}
           RUN_SEARCH_PACKAGE: ${{ matrix.test_package_search == true }}
           RUN_AI_PACKAGE: ${{ matrix.test_package_ai == true }}
+          APPFLOWY_FAKE_AI_IMAGE_SEARCH_TEST: ${{ matrix.fake_vision == true }}
           # The AI integration tests grade answers with an OpenAI client of their own and only
           # exercise every provider when the DeepSeek, Gemini and Azure credentials exist.
           AI_EVALUATOR_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
