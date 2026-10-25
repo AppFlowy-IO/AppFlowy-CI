@@ -194,6 +194,22 @@ The laptop keeps registry downloads, Git dependencies and the complete Cargo `ta
 the dedicated `appflowy-premium-ci-integration-tests` BuildKit cache. It uses the machine's available
 CPU and memory without Docker resource quotas. Its cache survives runner jobs and laptop restarts.
 
+The separate **Cache and snapshot recovery** and **Permission contracts** jobs compile on
+GitHub-hosted runners. Older Cloud refs use one **Cache, snapshot and permission contracts (all)**
+job. Each phase retains its own Cargo dependency snapshot, preserving the source runner's separate
+package feature graphs and existing test selections. The cache action can save completed dependency
+builds after an ordinary test failure, so a failed contract does not automatically discard that
+compilation work. It does not guarantee a save after cancellation, an abrupt timeout or runner loss,
+and no wall-clock speedup has been measured for this change.
+
+These phase caches keep the action's dependency-only cleanup: workspace crates and incremental
+build outputs are excluded, and no extra directories or binary archives are added. Distinct phase
+keys avoid parallel jobs competing to save one immutable cache entry. This permits reuse on later
+runs of each phase; it does not transfer compiled artifacts between the two jobs in the same run.
+Dependency snapshots still consume GitHub cache storage and runner disk during restore. Cleaning
+the private build host does not clean these hosted-runner caches; review Actions cache usage
+separately and retain useful dependency snapshots when reclaiming disk space.
+
 The four package lanes use Cargo dependency snapshots and `sccache` with GitHub's cache v2 API.
 Each owns a snapshot and is its only writer.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. The

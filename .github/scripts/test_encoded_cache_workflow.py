@@ -224,6 +224,23 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         self.assertEqual(self.aggregate({"cache-contracts": "failure"}), "failure")
         self.assertEqual(self.aggregate({"cache-contracts": "cancelled"}), "cancelled")
 
+    def test_failed_contracts_can_preserve_dependencies_without_expanding_the_cache(self):
+        job = self.jobs["cache-contracts"]
+        cache = next(step for step in job["steps"]
+                     if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+        inputs = cache["with"]
+        self.assertEqual(str(inputs["cache-on-failure"]).lower(), "true")
+        self.assertNotIn("shared-key", inputs)
+        keys = {inputs["key"].replace("${{ matrix.phase }}", phase)
+                for phase in ("cache", "permission", "all")}
+        self.assertEqual(len(keys), 3, "each phase must retain its own immutable snapshot")
+        for option in ("cache-workspace-crates", "cache-all-crates"):
+            self.assertEqual(str(inputs.get(option, False)).lower(), "false")
+        self.assertNotIn("cache-directories", inputs)
+        runner = next(step for step in job["steps"]
+                      if "bash script/test_encoded_cache.sh" in step.get("run", ""))
+        self.assertNotIn("if", runner, "a dependency hit must not skip the contract runner")
+
     def test_image_gate_requires_the_private_self_hosted_build(self):
         gate = self.jobs["image_build_gate"]
         self.assertEqual(set(gate["needs"]), {"image_source", "build_self_hosted"})
