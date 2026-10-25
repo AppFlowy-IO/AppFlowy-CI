@@ -439,6 +439,38 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn("-p appflowy-mcp", render_run_tests(self.lane("appflowy_cloud_member_packages")))
     self.assertIn("-p server-infra", render_run_tests(self.lane("appflowy_cloud_member_packages")))
 
+  def test_only_search_serves_the_fake_vision_model(self):
+    fake_vision_lanes = [lane["test_service"] for lane in self.lanes if lane.get("fake_vision")]
+    self.assertEqual(fake_vision_lanes, ["appflowy_cloud_search"])
+    self.assertEqual(
+      self.job["env"]["APPFLOWY_AI_PROVIDER_REFRESH_INTERVAL_SECS"],
+      "${{ matrix.fake_vision == true && '2' || '15' }}",
+    )
+    steps = self.job["steps"]
+    compose = next(step for step in steps if step.get("name") == "Run Docker-Compose")
+    self.assertIn('export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}fake-ai"',
+                  compose["run"])
+    wait = next(step for step in steps if step.get("name") == "Wait for the fake AI provider")
+    self.assertEqual(wait["if"], "matrix.fake_vision == true")
+    self.assertIn("curl -fsS http://localhost:4010/health", wait["run"])
+    with tempfile.TemporaryDirectory() as directory:
+      # Older Cloud sources have no fake provider; the wait must not fail their Search job.
+      Path(directory, "docker-compose-ci.yml").write_text("services:\n  appflowy_search:\n")
+      result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", wait["run"]],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        check=False,
+      )
+      self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+      self.assertIn("skipping", result.stdout)
+    self.assertLess(steps.index(compose), steps.index(wait))
+    run_tests = next(step for step in steps if step.get("name") == "Run Tests")
+    self.assertLess(steps.index(wait), steps.index(run_tests))
+    self.assertEqual(run_tests["env"]["APPFLOWY_FAKE_AI_IMAGE_SEARCH_TEST"],
+                     "${{ matrix.fake_vision == true }}")
+
 
 if __name__ == "__main__":
   unittest.main()
