@@ -209,7 +209,7 @@ jobs:
             --workflow appflowy-ci/.github/workflows/cloud_commercial_integration_ci.yaml
 
   cache-contracts:
-    name: Parallel cache and snapshot contracts (${{ matrix.phase }})
+    name: ${{ matrix.phase == 'cache' && 'Cache and snapshot recovery' || matrix.phase == 'permission' && 'Permission contracts' || 'Cache, snapshot and permission contracts (all)' }}
     needs: [verify_test_module_coverage, image_source, image_build_gate]
     if: >-
       always() && !cancelled() &&
@@ -255,6 +255,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: encoded-cache-parallel-ci-${{ matrix.phase }}
+          # Retain compiled dependencies if a later contract fails. Keep separate
+          # snapshots so concurrent phases do not race to save the same cache key.
+          cache-on-failure: true
       - name: Install required test dependencies
         run: |
           sudo apt-get update
@@ -262,7 +265,7 @@ jobs:
           sudo locale-gen en_US.UTF-8
           locale -a | grep -qi 'en_US.utf8'
           redis-server --version
-      - name: Run cache and snapshot regressions with parallel libtest execution
+      - name: Run the selected contract phase
         run: bash script/test_encoded_cache.sh
 
   cache-observability:
