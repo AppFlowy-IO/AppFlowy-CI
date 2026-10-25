@@ -87,11 +87,16 @@ def identity(run):
     )
 
 
-def native_pr_number(run):
+def native_pr_number(run, request=api):
     """Native PR ownership comes from GitHub's association, never the title."""
     associations = run.get("pull_requests")
     if run.get("event") != "pull_request" or not isinstance(associations, list):
         return None
+    if not associations:
+        association = native_commit_association(run, request)
+        if association is None:
+            return None
+        associations = [association]
     # An ambiguous association must not cancel a run still serving another PR.
     if len(associations) != 1 or not isinstance(associations[0], dict):
         return None
@@ -107,6 +112,41 @@ def native_pr_number(run):
     if association.get("url") != f"{repo_url}/pulls/{number}":
         return None
     return number
+
+
+def native_commit_association(run, request):
+    # GitHub can clear a native run's PR association after merge. Resolve only
+    # its exact current PR head; branch names or ancestor commits are ambiguous.
+    sha = run.get("head_sha")
+    branch = run.get("head_branch")
+    head_repo = run.get("head_repository")
+    if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{40}", sha):
+        return None
+    if not isinstance(branch, str) or not branch or not isinstance(head_repo, dict):
+        return None
+    repository = head_repo.get("full_name")
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        return None
+    if (
+        head_repo.get("url") != f"https://api.github.com/repos/{repository}"
+        or type(head_repo.get("id")) is not int or head_repo["id"] <= 0
+    ):
+        return None
+    # Two results already prove ambiguity; never select a merged PR while
+    # another PR shares this commit, or paginate to search for a preferred match.
+    candidates = request("GET", f"repos/{CI_REPO}/commits/{sha}/pulls?per_page=2")
+    if not isinstance(candidates, list) or len(candidates) != 1 or not isinstance(candidates[0], dict):
+        return None
+    candidate = candidates[0]
+    head = candidate.get("head")
+    if not isinstance(head, dict) or head.get("sha") != sha or head.get("ref") != branch:
+        return None
+    repo = head.get("repo")
+    if not isinstance(repo, dict) or any(
+        repo.get(key) != head_repo[key] for key in ("id", "url", "full_name")
+    ):
+        return None
+    return candidate
 
 
 def pr_is_merged(source, number, request=api):
@@ -211,7 +251,12 @@ def cleanup(request=api, *, apply=False):
             # immediately before writing if the run was retried during this scan.
             if current["status"] == "completed" or current["run_attempt"] != run["run_attempt"]:
                 return
-            if native_pr is not None and native_pr_number(current) != native_pr:
+            if native_pr is not None and run.get("pull_requests") == [] and any(
+                current.get(key) != run.get(key)
+                for key in ("head_sha", "head_branch", "head_repository")
+            ):
+                return
+            if native_pr is not None and native_pr_number(current, request) != native_pr:
                 return
         print(f"{'Cancel' if apply else 'Would cancel'} {repo} run {run['id']}: {reason}", flush=True)
         if apply:
@@ -233,7 +278,7 @@ def cleanup(request=api, *, apply=False):
     runs = list(active_runs(CI_REPO, request))
     for run in runs:
         try:
-            native_pr = native_pr_number(run)
+            native_pr = native_pr_number(run, request)
             if native_pr is not None and merged(CI_REPO, native_pr):
                 cancel(CI_REPO, run, f"{CI_REPO} PR #{native_pr} is merged", native_pr=native_pr)
                 continue
