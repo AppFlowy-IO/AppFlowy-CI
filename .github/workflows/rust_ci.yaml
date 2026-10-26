@@ -6,8 +6,6 @@ run-name: >-
   ${{ github.workflow }}
 
 on:
-  pull_request:
-    branches: [main]
   repository_dispatch:
     types: [private-repo-rust-ci]
   workflow_dispatch:
