@@ -147,13 +147,22 @@ class CleanupWorkflowPolicyTests(unittest.TestCase):
                 self.assert_identity(name, source, "none", event="workflow_dispatch",
                                      inputs={"pr_ref": "main"})
 
-    def test_native_ci_pull_request_never_claims_a_private_repository(self):
-        for name in SOURCE_WORKFLOWS:
-            if "pull_request" not in self.workflows[name]["on"]:
-                continue
-            with self.subTest(workflow=name):
-                self.assert_identity(name, CI_REPO, 73, event="pull_request",
-                                     pull_request={"number": 73})
+    def test_ci_pull_requests_only_run_workflow_checks(self):
+        native = {name for name, workflow in self.workflows.items()
+                  if "pull_request" in workflow.get("on", {})}
+        self.assertEqual(native, {"workflow_checks.yaml"})
+        trigger = self.workflows["workflow_checks.yaml"]["on"]["pull_request"] or {}
+        # Every CI PR gets the same check, including documentation and Docker-only changes.
+        self.assertNotIn("paths", trigger)
+        self.assertNotIn("paths-ignore", trigger)
+
+    def test_desktop_suites_still_accept_source_events_and_manual_validation(self):
+        for suite in ("rust", "flutter", "ios"):
+            trigger = self.workflows[f"{suite}_ci.yaml"]["on"]
+            with self.subTest(suite=suite):
+                self.assertEqual(trigger["repository_dispatch"]["types"],
+                                 [f"private-repo-{suite}-ci"])
+                self.assertIn("pr_ref", trigger["workflow_dispatch"]["inputs"])
 
     def test_integration_title_retains_the_exact_parent_attempt(self):
         title = self.assert_identity("cloud_integration_ci.yaml", CLOUD_REPO, 41, payload={

@@ -12,8 +12,10 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
 CLIENT_WORKFLOWS = ("flutter_ci.yaml", "rust_ci.yaml", "ios_ci.yaml")
 
 
-def concurrency_group(workflow, *, payload=None, inputs=None, ref="refs/heads/main"):
-    context = event_context(workflow, payload=payload, inputs=inputs, ref=ref)
+def concurrency_group(workflow, *, payload=None, inputs=None, ref="refs/heads/main",
+                      event="repository_dispatch", pull_request=None):
+    context = event_context(workflow, payload=payload, inputs=inputs, ref=ref,
+                            event=event, pull_request=pull_request)
     rendered = render_expression(workflow["concurrency"]["group"], context)
     # GitHub compares concurrency groups case-insensitively.
     return rendered.lower()
@@ -80,12 +82,13 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
                     ),
                 )
 
-    def test_public_pull_requests_keep_their_ref_fallback(self):
+    def test_manual_validation_without_source_ref_keeps_workflow_ref_fallback(self):
         for name, workflow in self.workflows.items():
             with self.subTest(workflow=name):
                 self.assertEqual(
-                    concurrency_group(workflow, ref="refs/pull/29/merge"),
-                    f"{workflow['name']}-validation-refs/pull/29/merge".lower(),
+                    concurrency_group(workflow, event="workflow_dispatch",
+                                      ref="refs/heads/ci-validation"),
+                    f"{workflow['name']}-validation-refs/heads/ci-validation".lower(),
                 )
 
     def test_client_workflows_do_not_cancel_each_other(self):
@@ -107,6 +110,30 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
                 }) for kind in ("pr_opened", "pr_sync")]
                 self.assertNotIn(push, groups)
                 self.assertEqual(groups[0], groups[1])
+
+
+class WorkflowChecksConcurrencyTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = yaml.safe_load((WORKFLOWS / "workflow_checks.yaml").read_text())
+
+    def test_new_commits_supersede_only_the_same_ci_pr(self):
+        self.assertTrue(self.workflow["concurrency"]["cancel-in-progress"])
+        first = concurrency_group(self.workflow, event="pull_request",
+                                  pull_request={"number": 97}, ref="refs/pull/97/merge")
+        same_pr = concurrency_group(self.workflow, event="pull_request",
+                                    pull_request={"number": 97}, ref="refs/pull/97/head")
+        other_pr = concurrency_group(self.workflow, event="pull_request",
+                                     pull_request={"number": 98}, ref="refs/pull/98/merge")
+        self.assertEqual(first, same_pr)
+        self.assertNotEqual(first, other_pr)
+
+    def test_main_push_and_manual_validation_do_not_cancel_each_other(self):
+        groups = {
+            concurrency_group(self.workflow, event=event, ref="refs/heads/main")
+            for event in ("push", "workflow_dispatch")
+        }
+        self.assertEqual(len(groups), 2)
 
 
 if __name__ == "__main__":

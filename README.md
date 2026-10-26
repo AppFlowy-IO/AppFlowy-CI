@@ -1,5 +1,27 @@
 # AppFlowy-CI
 
+Pull requests in this repository run **Workflow checks**, which validates the CI scripts and
+test-selection configuration without building an application. New commits cancel superseded
+checks for the same PR; other PRs, main pushes, and manual checks have separate concurrency groups.
+The check runs for every PR so documentation and Docker-only changes have a consistent result.
+
+Application suites run through their existing private-repository dispatch events. For an intentional
+end-to-end check of a CI branch, dispatch the relevant workflow manually with that CI branch as
+`--ref` and the private source revision as `pr_ref`, for example:
+
+```sh
+gh workflow run flutter_ci.yaml --repo AppFlowy-IO/AppFlowy-CI \
+  --ref <ci-branch> -f pr_ref=<desktop-commit>
+```
+
+Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.yaml`) and supply any
+additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
+when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
+
+PR #97 exposed why these triggers are separate: its CI/Gateway configuration changes started
+41 Flutter, four Rust, and four iOS jobs because those workflows accepted every CI-repository PR
+and defaulted their private source checkout to `main`.
+
 Desktop can optionally test direct shared-crate server pins against an exact
 private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
 for input provenance, legacy behavior and CI-branch validation before receiver activation.
