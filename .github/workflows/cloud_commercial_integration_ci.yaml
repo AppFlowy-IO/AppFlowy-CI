@@ -64,10 +64,17 @@ jobs:
             --build-arg PROFILE=debug \
             --build-arg FEATURES="self-host-af, commercial-ci, test-mailer" \
             appflowy_cloud
+          # Each writer owns its deployment feature; a shared-crate feature cannot select it.
+          export APPFLOWY_WORKER_VERSION=latest APPFLOWY_SEARCH_VERSION=latest APPFLOWY_MCP_VERSION=latest
+          docker compose -f docker-compose-ci.yml build --parallel \
+            --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg PROFILE=debug \
+            --build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp
 
       - name: Save Docker Images
         run: |
-          docker save appflowyinc/appflowy_cloud_premium:latest | gzip > appflowy_cloud.tar.gz
+          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp; do
+            docker save "appflowyinc/${service}_premium:latest" | gzip > "${service}.tar.gz"
+          done
 
       - name: Upload Docker Images as Artifacts
         uses: actions/upload-artifact@v4
@@ -75,6 +82,9 @@ jobs:
           name: docker-images
           path: |
             appflowy_cloud.tar.gz
+            appflowy_worker.tar.gz
+            appflowy_search.tar.gz
+            appflowy_mcp.tar.gz
           retention-days: 1
 
   test:
@@ -147,8 +157,10 @@ jobs:
 
       - name: Load Docker Images
         run: |
-          docker load < appflowy_cloud.tar.gz
-          docker tag appflowyinc/appflowy_cloud_premium:latest appflowyinc/appflowy_cloud_premium:${{ env.CLOUD_VERSION }}
+          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp; do
+            docker load < "${service}.tar.gz"
+            docker tag "appflowyinc/${service}_premium:latest" "appflowyinc/${service}_premium:${{ env.CLOUD_VERSION }}"
+          done
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -200,6 +212,9 @@ jobs:
           echo 'APPFLOWY_BILLING_ENDPOINT_ID=${{ secrets.CI_APPFLOWY_BILLING_ENDPOINT_ID }}' >> .env
           echo 'APPFLOWY_BILLING_SIGNING_SECRET=${{ secrets.CI_APPFLOWY_BILLING_SIGNING_SECRET }}' >> .env
           echo 'APPFLOWY_SELF_HOST_BILLING_URL=http://appflowy_billing:4242' >> .env
+          if [ -f nginx/api-limits-self-host-ci.conf ]; then
+            echo 'APPFLOWY_CI_API_LIMITS_NGINX_CONFIG=./nginx/api-limits-self-host-ci.conf' >> .env
+          fi
           echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
           echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
@@ -230,8 +245,10 @@ jobs:
 
       - name: Run Docker-Compose
         run: |
-          export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_SEARCH_VERSION=${{ env.CLOUD_VERSION }}
+          export APPFLOWY_MCP_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_ADMIN_FRONTEND_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_AI_VERSION=${{ env.CLOUD_VERSION }}
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then

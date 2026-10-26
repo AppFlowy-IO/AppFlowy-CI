@@ -809,6 +809,11 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
+          # Gateway is released by Cloud Service, like Billing. Refresh its published tag
+          # explicitly because --pull=missing below protects the exact Cloud image artifacts.
+          if docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
+            docker compose -f docker-compose-ci.yml pull appflowy_gateway
+          fi
           echo "Starting services (using locally built images, pulling only missing ones)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
           docker ps -a
@@ -831,6 +836,12 @@ jobs:
             sleep 5
           done
           echo "Health check timeout after 300 seconds - proceeding anyway"
+
+      - name: Wait for Gateway admission
+        run: |
+          if docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
+            timeout 300 bash -c 'until curl -fsS http://localhost:8100/health >/dev/null; do sleep 3; done'
+          fi
 
       - name: Wait for the fake AI provider
         if: matrix.fake_vision == true
@@ -1221,6 +1232,7 @@ jobs:
         run: |
           docker ps -a > docker-ps-output.txt
           docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud_logs.txt
+          docker compose -f docker-compose-ci.yml logs appflowy_gateway > appflowy_gateway_logs.txt 2>&1 || true
           docker compose -f docker-compose-ci.yml logs appflowy_mcp > appflowy_mcp_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker_logs.txt
           docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
@@ -1241,6 +1253,7 @@ jobs:
           path: |
             docker-ps-output.txt
             appflowy_cloud_logs.txt
+            appflowy_gateway_logs.txt
             appflowy_mcp_logs.txt
             appflowy_worker_logs.txt
             appflowy_search_logs.txt

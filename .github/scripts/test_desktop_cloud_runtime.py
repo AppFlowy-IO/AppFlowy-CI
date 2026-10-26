@@ -382,6 +382,7 @@ class RuntimeTest(unittest.TestCase):
         self.images = {name: archive_image(self.root, name) for name in runtime.SERVICES}
         self.config = {"services": {
             **{name: {"image": runtime.image_tag(name)} for name in runtime.SERVICES},
+            "appflowy_gateway": {"image": "appflowyinc/appflowy_cloud_gateway:latest-amd64"},
             "postgres": {"image": "postgres:16"}, "nginx": {"image": "nginx"},
             "inactive": {"image": "example", "profiles": ["opt-in"]},
         }}
@@ -435,7 +436,8 @@ class RuntimeTest(unittest.TestCase):
         self.start()
         pulls = [args for args, _ in self.calls if "pull" in args]
         self.assertEqual(len(pulls), 1)
-        self.assertEqual(pulls[0][pulls[0].index("pull") + 1:], ["--quiet", "nginx", "postgres"])
+        self.assertEqual(pulls[0][pulls[0].index("pull") + 1:],
+                         ["--quiet", "appflowy_gateway", "nginx", "postgres"])
         up = next(args for args, _ in self.calls if "up" in args)
         self.assertEqual(up[-5:], ["up", "-d", "--no-build", "--pull", "never"])
         state = json.loads(self.manifest.read_text())
@@ -474,7 +476,13 @@ class RuntimeTest(unittest.TestCase):
         self.assertFalse(any("pull" in args or "up" in args for args, _ in self.calls))
 
     def test_timeline_pulls_same_source_prebuilt_image_and_pins_its_container_id(self):
+        bypass = self.root / "nginx/api-limits-self-host-ci.conf"
+        bypass.parent.mkdir()
+        bypass.write_text("# self-host policy\n")
         self.start(timeline=True)
+        for args, kwargs in self.calls:
+            if args[:2] == ["docker", "compose"]:
+                self.assertEqual(kwargs["env"]["APPFLOWY_CI_API_LIMITS_NGINX_CONFIG"], str(bypass))
         override = json.loads(self.manifest.with_suffix(".compose.json").read_text())
         self.assertEqual(override["services"]["appflowy_cloud"]["image"], self.timeline_id)
         self.assertTrue(any(args == ["docker", "pull", self.timeline_image] for args, _ in self.calls))
@@ -496,8 +504,10 @@ class RuntimeTest(unittest.TestCase):
         self.assertFalse(any("up" in args or "build" in args for args, _ in self.calls))
 
     def test_profile_dependencies_are_selected_without_protected_images(self):
-        self.assertEqual(runtime.dependency_services(self.config, ["opt-in"]), ["inactive", "nginx", "postgres"])
-        self.assertEqual(runtime.dependency_services(self.config, ["*"]), ["inactive", "nginx", "postgres"])
+        self.assertEqual(runtime.dependency_services(self.config, ["opt-in"]),
+                         ["appflowy_gateway", "inactive", "nginx", "postgres"])
+        self.assertEqual(runtime.dependency_services(self.config, ["*"]),
+                         ["appflowy_gateway", "inactive", "nginx", "postgres"])
 
 
 class WorkflowWiringTest(unittest.TestCase):
