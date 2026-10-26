@@ -239,8 +239,18 @@ def require_timeline_image(timeline, image):
         )
 
 
+def gateway_environment(cloud, timeline):
+    env = dict(os.environ)
+    bypass = cloud / "nginx/api-limits-self-host-ci.conf"
+    if timeline and bypass.is_file():
+        # The timeline flavor uses self-hosted Cloud, whose HTTP policy must bypass Gateway.
+        env["APPFLOWY_CI_API_LIMITS_NGINX_CONFIG"] = str(bypass)
+    return env
+
+
 def start_registry_runtime(cloud, timeline=False, timeline_image="", run=command):
     require_timeline_image(timeline, timeline_image)
+    env = gateway_environment(cloud, timeline)
     compose = ["docker", "compose", "-f", str(cloud / "docker-compose-ci.yml")]
     if timeline:
         override = cloud / "desktop-timeline-image.compose.json"
@@ -248,8 +258,8 @@ def start_registry_runtime(cloud, timeline=False, timeline_image="", run=command
         compose += ["-f", str(override)]
     # Compose files contain build sections. A missing registry image must fail,
     # never turn a Desktop test into an implicit server compilation.
-    run(compose + ["pull", "--quiet"], cwd=cloud, capture=False)
-    run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, capture=False)
+    run(compose + ["pull", "--quiet"], cwd=cloud, env=env, capture=False)
+    run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, env=env, capture=False)
 
 
 def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, timeline_image=""):
@@ -261,7 +271,7 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
     # Validate the complete set before the first Docker mutation.
     images = {service: verify_archive(archives / f"{service}.tar.gz", service, source_sha)
               for service in SERVICES}
-    env = dict(os.environ)
+    env = gateway_environment(cloud, timeline)
     for service in SERVICES:
         env[f"{service.upper()}_VERSION"] = "latest-amd64"
     compose = ["docker", "compose", "-f", str(cloud / "docker-compose-ci.yml")]

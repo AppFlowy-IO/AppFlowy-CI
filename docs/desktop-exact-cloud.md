@@ -22,6 +22,14 @@ Timeline uses the public self-hosted image
 overridden; other suites use the normal premium images. The existing
 `/api/server-info` check still requires `self_hosted=true` before tests run.
 
+Cloud Compose includes the published Gateway image, refreshed with the other
+dependency images even when the four application images come from verified
+archives. Hosted database creation and status APIs pass through Gateway. When
+Cloud supplies `nginx/api-limits-self-host-ci.conf`, Timeline selects that fragment
+to keep its self-hosted HTTP policy; older Cloud revisions remain supported.
+The commercial Cloud integration lane also builds Worker, Search, and MCP with
+their own `self-host-af` feature, so background writers select the same policy.
+
 The Flutter workflow's `timeline_cloud_image` input or the optional
 `DESKTOP_TIMELINE_CLOUD_IMAGE` repository variable can select another prebuilt
 self-hosted image. No repository setting is needed for the default public image.
