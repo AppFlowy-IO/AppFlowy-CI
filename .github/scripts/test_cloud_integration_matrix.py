@@ -451,7 +451,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertIn('export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}fake-ai"',
                   compose["run"])
     wait = next(step for step in steps if step.get("name") == "Wait for the fake AI provider")
-    self.assertEqual(wait["if"], "matrix.fake_vision == true")
+    # The fake provider also generates images for lanes whose AI runs on Ollama.
+    self.assertEqual(wait["if"], "matrix.fake_vision == true || env.AI_ON_OLLAMA == 'true'")
     self.assertIn("curl -fsS http://localhost:4010/health", wait["run"])
     with tempfile.TemporaryDirectory() as directory:
       # Older Cloud sources have no fake provider; the wait must not fail their Search job.
@@ -470,6 +471,114 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertLess(steps.index(wait), steps.index(run_tests))
     self.assertEqual(run_tests["env"]["APPFLOWY_FAKE_AI_IMAGE_SEARCH_TEST"],
                      "${{ matrix.fake_vision == true }}")
+
+  def test_ollama_lanes_send_ai_calls_to_ollama_over_tailscale(self):
+    ollama_lanes = [lane["test_service"] for lane in self.lanes if lane.get("ollama")]
+    self.assertEqual(ollama_lanes, ["appflowy_cloud_api", "appflowy_cloud_search"])
+    self.assertEqual(
+      self.job["env"]["CI_OLLAMA_BASE_URL"],
+      "${{ matrix.ollama == true && vars.CI_OLLAMA_BASE_URL || '' }}",
+    )
+    steps = self.job["steps"]
+    names = [step.get("name") for step in steps]
+    decide = steps[names.index("Decide where AI calls go")]
+    join = steps[names.index("Join the tailnet that serves Ollama")]
+    check = steps[names.index("Check that Ollama answers over the tailnet")]
+    point = steps[names.index("Point the AI at Ollama")]
+    for step in (join, check, point):
+      self.assertEqual(step["if"], "env.AI_ON_OLLAMA == 'true'")
+    self.assertTrue(join["uses"].startswith("tailscale/github-action@"))
+    self.assertEqual(join["with"], {
+      "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+      "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+      "tags": "tag:ci",
+    })
+    self.assertIn("script/ci/configure_ollama_ai.py", point["run"])
+    self.assertIn('--ollama-url "$CI_OLLAMA_BASE_URL"', point["run"])
+    order = [names.index(name) for name in (
+      "Checkout Private Repo", "Decide where AI calls go", "Join the tailnet that serves Ollama",
+      "Check that Ollama answers over the tailnet", "Replace values in .env", "Run Docker-Compose",
+      "Wait for the fake AI provider", "Point the AI at Ollama", "Run Tests",
+    )]
+    self.assertEqual(order, sorted(order))
+    # Paid provider keys are blanked, and the fake provider generates images.
+    env_step = steps[names.index("Replace values in .env")]
+    self.assertIn('if [[ "$AI_ON_OLLAMA" == true ]]; then', env_step["run"])
+    self.assertIn("AI_OPENAI_API_KEY ANTHROPIC_API_KEY", env_step["run"])
+    compose = steps[names.index("Run Docker-Compose")]
+    self.assertIn('[ "$AI_ON_OLLAMA" = "true" ]', compose["run"])
+
+    def decide_with(ollama, base_url, client_id, secret, has_script):
+      with tempfile.TemporaryDirectory() as directory:
+        if has_script:
+          Path(directory, "script/ci").mkdir(parents=True)
+          Path(directory, "script/ci/configure_ollama_ai.py").write_text("")
+        github_env = Path(directory, "github-env")
+        run = decide["run"].replace("${{ matrix.ollama == true }}", str(ollama).lower())
+        result = subprocess.run(
+          ["bash", "-e", "-o", "pipefail", "-c", run], cwd=directory,
+          env={**os.environ, "GITHUB_ENV": str(github_env), "CI_OLLAMA_BASE_URL": base_url,
+               "TAILSCALE_CLIENT_ID": client_id, "TAILSCALE_SECRET": secret},
+          capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return github_env.read_text().strip(), result.stdout
+
+    url = "http://100.64.0.7:11434/v1"
+    self.assertEqual(decide_with(True, url, "id", "secret", True)[0], "AI_ON_OLLAMA=true")
+    self.assertEqual(decide_with(False, url, "id", "secret", True)[0], "AI_ON_OLLAMA=false")
+    unconfigured, output = decide_with(True, "", "id", "secret", True)
+    self.assertEqual(unconfigured, "AI_ON_OLLAMA=false")
+    self.assertIn("::warning::", output)
+    self.assertEqual(decide_with(True, url, "", "", True)[0], "AI_ON_OLLAMA=false")
+    old_source, output = decide_with(True, url, "id", "secret", False)
+    self.assertEqual(old_source, "AI_ON_OLLAMA=false")
+    self.assertIn("predates", output)
+
+    # On Ollama, every test that calls a provider and the package's grader use Ollama, and the
+    # whole package runs: every model a test names falls back to Ollama's model.
+    run = render_run_tests(self.lane("appflowy_cloud_api"))
+    with tempfile.TemporaryDirectory() as directory:
+      calls = Path(directory) / "cargo-calls"
+      fake = r'''
+        cargo() {
+          printf '%s|%s|%s|%s|%s|%s\t' "$OPENAI_BASE_URL" "${OPENAI_API_KEY:-}" "$AI_OPENAI_API_KEY" \
+            "$AI_TEST_CHAT_MODEL" "$AI_TEST_JUDGE_MODEL" "$AI_TEST_JUDGE_REASONING_EFFORT" >> "$CARGO_CALLS"
+          printf '%s\t' "$@" >> "$CARGO_CALLS"
+          printf '\n' >> "$CARGO_CALLS"
+        }
+        docker() { printf 'ai-container-test-secret'; }
+      ''' + run
+      # The Cloud source lists the tests a small local model cannot pass reliably.
+      Path(directory, "script/ci").mkdir(parents=True)
+      Path(directory, "script/ci/ollama_skipped_tests.txt").write_text(
+        "# graded by a model\n\nai_test::grading_root\ncompletion_test::grading_package"
+      )
+      result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", fake], cwd=directory,
+        env={**os.environ, "CARGO_CALLS": str(calls), "CLOUD_RUN_ROOT": "false",
+             "RUN_SEARCH_PACKAGE": "false", "RUN_AI_PACKAGE": "true", "TEST_SKIPS": "",
+             "AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false",
+             "AI_EVALUATOR_OPENAI_API_KEY": "paid-key", "AI_ON_OLLAMA": "true",
+             "CI_OLLAMA_BASE_URL": url, "CI_OLLAMA_CHAT_MODEL": "qwen3.5:4b"},
+        capture_output=True, text=True, check=False,
+      )
+      self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+      self.assertNotIn("::warning::", result.stdout)
+      self.assertIn("against Ollama (qwen3.5:4b)", result.stdout)
+      commands = calls.read_text().splitlines()
+      root_env = f"{url}||ollama|qwen3.5:4b|qwen3.5:4b|none"
+      package_env = f"{url}|ollama|ollama|qwen3.5:4b|qwen3.5:4b|none"
+      modules = self.lane("appflowy_cloud_api")["test_modules"].split()
+      self.assertEqual(len(commands), len(modules) + 1)
+      self.assertTrue(all(command.startswith(root_env + "\t") for command in commands[:-1]))
+      self.assertTrue(commands[-1].startswith(package_env + "\t"), commands[-1])
+      self.assertIn("-p\tappflowy-ai\t", commands[-1])
+      self.assertNotIn("no_context_test", commands[-1])
+      self.assertNotIn("paid-key", calls.read_text())
+      skips = "--skip\tai_test::grading_root\t--skip\tcompletion_test::grading_package\t"
+      self.assertTrue(all(skips in command for command in commands), commands)
+      self.assertNotIn("graded by a model", calls.read_text())
 
 
 if __name__ == "__main__":

@@ -320,6 +320,12 @@ jobs:
       # Search reads the Admin AI models at this interval. The image search tests wait one refresh
       # after adding or removing their vision model; the Compose Search service reads it too.
       APPFLOWY_AI_PROVIDER_REFRESH_INTERVAL_SECS: ${{ matrix.fake_vision == true && '2' || '15' }}
+      # Lanes marked `ollama` send their AI calls to the self-hosted Ollama server over Tailscale
+      # instead of paid provider APIs, once its URL and the tailnet's OAuth client are configured
+      # (see "Decide where AI calls go"). The URL is Ollama's OpenAI-compatible API (…/v1).
+      CI_OLLAMA_BASE_URL: ${{ matrix.ollama == true && vars.CI_OLLAMA_BASE_URL || '' }}
+      CI_OLLAMA_CHAT_MODEL: ${{ vars.CI_OLLAMA_CHAT_MODEL || 'qwen3.5:4b' }}
+      CI_OLLAMA_EMBEDDING_MODEL: ${{ vars.CI_OLLAMA_EMBEDDING_MODEL || 'bge-m3:latest' }}
       # Restore Cargo artifacts before enabling the optional compiler wrapper so
       # cache availability cannot change the Cargo snapshot's environment hash.
       RUSTC_WRAPPER: ""
@@ -439,6 +445,7 @@ jobs:
             topic: "AI and authentication"
             test_modules: "ai_test gotrue oidc user"
             test_package_ai: true
+            ollama: true
             cache_group: ai
             cache_writer: true
           # Select the whole `sql_test` tree so a new SQL test module runs without
@@ -477,6 +484,8 @@ jobs:
             # The image search tests use the source's tests/support/fake_openai_provider.py as
             # the Admin vision model; other AI calls keep the configured provider.
             fake_vision: true
+            # Semantic and hybrid search embed with Ollama's embedding model.
+            ollama: true
             cache_group: search
             cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
@@ -512,6 +521,37 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
+
+      - name: Decide where AI calls go
+        env:
+          TAILSCALE_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TAILSCALE_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          ai_on_ollama=false
+          if [[ "${{ matrix.ollama == true }}" == true ]]; then
+            if [[ -z "$CI_OLLAMA_BASE_URL" || -z "$TAILSCALE_CLIENT_ID" || -z "$TAILSCALE_SECRET" ]]; then
+              echo "::warning::This lane runs its AI tests on Ollama once the CI_OLLAMA_BASE_URL variable and the TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET secrets are set; using the provider keys meanwhile"
+            elif [[ ! -f script/ci/configure_ollama_ai.py ]]; then
+              echo "::notice::This Cloud source predates script/ci/configure_ollama_ai.py; using the provider keys"
+            else
+              ai_on_ollama=true
+            fi
+          fi
+          echo "AI_ON_OLLAMA=$ai_on_ollama" >> "$GITHUB_ENV"
+
+      # Ollama listens on the tailnet only. The OAuth client's tag limits this ephemeral node to
+      # what the tailnet policy grants `tag:ci`: Ollama's port on its host.
+      - name: Join the tailnet that serves Ollama
+        if: env.AI_ON_OLLAMA == 'true'
+        uses: tailscale/github-action@v4.2.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Check that Ollama answers over the tailnet
+        if: env.AI_ON_OLLAMA == 'true'
+        run: timeout 120 bash -c 'until curl -fsS --max-time 10 "$CI_OLLAMA_BASE_URL/models" >/dev/null; do sleep 5; done'
 
       - &cloud_ci_tools
         name: Checkout CI tools
@@ -724,6 +764,13 @@ jobs:
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
 
+          if [[ "$AI_ON_OLLAMA" == true ]]; then
+            # Ollama, which "Point the AI at Ollama" configures, is this lane's only AI provider.
+            for key in AI_OPENAI_API_KEY ANTHROPIC_API_KEY DEEPSEEK_API_KEY GEMINI_API_KEY AZURE_OPENAI_API_KEY; do
+              sed -i "s|^${key}=.*|${key}=|" .env
+            done
+          fi
+
           cat .env
         shell: bash
 
@@ -804,7 +851,9 @@ jobs:
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}ldap"
           fi
-          if [ "${{ matrix.fake_vision == true }}" = "true" ]; then
+          # The fake provider is the Search lane's vision model, and generates images for lanes
+          # whose AI runs on Ollama, which cannot.
+          if [ "${{ matrix.fake_vision == true }}" = "true" ] || [ "$AI_ON_OLLAMA" = "true" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}fake-ai"
           fi
 
@@ -844,7 +893,7 @@ jobs:
           fi
 
       - name: Wait for the fake AI provider
-        if: matrix.fake_vision == true
+        if: matrix.fake_vision == true || env.AI_ON_OLLAMA == 'true'
         run: |
           # Cloud sources from before the fake provider existed start no such service.
           if ! grep -q '^  fake_ai_provider:' docker-compose-ci.yml; then
@@ -898,6 +947,21 @@ jobs:
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
 
+      - name: Point the AI at Ollama
+        if: env.AI_ON_OLLAMA == 'true'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          GOTRUE_ADMIN_EMAIL=$(grep -m1 '^GOTRUE_ADMIN_EMAIL=' .env | cut -d= -f2-) \
+          GOTRUE_ADMIN_PASSWORD=$(grep -m1 '^GOTRUE_ADMIN_PASSWORD=' .env | cut -d= -f2-) \
+            python3 -B script/ci/configure_ollama_ai.py \
+            --cloud-url http://localhost --gotrue-url http://localhost/gotrue \
+            --ollama-url "$CI_OLLAMA_BASE_URL" --chat-model "$CI_OLLAMA_CHAT_MODEL" \
+            --embedding-model "$CI_OLLAMA_EMBEDDING_MODEL" \
+            --image-provider-url http://fake_ai_provider:4010/v1
+          # Cloud and Search read the registry on this interval; the AI service applies it at once.
+          sleep $((APPFLOWY_AI_PROVIDER_REFRESH_INTERVAL_SECS + 5))
+
       - name: Install prerequisites
         if: env.CLOUD_COMPILE_TESTS == 'true'
         run: |
@@ -948,6 +1012,22 @@ jobs:
           AI_TEST_HAS_FULL_PROVIDERS: ${{ secrets.CI_DEEPSEEK_API_KEY != '' && secrets.CI_GEMINI_API_KEY != '' && secrets.CI_AZURE_OPENAI_API_KEY != '' }}
         run: |
           set -e
+          ollama_skips=()
+          if [[ "${AI_ON_OLLAMA:-false}" == true ]]; then
+            # Tests that call a provider themselves, and the AI package's answer grader, use
+            # Ollama too, with thinking off. Any model a test names falls back to Ollama's model.
+            export AI_OPENAI_API_KEY=ollama OPENAI_BASE_URL="$CI_OLLAMA_BASE_URL"
+            export AI_TEST_CHAT_MODEL="$CI_OLLAMA_CHAT_MODEL" AI_TEST_JUDGE_MODEL="$CI_OLLAMA_CHAT_MODEL"
+            export AI_TEST_JUDGE_REASONING_EFFORT=none
+            AI_EVALUATOR_OPENAI_API_KEY=ollama
+            # The Cloud source lists the tests that grade answers against a bar a small local
+            # model does not meet reliably; they still run against hosted providers.
+            if [[ -f script/ci/ollama_skipped_tests.txt ]]; then
+              while IFS= read -r skipped || [[ -n "$skipped" ]]; do
+                [[ -z "$skipped" || "$skipped" == \#* ]] || ollama_skips+=(--skip "$skipped")
+              done < script/ci/ollama_skipped_tests.txt
+            fi
+          fi
           cargo_command=(cargo)
           if [[ "$CLOUD_RUN_ROOT" == true ]]; then
             cargo_command=(python3 ci-tools/.github/scripts/cloud_test_binaries.py run)
@@ -1130,7 +1210,7 @@ jobs:
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
                 --features "$CLOUD_TEST_FEATURES" "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist \
-                "${skip_args[@]}" --test-threads=1
+                "${skip_args[@]}" "${ollama_skips[@]}" --test-threads=1
             done
           fi
 
@@ -1154,7 +1234,10 @@ jobs:
               # Commercial license tests need the self-host-af build; the standalone AI CI
               # skipped them in this stack too.
               ai_skips=(--skip stress_test --skip commercial_test)
-              if [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
+              if [[ "${AI_ON_OLLAMA:-false}" == true ]]; then
+                echo "==> Testing appflowy-ai package against Ollama ($CI_OLLAMA_CHAT_MODEL)"
+                ai_skips+=("${ollama_skips[@]}")
+              elif [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
                 echo "==> Testing appflowy-ai package against every configured provider"
               else
                 # Without the DeepSeek, Gemini and Azure credentials only OpenAI and Anthropic
