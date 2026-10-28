@@ -339,6 +339,8 @@ jobs:
           - test_service: "appflowy_cloud_core"
             topic: "Core APIs and utilities"
             test_root_unit: true
+            # Indexing and search embed with Ollama's embedding model.
+            ollama: true
             test_modules: >-
               file_test
               yrs_test
@@ -437,6 +439,8 @@ jobs:
           - test_service: "appflowy_cloud_collab"
             topic: "Realtime collaboration"
             test_modules: "collab"
+            # Indexing and search embed with Ollama's embedding model.
+            ollama: true
           # The AI service package (services/appflowy-ai) is tested here too, after the root
           # modules, so one stack covers Cloud's AI proxy tests and the service's own suite. The
           # package compiles on this runner, hence its own Cargo cache group; its tests run only
@@ -446,6 +450,8 @@ jobs:
             test_modules: "ai_test gotrue oidc user"
             test_package_ai: true
             ollama: true
+            # A small local model misses a graded answer now and then; see "Run Tests".
+            rerun_on_ollama: true
             cache_group: ai
             cache_writer: true
           # Select the whole `sql_test` tree so a new SQL test module runs without
@@ -486,6 +492,7 @@ jobs:
             fake_vision: true
             # Semantic and hybrid search embed with Ollama's embedding model.
             ollama: true
+            rerun_on_ollama: true
             cache_group: search
             cache_writer: true
           # Whitelist tests toggle GoTrue global state and need their own stack.
@@ -555,7 +562,7 @@ jobs:
 
       - &cloud_ci_tools
         name: Checkout CI tools
-        # Lanes on Ollama run their tests through retry_failed_tests.py.
+        # Lanes that rerun failed tests on Ollama run them through retry_failed_tests.py.
         if: env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'
         uses: actions/checkout@v4
         with:
@@ -1008,6 +1015,7 @@ jobs:
           TEST_TARGETS: ${{ matrix.test_targets }}
           RUN_SEARCH_PACKAGE: ${{ matrix.test_package_search == true }}
           RUN_AI_PACKAGE: ${{ matrix.test_package_ai == true }}
+          RERUN_ON_OLLAMA: ${{ matrix.rerun_on_ollama == true }}
           APPFLOWY_FAKE_AI_IMAGE_SEARCH_TEST: ${{ matrix.fake_vision == true }}
           # The AI integration tests grade answers with an OpenAI client of their own and only
           # exercise every provider when the DeepSeek, Gemini and Azure credentials exist.
@@ -1025,9 +1033,12 @@ jobs:
             export AI_TEST_JUDGE_REASONING_EFFORT=none
             AI_EVALUATOR_OPENAI_API_KEY=ollama
             # A small local model misses a graded answer now and then, in a different test each
-            # run. A failed test is rerun up to twice and fails the lane only if every attempt
-            # fails; a crash or build error is never rerun.
-            test_runner=(python3 -B ci-tools/.github/scripts/retry_failed_tests.py --attempts 3 --)
+            # run. In lanes marked `rerun_on_ollama`, a failed test is rerun up to twice and fails
+            # the lane only if every attempt fails; a crash or build error is never rerun. Lanes
+            # that only embed get no reruns, so their flaky tests still fail.
+            if [[ "${RERUN_ON_OLLAMA:-false}" == true ]]; then
+              test_runner=(python3 -B ci-tools/.github/scripts/retry_failed_tests.py --attempts 3 --)
+            fi
             # The Cloud source lists the tests that cannot pass on Ollama or that a small local
             # model fails too often; they still run against hosted providers.
             if [[ -f script/ci/ollama_skipped_tests.txt ]]; then
