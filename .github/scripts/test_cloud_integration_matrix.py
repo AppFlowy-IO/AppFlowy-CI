@@ -495,6 +495,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     })
     self.assertIn("script/ci/configure_ollama_ai.py", point["run"])
     self.assertIn('--ollama-url "$CI_OLLAMA_BASE_URL"', point["run"])
+    # nginx sends /ai to the web frontend, so the Admin AI API is called on Cloud's own port.
+    self.assertIn("--cloud-url http://localhost:8000", point["run"])
     order = [names.index(name) for name in (
       "Checkout Private Repo", "Decide where AI calls go", "Join the tailnet that serves Ollama",
       "Check that Ollama answers over the tailnet", "Replace values in .env", "Run Docker-Compose",

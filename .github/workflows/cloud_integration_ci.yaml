@@ -947,6 +947,8 @@ jobs:
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
 
+      # Cloud serves the Admin AI API under /ai, which the stack's nginx does not route (it sends
+      # /ai to the web frontend), so the script calls Cloud's own port.
       - name: Point the AI at Ollama
         if: env.AI_ON_OLLAMA == 'true'
         timeout-minutes: 20
@@ -955,7 +957,7 @@ jobs:
           GOTRUE_ADMIN_EMAIL=$(grep -m1 '^GOTRUE_ADMIN_EMAIL=' .env | cut -d= -f2-) \
           GOTRUE_ADMIN_PASSWORD=$(grep -m1 '^GOTRUE_ADMIN_PASSWORD=' .env | cut -d= -f2-) \
             python3 -B script/ci/configure_ollama_ai.py \
-            --cloud-url http://localhost --gotrue-url http://localhost/gotrue \
+            --cloud-url http://localhost:8000 --gotrue-url http://localhost/gotrue \
             --ollama-url "$CI_OLLAMA_BASE_URL" --chat-model "$CI_OLLAMA_CHAT_MODEL" \
             --embedding-model "$CI_OLLAMA_EMBEDDING_MODEL" \
             --image-provider-url http://fake_ai_provider:4010/v1
