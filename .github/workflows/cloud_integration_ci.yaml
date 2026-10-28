@@ -198,7 +198,10 @@ jobs:
       fail-fast: false
       matrix:
         phase: ${{ fromJSON(needs.verify_test_module_coverage.outputs.encoded_cache_phases) }}
-    timeout-minutes: 120
+    # Builds use two jobs on a 4-vCPU hosted runner and rarely restore a cache. The permission
+    # phase spends 77 to over 120 minutes building 12 owner crates before its contracts run; the
+    # cache phase has taken up to 119.
+    timeout-minutes: 180
     env:
       DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
       SQLX_OFFLINE: 'true'
