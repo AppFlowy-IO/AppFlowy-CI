@@ -555,7 +555,8 @@ jobs:
 
       - &cloud_ci_tools
         name: Checkout CI tools
-        if: env.CLOUD_RUN_ROOT == 'true'
+        # Lanes on Ollama run their tests through retry_failed_tests.py.
+        if: env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -1015,6 +1016,7 @@ jobs:
         run: |
           set -e
           ollama_skips=()
+          test_runner=()
           if [[ "${AI_ON_OLLAMA:-false}" == true ]]; then
             # Tests that call a provider themselves, and the AI package's answer grader, use
             # Ollama too, with thinking off. Any model a test names falls back to Ollama's model.
@@ -1022,8 +1024,12 @@ jobs:
             export AI_TEST_CHAT_MODEL="$CI_OLLAMA_CHAT_MODEL" AI_TEST_JUDGE_MODEL="$CI_OLLAMA_CHAT_MODEL"
             export AI_TEST_JUDGE_REASONING_EFFORT=none
             AI_EVALUATOR_OPENAI_API_KEY=ollama
-            # The Cloud source lists the tests that grade answers against a bar a small local
-            # model does not meet reliably; they still run against hosted providers.
+            # A small local model misses a graded answer now and then, in a different test each
+            # run. A failed test is rerun up to twice and fails the lane only if every attempt
+            # fails; a crash or build error is never rerun.
+            test_runner=(python3 -B ci-tools/.github/scripts/retry_failed_tests.py --attempts 3 --)
+            # The Cloud source lists the tests that cannot pass on Ollama or that a small local
+            # model fails too often; they still run against hosted providers.
             if [[ -f script/ci/ollama_skipped_tests.txt ]]; then
               while IFS= read -r skipped || [[ -n "$skipped" ]]; do
                 [[ -z "$skipped" || "$skipped" == \#* ]] || ollama_skips+=(--skip "$skipped")
@@ -1209,7 +1215,7 @@ jobs:
             done
             for module in ${{ matrix.test_modules }}; do
               echo "==> Testing module: ${module}"
-              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
+              RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${test_runner[@]}" "${cargo_command[@]}" test --locked \
                 --features "$CLOUD_TEST_FEATURES" "${module}::" \
                 -- --skip stress_test --skip commercial_test --skip whitelist \
                 "${skip_args[@]}" "${ollama_skips[@]}" --test-threads=1
@@ -1236,9 +1242,12 @@ jobs:
               # Commercial license tests need the self-host-af build; the standalone AI CI
               # skipped them in this stack too.
               ai_skips=(--skip stress_test --skip commercial_test)
+              ai_cargo_args=()
               if [[ "${AI_ON_OLLAMA:-false}" == true ]]; then
                 echo "==> Testing appflowy-ai package against Ollama ($CI_OLLAMA_CHAT_MODEL)"
                 ai_skips+=("${ollama_skips[@]}")
+                # Every test binary runs, so one rerun covers the failures of all of them.
+                ai_cargo_args+=(--no-fail-fast)
               elif [[ "${AI_TEST_HAS_FULL_PROVIDERS:-false}" == true ]]; then
                 echo "==> Testing appflowy-ai package against every configured provider"
               else
@@ -1251,8 +1260,8 @@ jobs:
               fi
               echo "==> Testing appflowy-ai package"
               APPFLOWY_GOTRUE_JWT_SECRET="$ai_jwt_secret" OPENAI_API_KEY="$AI_EVALUATOR_OPENAI_API_KEY" \
-                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" \
-                cargo test --locked -p appflowy-ai -- "${ai_skips[@]}" --test-threads=1
+                RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${test_runner[@]}" \
+                cargo test --locked -p appflowy-ai "${ai_cargo_args[@]}" -- "${ai_skips[@]}" --test-threads=1
             fi
           fi
 

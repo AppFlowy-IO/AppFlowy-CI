@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 import yaml
@@ -537,20 +538,43 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertEqual(old_source, "AI_ON_OLLAMA=false")
     self.assertIn("predates", output)
 
+    # The rerun wrapper comes from the CI tools checkout, which Ollama lanes always make.
+    tools = steps[names.index("Checkout CI tools")]
+    self.assertEqual(tools["if"], "env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'")
+    self.assertLess(names.index("Decide where AI calls go"), names.index("Checkout CI tools"))
+
     # On Ollama, every test that calls a provider and the package's grader use Ollama, and the
-    # whole package runs: every model a test names falls back to Ollama's model.
+    # whole package runs: every model a test names falls back to Ollama's model. Every command
+    # runs through retry_failed_tests.py, so a test that fails once is rerun.
     run = render_run_tests(self.lane("appflowy_cloud_api"))
     with tempfile.TemporaryDirectory() as directory:
       calls = Path(directory) / "cargo-calls"
-      fake = r'''
-        cargo() {
-          printf '%s|%s|%s|%s|%s|%s\t' "$OPENAI_BASE_URL" "${OPENAI_API_KEY:-}" "$AI_OPENAI_API_KEY" \
-            "$AI_TEST_CHAT_MODEL" "$AI_TEST_JUDGE_MODEL" "$AI_TEST_JUDGE_REASONING_EFFORT" >> "$CARGO_CALLS"
-          printf '%s\t' "$@" >> "$CARGO_CALLS"
-          printf '\n' >> "$CARGO_CALLS"
-        }
-        docker() { printf 'ai-container-test-secret'; }
-      ''' + run
+      # cargo on PATH, so the wrapper reaches it: records its environment and arguments, and
+      # fails a test on a first attempt that passes when rerun.
+      fake_bin = Path(directory, "bin")
+      fake_bin.mkdir()
+      fake_cargo = fake_bin / "cargo"
+      fake_cargo.write_text(textwrap.dedent(r'''
+        #!/usr/bin/env bash
+        printf '%s|%s|%s|%s|%s|%s\t' "$OPENAI_BASE_URL" "${OPENAI_API_KEY:-}" "$AI_OPENAI_API_KEY" \
+          "$AI_TEST_CHAT_MODEL" "$AI_TEST_JUDGE_MODEL" "$AI_TEST_JUDGE_REASONING_EFFORT" >> "$CARGO_CALLS"
+        printf '%s\t' "$@" >> "$CARGO_CALLS"
+        printf '\n' >> "$CARGO_CALLS"
+        echo "     Running tests/main.rs (target/debug/deps/main-0123456789abcdef)"
+        if [[ " $* " == *" --exact "* ]]; then
+          echo "test ai_test::flaky ... ok"
+          echo "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        else
+          echo "test ai_test::flaky ... FAILED"
+          echo "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"
+          exit 101
+        fi
+      ''').lstrip())
+      fake_cargo.chmod(0o755)
+      scripts = Path(directory, "ci-tools/.github/scripts")
+      scripts.mkdir(parents=True)
+      (scripts / "retry_failed_tests.py").symlink_to(REPO / ".github/scripts/retry_failed_tests.py")
+      fake = "docker() { printf 'ai-container-test-secret'; }\n" + run
       # The Cloud source lists the tests a small local model cannot pass reliably.
       Path(directory, "script/ci").mkdir(parents=True)
       Path(directory, "script/ci/ollama_skipped_tests.txt").write_text(
@@ -558,7 +582,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       )
       result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", fake], cwd=directory,
-        env={**os.environ, "CARGO_CALLS": str(calls), "CLOUD_RUN_ROOT": "false",
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "CARGO_CALLS": str(calls), "CLOUD_RUN_ROOT": "false",
              "RUN_SEARCH_PACKAGE": "false", "RUN_AI_PACKAGE": "true", "TEST_SKIPS": "",
              "AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false",
              "AI_EVALUATOR_OPENAI_API_KEY": "paid-key", "AI_ON_OLLAMA": "true",
@@ -569,18 +594,25 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       self.assertNotIn("::warning::", result.stdout)
       self.assertIn("against Ollama (qwen3.5:4b)", result.stdout)
       commands = calls.read_text().splitlines()
+      first_attempts = [command for command in commands if "\t--exact\t" not in command]
+      reruns = [command for command in commands if "\t--exact\t" in command]
       root_env = f"{url}||ollama|qwen3.5:4b|qwen3.5:4b|none"
       package_env = f"{url}|ollama|ollama|qwen3.5:4b|qwen3.5:4b|none"
       modules = self.lane("appflowy_cloud_api")["test_modules"].split()
-      self.assertEqual(len(commands), len(modules) + 1)
-      self.assertTrue(all(command.startswith(root_env + "\t") for command in commands[:-1]))
-      self.assertTrue(commands[-1].startswith(package_env + "\t"), commands[-1])
-      self.assertIn("-p\tappflowy-ai\t", commands[-1])
-      self.assertNotIn("no_context_test", commands[-1])
+      self.assertEqual(len(first_attempts), len(modules) + 1)
+      self.assertTrue(all(command.startswith(root_env + "\t") for command in first_attempts[:-1]))
+      self.assertTrue(first_attempts[-1].startswith(package_env + "\t"), first_attempts[-1])
+      # Every package test binary runs, so one rerun covers all of their failures.
+      self.assertIn("-p\tappflowy-ai\t--no-fail-fast\t--\t", first_attempts[-1])
+      self.assertNotIn("no_context_test", first_attempts[-1])
       self.assertNotIn("paid-key", calls.read_text())
       skips = "--skip\tai_test::grading_root\t--skip\tcompletion_test::grading_package\t"
-      self.assertTrue(all(skips in command for command in commands), commands)
+      self.assertTrue(all(skips in command for command in first_attempts), first_attempts)
       self.assertNotIn("graded by a model", calls.read_text())
+      # Each command's failed test was rerun on its own, passed, and is reported.
+      self.assertEqual(len(reruns), len(modules) + 1)
+      self.assertTrue(all(command.endswith("\t--exact\tai_test::flaky\t") for command in reruns))
+      self.assertEqual(result.stdout.count("::warning title=Passed on a rerun::"), len(modules) + 1)
 
 
 if __name__ == "__main__":
