@@ -19,6 +19,20 @@ on:
         required: false
         type: string
         default: "main"
+      test_runner:
+        description: "Run the usual four mobile suites, or only runner 4 for focused Cloud validation"
+        required: false
+        type: choice
+        default: "all"
+        options: ["all", "4"]
+      cloud_source_sha:
+        description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
+        required: false
+        type: string
+      cloud_image_run_id:
+        description: "Existing successful private image build for cloud_source_sha; never starts another build"
+        required: false
+        type: string
 
 env:
   FLUTTER_VERSION: "3.41.9"
@@ -36,9 +50,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_number: [1, 2, 3, 4]
+        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || '[1,2,3,4]') }}
 
-    runs-on: macos-latest
+    # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
+    # runner 4 runs its local suite first, then the focused Cloud row-page suite.
+    runs-on: ${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}
+    env:
+      IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
+      IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
+      COMPOSE_PROJECT_NAME: ios-row-${{ github.run_id }}-${{ github.run_attempt }}
+      APPFLOWY_CLOUD_VERSION: latest-amd64
+      APPFLOWY_HISTORY_VERSION: latest-amd64
+      APPFLOWY_WORKER_VERSION: latest-amd64
+      APPFLOWY_ADMIN_FRONTEND_VERSION: latest-amd64
+      CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+      CLOUD_IMAGE_RUN_ID: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
 
     steps:
       - name: Checkout private repository
@@ -48,11 +74,15 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Verify Docker runner architecture
+        if: matrix.test_number == 4
+        run: test "$(uname -m)" = x86_64
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: aarch64-apple-ios-sim
+          target: ${{ env.IOS_RUST_TARGET }}
           override: true
           profile: minimal
 
@@ -65,7 +95,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: ios-simulator
+          prefix-key: ios-simulator-${{ env.IOS_RUST_TARGET }}
           workspaces: |
             frontend/rust-lib
           cache-all-crates: true
@@ -77,7 +107,7 @@ jobs:
       - name: Install prerequisites
         working-directory: frontend
         run: |
-          rustup target install aarch64-apple-ios-sim
+          rustup target install "$IOS_RUST_TARGET"
           cargo install --force --locked duckscript_cli
           cargo install cargo-lipo
           cargo make appflowy-flutter-deps-tools
@@ -91,8 +121,19 @@ jobs:
       - name: Build AppFlowy
         working-directory: frontend
         run: |
-          cargo make --profile development-ios-arm64-sim appflowy-core-dev-ios
-          cargo make --profile development-ios-arm64-sim code_generation
+          cargo make --profile "$IOS_BUILD_PROFILE" appflowy-core-dev-ios
+          cargo make --profile "$IOS_BUILD_PROFILE" code_generation
+
+      - name: Prepare Intel simulator architecture
+        if: matrix.test_number == 4
+        run: |
+          test "$(lipo -archs frontend/appflowy_flutter/packages/appflowy_backend/ios/libdart_ffi.a)" = x86_64
+          # Desktop's Debug.xcconfig excludes Intel simulators. Override only this
+          # job's simulator builds; keep the checkout and host tool settings intact.
+          cat > "$RUNNER_TEMP/mobile-intel-simulator.xcconfig" <<'XCCONFIG'
+          ARCHS[sdk=iphonesimulator*] = x86_64
+          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
+          XCCONFIG
 
       - name: List simulators
         run: |
@@ -101,14 +142,163 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: "iPhone 17 Pro"
+          model: ${{ matrix.test_number == 4 && 'iPhone 16 Pro' || 'iPhone 17 Pro' }}
           shutdown_after_job: false
 
       # Integration tests
       - name: Pre-build iOS app for simulator
         working-directory: frontend/appflowy_flutter
-        run: flutter build ios --simulator --debug
+        run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
+          flutter build ios --simulator --debug
 
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
+        id: local-mobile-tests
         working-directory: frontend/appflowy_flutter
-        run: flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
+          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
+
+      # Keep checkouts below the Desktop root and after its checkout, which cleans
+      # the workspace. A failed local test does not skip Cloud coverage, but a
+      # failed build does; each Cloud phase requires its own preceding phase.
+      - name: Discover focused Cloud row-page runner
+        if: "!cancelled() && matrix.test_number == 4 && (steps.local-mobile-tests.outcome == 'success' || steps.local-mobile-tests.outcome == 'failure')"
+        id: cloud-discovery
+        run: |
+          if [[ -f frontend/appflowy_flutter/integration_test/mobile_row_page_cloud_runner.dart ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$CLOUD_SOURCE_SHA" || -n "$CLOUD_IMAGE_RUN_ID" ]]; then
+            echo "::error::Exact Cloud validation requires the selected Desktop revision's focused mobile runner"
+            exit 1
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Cloud row-page coverage is not applicable to this older Desktop revision: its focused mobile runner is absent. The existing local runner still ran." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout workflow tools
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-discovery.outputs.enabled == 'true'"
+        id: cloud-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mobile-ci-tools
+
+      - name: Checkout Cloud fixture
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success'"
+        id: cloud-fixture
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          ref: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          path: .mobile-cloud
+
+      - name: Prepare private Cloud and simulator configuration
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-fixture.outcome == 'success'"
+        id: cloud-config
+        run: |
+          echo "MINIO_DATA_DIR=$RUNNER_TEMP/mobile-row-cloud-minio" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/mobile-row-cloud-minio"
+          python3 .mobile-ci-tools/.github/scripts/mobile_row_cloud.py \
+            --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
+            --desktop "$GITHUB_WORKSPACE" --temporary "$RUNNER_TEMP"
+
+      - name: Setup Docker on macOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
+        id: cloud-docker
+        uses: douglascamata/setup-docker-macos-action@v1
+
+      - name: Log in to Docker Hub
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"
+        id: cloud-login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Start the verified exact Cloud runtime
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-login.outcome == 'success'"
+        id: exact-cloud
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/desktop-cloud-runtime
+        env:
+          AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+        with:
+          cloud-source-sha: ${{ env.CLOUD_SOURCE_SHA }}
+          image-run-id: ${{ env.CLOUD_IMAGE_RUN_ID }}
+          desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
+          cloud-path: .mobile-cloud
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+
+      - name: Start job-owned Cloud services
+        if: "!cancelled() && matrix.test_number == 4 && steps.exact-cloud.outcome == 'success'"
+        id: cloud-start
+        env:
+          AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+          EXACT_CLOUD_ENABLED: ${{ steps.exact-cloud.outputs.enabled }}
+        working-directory: .mobile-cloud
+        timeout-minutes: 15
+        run: |
+          if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
+            docker compose -f docker-compose-ci.yml pull
+            docker compose -f docker-compose-ci.yml up -d --no-build
+          elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
+            echo "::error::Cloud runtime selection did not complete"
+            exit 1
+          fi
+          docker compose -f docker-compose-ci.yml images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
+          git rev-parse HEAD > "$RUNNER_TEMP/mobile-row-cloud-compose-revision.txt"
+
+      - name: Wait for Cloud readiness
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-start.outcome == 'success'"
+        id: cloud-ready
+        timeout-minutes: 6
+        run: |
+          for attempt in {1..60}; do
+            if curl --silent --fail --max-time 2 http://localhost/api/health > /dev/null &&
+               curl --silent --fail --max-time 2 http://localhost:9000/minio/health/ready > /dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The job-owned Cloud fixture did not become ready"
+          exit 1
+
+      - name: Run Cloud row-page tests on iOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-ready.outcome == 'success'"
+        id: cloud-tests
+        working-directory: frontend/appflowy_flutter
+        timeout-minutes: 20
+        run: |
+          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
+            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          fi
+          flutter test integration_test/mobile_row_page_cloud_runner.dart \
+            -d '${{ steps.simulator-action.outputs.udid }}' \
+            --dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json"
+
+      - name: Upload Cloud image identities
+        if: always() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-row-cloud-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mobile-row-cloud-images.json
+            ${{ runner.temp }}/mobile-row-cloud-compose-revision.txt
+            ${{ runner.temp }}/desktop-cloud-manifest.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove job-owned Cloud services and credentials
+        if: always() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'
+        working-directory: .mobile-cloud
+        timeout-minutes: 5
+        run: |
+          docker compose -f docker-compose-ci.yml down --volumes --remove-orphans || true
+          rm -f .env "$RUNNER_TEMP/mobile-row-cloud-defines.json"
