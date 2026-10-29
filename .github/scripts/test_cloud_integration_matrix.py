@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 import yaml
@@ -474,7 +475,9 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
 
   def test_ollama_lanes_send_ai_calls_to_ollama_over_tailscale(self):
     ollama_lanes = [lane["test_service"] for lane in self.lanes if lane.get("ollama")]
-    self.assertEqual(ollama_lanes, ["appflowy_cloud_api", "appflowy_cloud_search"])
+    self.assertEqual(ollama_lanes, [
+      "appflowy_cloud_core", "appflowy_cloud_collab", "appflowy_cloud_api", "appflowy_cloud_search",
+    ])
     self.assertEqual(
       self.job["env"]["CI_OLLAMA_BASE_URL"],
       "${{ matrix.ollama == true && vars.CI_OLLAMA_BASE_URL || '' }}",
@@ -495,6 +498,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     })
     self.assertIn("script/ci/configure_ollama_ai.py", point["run"])
     self.assertIn('--ollama-url "$CI_OLLAMA_BASE_URL"', point["run"])
+    # nginx sends /ai to the web frontend, so the Admin AI API is called on Cloud's own port.
+    self.assertIn("--cloud-url http://localhost:8000", point["run"])
     order = [names.index(name) for name in (
       "Checkout Private Repo", "Decide where AI calls go", "Join the tailnet that serves Ollama",
       "Check that Ollama answers over the tailnet", "Replace values in .env", "Run Docker-Compose",
@@ -535,20 +540,98 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertEqual(old_source, "AI_ON_OLLAMA=false")
     self.assertIn("predates", output)
 
+    # The rerun wrapper comes from the CI tools checkout, which Ollama lanes always make.
+    tools = steps[names.index("Checkout CI tools")]
+    self.assertEqual(tools["if"], "env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'")
+    self.assertLess(names.index("Decide where AI calls go"), names.index("Checkout CI tools"))
+
     # On Ollama, every test that calls a provider and the package's grader use Ollama, and the
-    # whole package runs: every model a test names falls back to Ollama's model.
-    run = render_run_tests(self.lane("appflowy_cloud_api"))
+    # whole package runs: every model a test names falls back to Ollama's model. In the lanes that
+    # grade answers, every command runs through retry_failed_tests.py, so a test that fails once
+    # is rerun.
+    rerun_lanes = [lane["test_service"] for lane in self.lanes if lane.get("rerun_on_ollama")]
+    self.assertEqual(rerun_lanes, ["appflowy_cloud_api", "appflowy_cloud_search"])
+    self.assertEqual(steps[names.index("Run Tests")]["env"]["RERUN_ON_OLLAMA"],
+                     "${{ matrix.rerun_on_ollama == true }}")
+    result, calls = self.run_tests_with_a_flaky_cargo("appflowy_cloud_api", {
+      "CLOUD_RUN_ROOT": "false", "RUN_SEARCH_PACKAGE": "false", "RUN_AI_PACKAGE": "true",
+      "TEST_SKIPS": "", "AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false",
+      "AI_EVALUATOR_OPENAI_API_KEY": "paid-key", "AI_ON_OLLAMA": "true", "RERUN_ON_OLLAMA": "true",
+      "CI_OLLAMA_BASE_URL": url, "CI_OLLAMA_CHAT_MODEL": "qwen3.5:4b",
+    })
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertNotIn("::warning::", result.stdout)
+    self.assertIn("against Ollama (qwen3.5:4b)", result.stdout)
+    commands = calls.splitlines()
+    first_attempts = [command for command in commands if "\t--exact\t" not in command]
+    reruns = [command for command in commands if "\t--exact\t" in command]
+    root_env = f"{url}||ollama|qwen3.5:4b|qwen3.5:4b|none"
+    package_env = f"{url}|ollama|ollama|qwen3.5:4b|qwen3.5:4b|none"
+    modules = self.lane("appflowy_cloud_api")["test_modules"].split()
+    self.assertEqual(len(first_attempts), len(modules) + 1)
+    self.assertTrue(all(command.startswith(root_env + "\t") for command in first_attempts[:-1]))
+    self.assertTrue(first_attempts[-1].startswith(package_env + "\t"), first_attempts[-1])
+    # Every package test binary runs, so one rerun covers all of their failures.
+    self.assertIn("-p\tappflowy-ai\t--no-fail-fast\t--\t", first_attempts[-1])
+    self.assertNotIn("no_context_test", first_attempts[-1])
+    self.assertNotIn("paid-key", calls)
+    skips = "--skip\tai_test::grading_root\t--skip\tcompletion_test::grading_package\t"
+    self.assertTrue(all(skips in command for command in first_attempts), first_attempts)
+    self.assertNotIn("graded by a model", calls)
+    # Each command's failed test was rerun on its own, passed, and is reported.
+    self.assertEqual(len(reruns), len(modules) + 1)
+    self.assertTrue(all(command.endswith("\t--exact\tai_test::flaky\t") for command in reruns))
+    self.assertEqual(result.stdout.count("::warning title=Passed on a rerun::"), len(modules) + 1)
+
+  def test_ollama_lanes_that_grade_no_answers_do_not_rerun_failed_tests(self):
+    # The collab lane only embeds with Ollama, so a flaky test fails it as on hosted providers.
+    url = "http://100.64.0.7:11434/v1"
+    result, calls = self.run_tests_with_a_flaky_cargo("appflowy_cloud_collab", {
+      "CLOUD_RUN_ROOT": "false", "RUN_SEARCH_PACKAGE": "false", "RUN_AI_PACKAGE": "false",
+      "TEST_SKIPS": "", "AI_EVALUATOR_OPENAI_API_KEY": "paid-key", "AI_ON_OLLAMA": "true",
+      "RERUN_ON_OLLAMA": "false", "CI_OLLAMA_BASE_URL": url, "CI_OLLAMA_CHAT_MODEL": "qwen3.5:4b",
+    })
+    self.assertEqual(result.returncode, 101, result.stdout + result.stderr)
+    self.assertNotIn("Passed on a rerun", result.stdout)
+    commands = calls.splitlines()
+    self.assertEqual(len(commands), 1, commands)
+    self.assertTrue(commands[0].startswith(f"{url}||ollama|qwen3.5:4b|qwen3.5:4b|none\t"),
+                    commands[0])
+    self.assertIn("\tcollab::\t", commands[0])
+    self.assertIn("--skip\tai_test::grading_root\t", commands[0])
+    self.assertNotIn("paid-key", calls)
+
+  def run_tests_with_a_flaky_cargo(self, service, env):
+    """Runs a lane's "Run Tests" step with `cargo` on PATH, so retry_failed_tests.py reaches it
+    too. The fake records its environment and arguments, and fails a test on a first attempt that
+    passes when rerun. Returns the step's result and the recorded calls, one line per call."""
+    run = render_run_tests(self.lane(service))
     with tempfile.TemporaryDirectory() as directory:
       calls = Path(directory) / "cargo-calls"
-      fake = r'''
-        cargo() {
-          printf '%s|%s|%s|%s|%s|%s\t' "$OPENAI_BASE_URL" "${OPENAI_API_KEY:-}" "$AI_OPENAI_API_KEY" \
-            "$AI_TEST_CHAT_MODEL" "$AI_TEST_JUDGE_MODEL" "$AI_TEST_JUDGE_REASONING_EFFORT" >> "$CARGO_CALLS"
-          printf '%s\t' "$@" >> "$CARGO_CALLS"
-          printf '\n' >> "$CARGO_CALLS"
-        }
-        docker() { printf 'ai-container-test-secret'; }
-      ''' + run
+      fake_bin = Path(directory, "bin")
+      fake_bin.mkdir()
+      fake_cargo = fake_bin / "cargo"
+      fake_cargo.write_text(textwrap.dedent(r'''
+        #!/usr/bin/env bash
+        printf '%s|%s|%s|%s|%s|%s\t' "$OPENAI_BASE_URL" "${OPENAI_API_KEY:-}" "$AI_OPENAI_API_KEY" \
+          "$AI_TEST_CHAT_MODEL" "$AI_TEST_JUDGE_MODEL" "$AI_TEST_JUDGE_REASONING_EFFORT" >> "$CARGO_CALLS"
+        printf '%s\t' "$@" >> "$CARGO_CALLS"
+        printf '\n' >> "$CARGO_CALLS"
+        echo "     Running tests/main.rs (target/debug/deps/main-0123456789abcdef)"
+        if [[ " $* " == *" --exact "* ]]; then
+          echo "test ai_test::flaky ... ok"
+          echo "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        else
+          echo "test ai_test::flaky ... FAILED"
+          echo "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"
+          exit 101
+        fi
+      ''').lstrip())
+      fake_cargo.chmod(0o755)
+      scripts = Path(directory, "ci-tools/.github/scripts")
+      scripts.mkdir(parents=True)
+      (scripts / "retry_failed_tests.py").symlink_to(REPO / ".github/scripts/retry_failed_tests.py")
+      fake = "docker() { printf 'ai-container-test-secret'; }\n" + run
       # The Cloud source lists the tests a small local model cannot pass reliably.
       Path(directory, "script/ci").mkdir(parents=True)
       Path(directory, "script/ci/ollama_skipped_tests.txt").write_text(
@@ -556,29 +639,11 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       )
       result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", fake], cwd=directory,
-        env={**os.environ, "CARGO_CALLS": str(calls), "CLOUD_RUN_ROOT": "false",
-             "RUN_SEARCH_PACKAGE": "false", "RUN_AI_PACKAGE": "true", "TEST_SKIPS": "",
-             "AI_IMAGE_FROM_SOURCE": "true", "AI_TEST_HAS_FULL_PROVIDERS": "false",
-             "AI_EVALUATOR_OPENAI_API_KEY": "paid-key", "AI_ON_OLLAMA": "true",
-             "CI_OLLAMA_BASE_URL": url, "CI_OLLAMA_CHAT_MODEL": "qwen3.5:4b"},
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "CARGO_CALLS": str(calls), **env},
         capture_output=True, text=True, check=False,
       )
-      self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-      self.assertNotIn("::warning::", result.stdout)
-      self.assertIn("against Ollama (qwen3.5:4b)", result.stdout)
-      commands = calls.read_text().splitlines()
-      root_env = f"{url}||ollama|qwen3.5:4b|qwen3.5:4b|none"
-      package_env = f"{url}|ollama|ollama|qwen3.5:4b|qwen3.5:4b|none"
-      modules = self.lane("appflowy_cloud_api")["test_modules"].split()
-      self.assertEqual(len(commands), len(modules) + 1)
-      self.assertTrue(all(command.startswith(root_env + "\t") for command in commands[:-1]))
-      self.assertTrue(commands[-1].startswith(package_env + "\t"), commands[-1])
-      self.assertIn("-p\tappflowy-ai\t", commands[-1])
-      self.assertNotIn("no_context_test", commands[-1])
-      self.assertNotIn("paid-key", calls.read_text())
-      skips = "--skip\tai_test::grading_root\t--skip\tcompletion_test::grading_package\t"
-      self.assertTrue(all(skips in command for command in commands), commands)
-      self.assertNotIn("graded by a model", calls.read_text())
+      return result, calls.read_text() if calls.exists() else ""
 
 
 if __name__ == "__main__":

@@ -209,7 +209,7 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
             "fail-fast": False,
             "matrix": {"phase": "${{ fromJSON(needs.verify_test_module_coverage.outputs.encoded_cache_phases) }}"},
         })
-        self.assertEqual(job["timeout-minutes"], 120)
+        self.assertEqual(job["timeout-minutes"], 180)
         self.assertEqual(job["env"]["APPFLOWY_CACHE_TEST_PHASE"], "${{ matrix.phase }}")
         self.assertNotIn("continue-on-error", job)
         self.assertTrue(all("continue-on-error" not in step for step in job["steps"]))
