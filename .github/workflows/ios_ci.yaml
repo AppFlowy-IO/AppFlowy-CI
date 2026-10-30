@@ -78,7 +78,9 @@ jobs:
   integration-tests:
     name: Mobile integration tests (runner ${{ matrix.test_number }})
     if: github.event_name != 'workflow_dispatch' || inputs.validation_scope != 'docker_setup'
-    timeout-minutes: 120
+    # Cold Intel Rust + Xcode compilation and the existing local suite can
+    # consume 120 minutes before Cloud coverage. Bound test cases separately.
+    timeout-minutes: ${{ matrix.test_number == 4 && 180 || 120 }}
     strategy:
       fail-fast: false
       matrix:
@@ -131,6 +133,7 @@ jobs:
           workspaces: |
             frontend/rust-lib
           cache-all-crates: true
+          cache-on-failure: true
 
       - uses: davidB/rust-cargo-make@v1
         with:
@@ -190,16 +193,39 @@ jobs:
           fi
           flutter build ios --simulator --debug
 
+      - name: Checkout workflow tools
+        if: "!cancelled() && matrix.test_number == 4"
+        id: cloud-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mobile-ci-tools
+
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
+        timeout-minutes: ${{ matrix.test_number == 4 && 90 || 120 }}
         working-directory: frontend/appflowy_flutter
         run: |
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+            python3 "$GITHUB_WORKSPACE/.mobile-ci-tools/.github/scripts/run_mobile_tests.py" \
+              --simulator '${{ steps.simulator-action.outputs.udid }}' \
+              --report "$RUNNER_TEMP/mobile-local-test-guard.json"
+          else
+            flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }} --reporter expanded
           fi
-          # Print each test's start so a stalled case is identifiable before the
-          # job deadline, instead of relying on completion-only GitHub output.
-          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }} --reporter expanded
+
+      - name: Upload mobile timeout diagnostics
+        if: always() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-local-test-guard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mobile-local-test-guard.json
+            ${{ runner.temp }}/mobile-local-timeout.png
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Keep checkouts below the Desktop root and after its checkout, which cleans
       # the workspace. A failed local test does not skip Cloud coverage, but a
@@ -218,17 +244,8 @@ jobs:
             echo "Cloud row-page coverage is not applicable to this older Desktop revision: its focused mobile runner is absent. The existing local runner still ran." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Checkout workflow tools
-        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-discovery.outputs.enabled == 'true'"
-        id: cloud-tools
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: .mobile-ci-tools
-
       - name: Checkout Cloud fixture
-        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success'"
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-discovery.outputs.enabled == 'true' && steps.cloud-tools.outcome == 'success'"
         id: cloud-fixture
         uses: actions/checkout@v4
         with:

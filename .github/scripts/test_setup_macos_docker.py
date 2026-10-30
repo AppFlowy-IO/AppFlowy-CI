@@ -149,7 +149,7 @@ class PrebuiltDockerTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / ".github/workflows/ios_ci.yaml").read_text())
         job = workflow["jobs"]["integration-tests"]
-        self.assertEqual(job["timeout-minutes"], 120)
+        self.assertEqual(job["timeout-minutes"], "${{ matrix.test_number == 4 && 180 || 120 }}")
         step = next(s for s in job["steps"] if s.get("id") == "cloud-docker")
         self.assertEqual(step["run"], "python3 .mobile-ci-tools/.github/scripts/setup_macos_docker.py")
         self.assertNotIn("uses", step)
