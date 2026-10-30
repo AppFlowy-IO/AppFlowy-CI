@@ -18,6 +18,12 @@ Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.ya
 additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
 when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
 
+Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
+group per CI branch and private PR, so the automatic main workflow cannot cancel it
+while testing that same PR. A newer manual attempt in the same group still replaces
+the old one. Cancellation does not queue new PDF reporting jobs; an ordinary failed
+preparation still reports a failing PDF status.
+
 PR #97 exposed why these triggers are separate: its CI/Gateway configuration changes started
 41 Flutter, four Rust, and four iOS jobs because those workflows accepted every CI-repository PR
 and defaulted their private source checkout to `main`.
@@ -25,6 +31,29 @@ and defaulted their private source checkout to `main`.
 Desktop can optionally test direct shared-crate server pins against an exact
 private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
 for input provenance, legacy behavior and CI-branch validation before receiver activation.
+
+Desktop PDF exports have three focused commit statuses: `PDF export regression (Rust)`,
+`PDF export regression (UI)` and `PDF export regression (Cloud UI)`. The source-owned
+`frontend/rust-lib/integration-test/pdf_export_contract.json` names the required native
+tests and BDD scenarios. The same required Rust gate runs all 12 `database_pdf_export`
+event cases and seven `pdf_export_columns` recovery components without module filters;
+passing events cannot hide a failing component suite. The local UI BDD runs on
+`macos-15-intel` using the matching prepared
+FFI artifact; the cold-cloud BDD runs in the existing Linux `pdf_export` cloud suite.
+Machine test events must show the contracted scenarios completed without skips,
+and native process failures are preserved. Inventories, results, logs and saved
+PDF/CSV files are retained for seven days.
+
+The status bridge requires an immutable `pr_ref`, a matching checkout and current
+private PR head, and a passing current gate step. Legacy refs with no PDF tests or
+contract receive an explicit not-applicable status; removing the contract or tests
+in a PR cannot use that fallback. Test execution does not receive the bridge's token.
+To validate a CI branch's statuses, dispatch Rust and Flutter with both `pr_ref=<SHA>`
+and `pr_number=<private-PR>`. Merge the workflow and Desktop contract changes and verify
+the same Desktop SHA before making these statuses required in repository rules.
+Require up-to-date branches with the main-only status rule. Once main adopts the
+contract, an older head's legacy NA statuses must not allow untested changes to
+merge with the newer main revision.
 
 Flutter's Linux jobs configure APT from the same CI revision as the workflow.
 Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent

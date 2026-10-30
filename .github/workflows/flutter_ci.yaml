@@ -45,8 +45,9 @@ env:
   CARGO_INCREMENTAL: "0"
 
 concurrency:
-  # Dispatches share the public workflow ref; isolate the private revision tested.
-  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
+  # A manual CI-branch validation must coexist with automatic main runs for the
+  # same private PR. Retries within that CI branch still replace older attempts.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -138,14 +139,19 @@ jobs:
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
+          targets: ${{ matrix.target }}
 
       - name: Setup sccache
         id: sccache
@@ -462,9 +468,10 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [macos-latest]
+        # Match the x86_64 FFI profile and its PDF-test consumer explicitly.
+        os: [macos-15-intel]
         include:
-          - os: macos-latest
+          - os: macos-15-intel
             flutter_profile: development-mac-x86_64
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
@@ -478,14 +485,27 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
       - name: Install Rust toolchain
         id: rust_toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
+          targets: ${{ matrix.target }}
 
       - name: Setup sccache
         id: sccache
@@ -595,6 +615,118 @@ jobs:
         with:
           name: ${{ github.run_id }}-${{ matrix.os }}
           path: appflowy_flutter.tar.gz
+
+  pdf_export_ui:
+    name: PDF export regression (macOS)
+    needs: [prepare-macos]
+    # A failed preparation must produce a failing private status, not a missing success.
+    if: always() && !cancelled()
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
+      - name: Detect the source PDF UI contract
+        id: pdf-ui-source
+        run: |
+          if [ -f frontend/rust-lib/integration-test/pdf_export_contract.json ] || \
+             [ -f frontend/appflowy_flutter/integration_test/desktop/bdd/database/grid/database_export_test.dart ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark the Desktop PDF UI gate pending
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --kind ui --state pending \
+            --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
+
+      - name: Install Rust toolchain
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Flutter
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        with:
+          name: ${{ github.run_id }}-macos-15-intel
+
+      - name: Restore the exact prepared macOS application and native FFI
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        run: |
+          tar -xf appflowy_flutter.tar.gz
+          test "$(uname -m)" = x86_64
+          test -s frontend/appflowy_flutter/packages/appflowy_backend/macos/libdart_ffi.a
+          lipo -verify_arch x86_64 frontend/appflowy_flutter/packages/appflowy_backend/macos/libdart_ffi.a
+
+      - name: Resolve Flutter packages for the restored source
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        working-directory: frontend/appflowy_flutter
+        run: flutter pub get
+
+      - name: Run the source-contracted PDF BDD on macOS
+        id: pdf-ui-regression
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        timeout-minutes: 15
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py \
+            --project frontend/appflowy_flutter \
+            --output "$RUNNER_TEMP/pdf-ui-regression"
+
+      - name: Upload PDF UI regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-pdf-ui-regression-${{ github.run_id }}
+          path: ${{ runner.temp }}/pdf-ui-regression
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish the Desktop PDF UI result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PDF_JOB_STATUS: ${{ job.status }}
+          PDF_GATE_OUTCOME: ${{ steps.pdf-ui-regression.outcome || 'skipped' }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --kind ui --state completed \
+            --job-status "$PDF_JOB_STATUS" \
+            --gate-outcome "$PDF_GATE_OUTCOME" \
+            --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
   unit_test:
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
@@ -787,6 +919,43 @@ jobs:
             /tmp/unit-test-events.jsonl
           retention-days: 7
 
+  pdf_cloud_ui_availability:
+    name: PDF cloud suite availability
+    needs: [prepare-linux]
+    # Legacy heads need an explicit NA status. A current contract without its
+    # matrix suite must fail instead of silently losing the required check.
+    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
+          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
+
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Report an absent PDF cloud suite explicitly
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --kind cloud_ui --state completed \
+            --gate-outcome skipped
+
   cloud_integration_test:
     name: Cloud integration test (${{ matrix.cloud_test_suite }})
     needs: [prepare-linux]
@@ -823,6 +992,22 @@ jobs:
           ref: ${{ github.sha }}
           path: .desktop-ci-tools
           persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
+      - name: Mark the Desktop cloud PDF UI gate pending
+        if: matrix.cloud_test_suite == 'pdf_export'
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --kind cloud_ui --state pending \
+            --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
 
       - name: Configure Ubuntu package downloads
         if: runner.os == 'Linux'
@@ -1065,6 +1250,7 @@ jobs:
           pkg-config --modversion epoxy || true
 
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
+        id: cloud-test-run
         # Leave time inside the 60-minute job limit to upload partial results.
         timeout-minutes: 45
         shell: bash
@@ -1076,6 +1262,11 @@ jobs:
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           docker ps -a
+          rm -f /tmp/cloud-test-events.jsonl
+          if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
+            export APPFLOWY_PDF_TEST_OUTPUT_DIR="$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports"
+            mkdir -p "$APPFLOWY_PDF_TEST_OUTPUT_DIR"
+          fi
 
           set +e
           flutter test \
@@ -1089,10 +1280,19 @@ jobs:
           TEST_EXIT=$?
           set -eo pipefail
 
+          if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
+            cp /tmp/test_output.txt "$RUNNER_TEMP/pdf-cloud-ui-regression/test.log"
+            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py" \
+              --project "$GITHUB_WORKSPACE/frontend/appflowy_flutter" \
+              --output "$RUNNER_TEMP/pdf-cloud-ui-regression" \
+              --verify-cloud-events /tmp/cloud-test-events.jsonl \
+              --process-status "$TEST_EXIT"
+          fi
+
           PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
           FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
 
-          if [ "$TEST_EXIT" -ne 0 ] &&
+          if [ "${{ matrix.cloud_test_suite }}" != pdf_export ] && [ "$TEST_EXIT" -ne 0 ] &&
             grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
             grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
             grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
@@ -1156,6 +1356,27 @@ jobs:
             gotrue_logs.txt
             nginx_logs.txt
           retention-days: 1
+
+      - name: Upload PDF cloud UI regression evidence
+        if: always() && matrix.cloud_test_suite == 'pdf_export'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-pdf-cloud-ui-regression-${{ github.run_id }}
+          path: ${{ runner.temp }}/pdf-cloud-ui-regression
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish the Desktop cloud PDF UI result
+        if: always() && matrix.cloud_test_suite == 'pdf_export'
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PDF_JOB_STATUS: ${{ job.status }}
+          PDF_GATE_OUTCOME: ${{ steps.cloud-test-run.outcome || 'skipped' }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --kind cloud_ui --state completed \
+            --job-status "$PDF_JOB_STATUS" --gate-outcome "$PDF_GATE_OUTCOME" \
+            --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
 
   integration_test:
     needs: [prepare-linux]
