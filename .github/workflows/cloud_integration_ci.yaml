@@ -128,6 +128,7 @@ jobs:
     outputs:
       encoded_cache_available: ${{ steps.encoded_cache.outputs.enabled }}
       encoded_cache_phases: ${{ steps.encoded_cache.outputs.phases }}
+      presentation_available: ${{ steps.presentation.outputs.enabled }}
     steps:
       - name: Checkout CI Repo
         uses: actions/checkout@v4
@@ -177,6 +178,28 @@ jobs:
               output.write(f'enabled={str(present == len(scripts)).lower()}\n')
               output.write(f'phases={json.dumps(phases, separators=(",", ":"))}\n')
           PY
+
+      - name: Detect presentation acceptance capability
+        id: presentation
+        working-directory: appflowy-cloud-premium
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(libs/appflowy-presentation/Cargo.toml tests/presentation_acceptance.rs
+            script/test_presentation_acceptance.py script/test_presentation_gateway_contract.py)
+          present=0
+          for file in "${files[@]}"; do
+            if [[ -f "$file" ]]; then present=$((present + 1)); fi
+          done
+          if (( present == 0 )); then
+            echo '::notice::This source predates presentation acceptance.'
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          elif (( present == ${#files[@]} )); then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Incomplete presentation acceptance suite; all owned entrypoints are required.'
+            exit 1
+          fi
 
       - name: Every test-bearing module must be in a matrix
         run: |
@@ -591,7 +614,7 @@ jobs:
           save-if: ${{ env.CLOUD_CACHE_WRITER == 'true' }}
           # The root compiler uses sccache for compiler outputs. Do not restore
           # or upload its much larger target snapshot for the root test lanes.
-          cache-target: ${{ env.CLOUD_CACHE_GROUP != 'root' }}
+          cache-targets: ${{ env.CLOUD_CACHE_GROUP != 'root' }}
           cache-bin: false
           cache-all-crates: false
       - &cloud_sccache
@@ -1078,12 +1101,19 @@ jobs:
           fi
           if [[ "${TEST_TARGETS:-}" == "*" ]]; then
             echo "==> Discovering standalone Cloud test targets"
-            mapfile -t targets < <(
+            targets=()
+            while IFS= read -r target; do
+              [[ -z "$target" ]] || targets+=("$target")
+            done < <(
               cargo metadata --locked --no-deps --format-version=1 |
                 python3 -c 'import json, sys; data=json.load(sys.stdin); print(*[target["name"] for package in data["packages"] if package["name"] == "appflowy-cloud" for target in package["targets"] if "test" in target["kind"] and target["name"] != "main"], sep="\n")'
             )
             test "${#targets[@]}" -gt 0
             for target in "${targets[@]}"; do
+              if [[ "$target" == presentation_acceptance ]]; then
+                echo '==> presentation_acceptance is required in the dedicated owned-fixture lane'
+                continue
+              fi
               echo "==> Testing standalone target: ${target}"
               if [[ "$target" == hosted_plan_limits ]]; then
                 APPFLOWY_TEST_HOSTED_PLAN_LIMITS=true \
@@ -1371,10 +1401,147 @@ jobs:
             openldap_logs.txt
           retention-days: 1
 
+  presentation-contracts:
+    name: Presentation contracts (${{ matrix.package }})
+    needs: [verify_test_module_coverage, image_source, image_build_gate]
+    if: >-
+      !cancelled() && needs.verify_test_module_coverage.outputs.presentation_available == 'true' &&
+      needs.image_build_gate.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [appflowy-cloud-ai, appflowy-presentation, appflowy-ai, gotrue]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: presentation_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d presentation_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      APPFLOWY_PRESENTATION_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      APPFLOWY_PRESENTATION_CI_OWNED_POSTGRES: '1'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact Cloud source
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ needs.image_source.outputs.sha }}
+          persist-credentials: false
+      - name: Checkout pinned CI tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: presentation-${{ matrix.package }}-ci
+          cache-on-failure: true
+      - name: Free presentation compiler space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install presentation test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
+          sudo locale-gen en_US.UTF-8
+      - name: Run ordinary and explicitly owned ignored package contracts
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: python3 -B ci-tools/.github/scripts/presentation_test_runner.py --source "$GITHUB_WORKSPACE" --package "$PACKAGE"
+
+  presentation-acceptance:
+    name: Presentation acceptance (native stack and Gateway)
+    needs: [verify_test_module_coverage, image_source, image_build_gate]
+    if: >-
+      !cancelled() && needs.verify_test_module_coverage.outputs.presentation_available == 'true' &&
+      needs.image_build_gate.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    # This target is intentionally excluded from the generic standalone wildcard. Missing
+    # Service provenance fails this required lane instead of reporting 0 passed as green.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: presentation_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d presentation_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OWNED_TEST_TARGETS: presentation_acceptance
+      DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      APPFLOWY_PRESENTATION_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
+      APPFLOWY_PRESENTATION_CI_OWNED_POSTGRES: '1'
+      CARGO_BUILD_JOBS: '2'
+      PRESENTATION_SERVICE_REPOSITORY: ${{ vars.PRESENTATION_SERVICE_REPOSITORY || 'AppFlowy-IO/AppFlowy-Cloud-Service' }}
+      PRESENTATION_SERVICE_SHA: ${{ vars.PRESENTATION_SERVICE_SHA || '44bcd0f16baa75d95d8d4c2ea873cd246498738a' }}
+    steps:
+      - name: Require pinned Service acceptance prerequisites
+        shell: bash
+        run: |
+          if [[ ! "$PRESENTATION_SERVICE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
+                ! "$PRESENTATION_SERVICE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo '::error::Set PRESENTATION_SERVICE_REPOSITORY and PRESENTATION_SERVICE_SHA to the reviewed Billing/Gateway source. Presentation acceptance cannot skip.'
+            exit 1
+          fi
+      - name: Checkout exact Cloud source
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ needs.image_source.outputs.sha }}
+          persist-credentials: false
+      - name: Checkout pinned CI tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+      - name: Checkout pinned Billing and Gateway source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRESENTATION_SERVICE_REPOSITORY }}
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ env.PRESENTATION_SERVICE_SHA }}
+          path: presentation-service
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: presentation-acceptance-ci-${{ env.PRESENTATION_SERVICE_SHA }}
+          cache-on-failure: true
+      - name: Free presentation compiler space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install presentation test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
+          sudo locale-gen en_US.UTF-8
+      - name: Install SQLx CLI for the Service-owned migration ledgers
+        run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
+      - name: Run native source ACL, private S3 and actual Gateway contracts
+        run: >-
+          python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py
+          --source "$GITHUB_WORKSPACE" --service-source "$GITHUB_WORKSPACE/presentation-service"
+
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability]
+    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability, presentation-contracts, presentation-acceptance]
     # Report failures and skipped dependencies, but let cancelled runs release
     # their PR concurrency slot without waiting for a notification runner.
     if: ${{ !cancelled() }}
