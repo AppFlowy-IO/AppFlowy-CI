@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import run_mobile_tests as mobile
 
@@ -164,6 +165,39 @@ class MobileTestGuardTest(unittest.TestCase):
         last_beat = heartbeat.read_text()
         time.sleep(.15)
         self.assertEqual(heartbeat.read_text(), last_beat)
+
+    def test_group_permission_error_still_reaps_the_owned_child(self):
+        child_pid = Path(self.temporary.name) / "child.pid"
+        real_killpg = os.killpg
+        signals = []
+
+        def deny_group_signal(pid, sig):
+            signals.append(sig)
+            raise PermissionError(1, "Operation not permitted")
+
+        def cleanup_child():
+            if child_pid.exists():
+                try:
+                    real_killpg(int(child_pid.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(cleanup_child)
+        with patch.object(mobile.os, "killpg", side_effect=deny_group_signal):
+            result = self.run_child(
+                "import os,time\nfrom pathlib import Path\n"
+                f"Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+                "print('00:00 +0: Restricted helper group')\ntime.sleep(60)", case=.2)
+        self.assertEqual(result, 124)
+        self.assertEqual(signals, [signal.SIGINT])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(child_pid.read_text()), 0)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["report_stage"], "finished")
+        self.assertEqual(report["returncode"], 124)
+        self.assertTrue(report["timed_out"])
+        self.assertEqual(report["cleanup_warnings"][0]["errno"], 1)
+        self.assertIn("permission", self.output.getvalue().lower())
 
     def test_existing_report_is_not_overwritten(self):
         self.report.write_text("keep")

@@ -69,8 +69,13 @@ def runner_environment(root, prefix):
 
 def start_runtime(root, prefix):
     environment = runner_environment(root, prefix)
-    memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)) // (1024 ** 3)
-    # Preserve the existing runner resource allocation and VM backend.
+    host_memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)) // (1024 ** 3)
+    # Xcode and CoreSimulator remain on the host. Giving their entire physical
+    # memory to a second OS makes the cold VM compete with the native tests.
+    memory = min(8, host_memory // 2)
+    if memory < 2:
+        raise ValueError("The Intel Docker runner needs at least 4 GiB of host memory")
+    print(f"Docker VM memory: {memory} GiB; host physical memory: {host_memory} GiB", flush=True)
     subprocess.run([
         "colima", "start", "--cpu", str(os.cpu_count()), "--memory", str(memory),
         "--arch", "x86_64", "--vm-type=vz", "--mount-type=virtiofs",

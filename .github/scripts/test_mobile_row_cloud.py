@@ -193,8 +193,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             flutter.chmod(0o700)
             tools = root / ".mobile-ci-tools/.github/scripts"
             tools.mkdir(parents=True)
-            (tools / "run_mobile_tests.py").write_text(
-                (ROOT / ".github/scripts/run_mobile_tests.py").read_text())
+            for name in ("run_mobile_tests.py", "mobile_timeout_diagnostics.py"):
+                (tools / name).write_bytes((ROOT / ".github/scripts" / name).read_bytes())
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", command], cwd=root,
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
@@ -385,8 +385,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     root = Path(directory)
                     tools = root / ".mobile-ci-tools/.github/scripts"
                     tools.mkdir(parents=True)
-                    (tools / "run_mobile_tests.py").write_bytes(
-                        (ROOT / ".github/scripts/run_mobile_tests.py").read_bytes())
+                    for tool in ("run_mobile_tests.py", "mobile_timeout_diagnostics.py"):
+                        (tools / tool).write_bytes((ROOT / ".github/scripts" / tool).read_bytes())
                     flutter = root / "flutter"
                     flutter.write_text(
                         '#!/usr/bin/env python3\nimport json, os, sys\n'

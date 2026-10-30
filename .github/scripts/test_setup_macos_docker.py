@@ -130,6 +130,24 @@ class PrebuiltDockerTest(unittest.TestCase):
         self.assertTrue(all(call.kwargs["env"]["DOCKER_CONFIG"] == str(self.root / "docker")
                             for call in run.call_args_list))
 
+    def test_vm_reserves_host_memory_for_xcode_and_the_ios_simulator(self):
+        prefix = self.prepare()
+        for host_gib, expected_vm_gib in ((8, 4), (14, 7), (32, 8)):
+            with self.subTest(host_gib=host_gib):
+                github_env = self.root / f"env-memory-{host_gib}"
+                github_path = self.root / f"path-memory-{host_gib}"
+                with patch.dict(os.environ, {"GITHUB_ENV": str(github_env),
+                                             "GITHUB_PATH": str(github_path)}), \
+                     patch.object(setup.subprocess, "check_output",
+                                  return_value=str(host_gib * 1024 ** 3)), \
+                     patch.object(setup.subprocess, "run") as run:
+                    setup.start_runtime(self.root, prefix)
+                command = run.call_args_list[0].args[0]
+                vm_gib = int(command[command.index("--memory") + 1])
+                self.assertEqual(vm_gib, expected_vm_gib)
+                self.assertGreaterEqual(host_gib - vm_gib, host_gib // 2)
+                self.assertTrue(github_env.is_file())
+
     def test_setup_refuses_local_or_arm_machines_before_installation(self):
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false", "RUNNER_OS": "macOS",
                                      "RUNNER_ARCH": "X64"}), \

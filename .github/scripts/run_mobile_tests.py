@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 
+from mobile_timeout_diagnostics import BUNDLE_ID, read_sdk_phases, runner_pid
+
 
 CASE = re.compile(r"^\d+:\d+(?::\d+)? (?:[+~!\-]\d+\s*)+: (.+)$")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -42,25 +44,55 @@ def capture_timeout_diagnostics(simulator, directory):
         except (OSError, subprocess.TimeoutExpired):
             # Diagnostics must not prevent the owned process group from stopping.
             continue
+    try:
+        processes = (directory / "mobile-local-processes.txt").read_text(errors="replace")[:65536]
+        pid = runner_pid(processes)
+        if pid is not None:
+            subprocess.run(["/usr/bin/sample", str(pid), "5", "1", "-file",
+                            str(directory / "mobile-local-native-sample.txt")],
+                           capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        container = subprocess.check_output(
+            ["xcrun", "simctl", "get_app_container", simulator, BUNDLE_ID, "data"],
+            text=True, timeout=5).strip()
+        if Path(container).is_absolute():
+            report = read_sdk_phases(container)
+            (directory / "mobile-local-sdk-phases.json").write_text(json.dumps(report, indent=2))
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def stop_process_group(process, grace_seconds):
     # Flutter's helpers share the new session. A device-isolate hang must not
     # leave a host test process running after this step has failed.
+    warnings = []
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+        group_denied = False
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             break
+        except PermissionError as error:
+            # A privileged helper can remain after Flutter exits. Do not
+            # escalate privileges or let that hide the original test timeout.
+            warnings.append({"process_group": process.pid, "signal": sig.name,
+                             "errno": error.errno})
+            group_denied = True
+            process.send_signal(sig)
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
             continue
+        if group_denied:
+            break
         # A helper may outlive its parent, so finish retiring this owned group.
         if sig != signal.SIGKILL:
             continue
         break
-    process.wait()
+    process.wait(timeout=grace_seconds)
+    return warnings
 
 
 def run_bounded(command, *, build_seconds, case_seconds, report_path,
@@ -82,6 +114,7 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     timed_out = False
+    cleanup_warnings = []
 
     def write_report(returncode, stage):
         report = {"returncode": returncode, "timed_out": timed_out,
@@ -89,7 +122,7 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
                   "current_case": current_case, "started_cases": cases,
                   "elapsed_seconds": round(time.monotonic() - started, 3),
                   "build_limit_seconds": build_seconds, "case_limit_seconds": case_seconds,
-                  "report_stage": stage}
+                  "report_stage": stage, "cleanup_warnings": cleanup_warnings}
         report_path.write_text(json.dumps(report, indent=2))
 
     try:
@@ -131,7 +164,11 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
         if timed_out:
             output.write(f"\n::error::Mobile test exceeded its {'build' if current_case is None else 'case'} deadline: {current_case or 'application startup'}\n")
             output.flush()
-            stop_process_group(process, grace_seconds)
+            cleanup_warnings.extend(stop_process_group(process, grace_seconds))
+            for warning in cleanup_warnings:
+                output.write(f"::warning::Permission denied signalling mobile process group "
+                             f"{warning['process_group']}; the owned child was reaped\n")
+            output.flush()
             returncode = 124
         else:
             returncode = process.wait()

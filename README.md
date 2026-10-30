@@ -37,7 +37,10 @@ reset the active case's clock. A timeout saves its case report before diagnostic
 and process cleanup, then stops the owned Flutter process group and uploads
 the last case name, timing report, simulator process list, and ten minutes of
 Runner and related lifecycle logs, plus a screenshot when available. Each capture
-has a fifteen-second limit and runs before process cleanup. This also
+has a fifteen-second limit and runs before process cleanup. A native stack
+sample targets only the selected app PID. SDK shutdown evidence reads bounded
+tails of test-owned logs and exports only fixed lifecycle markers, without raw
+messages, account fields or file paths. This also
 bounds device-isolate stalls that cannot report a Dart test timeout. Rust compilation
 is cached after ordinary later-step failures. Cloud test deadlines and application
 performance assertions stay unchanged.
@@ -45,11 +48,17 @@ performance assertions stay unchanged.
 If capture or cleanup is interrupted, the saved report retains the active case and
 `timeout_detected` stage with an unset return code. A completed guard updates it to
 `finished` with the observed result, so a partial report cannot imply success.
+If a privileged helper denies process-group signals, the guard still signals and
+reaps its own child and records the permission limitation. It does not escalate
+privileges or turn the test timeout into a successful result.
 
 Run `41099752392` reached Colima's ready message four seconds before the full
 runner's ten-minute Docker setup deadline. Allow fifteen minutes for that cold
 setup and its daemon checks. The separate Docker smoke job retains its existing
-limit; the Cloud test step retains twenty minutes.
+limit; the Cloud test step retains twenty minutes. The VM uses half of physical
+RAM, capped at eight GiB, so Xcode, CoreSimulator and macOS retain host memory.
+The former allocation gave all physical RAM to the VM; setup now reports both
+host and VM capacity before startup.
 
 Validate the installer, Compose health checks, and host-to-VM port forwarding on a hosted
 Intel runner with a pinned Redis container:

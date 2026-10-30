@@ -226,6 +226,8 @@ jobs:
             ${{ runner.temp }}/mobile-local-timeout.png
             ${{ runner.temp }}/mobile-local-processes.txt
             ${{ runner.temp }}/mobile-local-device.log
+            ${{ runner.temp }}/mobile-local-native-sample.txt
+            ${{ runner.temp }}/mobile-local-sdk-phases.json
           if-no-files-found: ignore
           retention-days: 7
 
