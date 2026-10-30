@@ -33,13 +33,18 @@ budget and a 90-minute local-test step; the other runners retain their 120-minut
 The Intel local-test process has independent host-side deadlines of 60 minutes for initial
 build/startup and eight minutes per test case. Repeated progress output for the same case
 does not reset its deadline. Terminal reporter summaries do not create cases or
-reset the active case's clock. A timeout stops the owned Flutter process group and uploads
+reset the active case's clock. A timeout saves its case report before diagnostic capture
+and process cleanup, then stops the owned Flutter process group and uploads
 the last case name, timing report, simulator process list, and ten minutes of
 Runner and related lifecycle logs, plus a screenshot when available. Each capture
 has a fifteen-second limit and runs before process cleanup. This also
 bounds device-isolate stalls that cannot report a Dart test timeout. Rust compilation
 is cached after ordinary later-step failures. Cloud test deadlines and application
 performance assertions stay unchanged.
+
+If capture or cleanup is interrupted, the saved report retains the active case and
+`timeout_detected` stage with an unset return code. A completed guard updates it to
+`finished` with the observed result, so a partial report cannot imply success.
 
 Run `41099752392` reached Colima's ready message four seconds before the full
 runner's ten-minute Docker setup deadline. Allow fifteen minutes for that cold

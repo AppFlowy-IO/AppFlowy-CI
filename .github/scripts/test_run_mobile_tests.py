@@ -108,6 +108,33 @@ class MobileTestGuardTest(unittest.TestCase):
             os.kill(int(child_pid.read_text()), 0)
         self.assertTrue(json.loads(self.report.read_text())["timed_out"])
 
+    def test_timeout_report_survives_interrupted_diagnostics(self):
+        child_pid = Path(self.temporary.name) / "child.pid"
+
+        def interrupt_capture():
+            os.kill(int(child_pid.read_text()), 0)
+            signal.raise_signal(signal.SIGINT)
+
+        with self.assertRaises(KeyboardInterrupt):
+            mobile.run_bounded(
+                [sys.executable, "-u", "-c",
+                 "import os,time\nfrom pathlib import Path\n"
+                 f"Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+                 "print('00:00 +0: Interrupted capture')\ntime.sleep(60)"],
+                build_seconds=3, case_seconds=.2, report_path=self.report,
+                output=self.output, on_timeout=interrupt_capture, grace_seconds=.1,
+            )
+        self.assertTrue(self.report.is_file(),
+                        "The active case must be saved before interruptible diagnostics")
+        report = json.loads(self.report.read_text())
+        self.assertTrue(report["timed_out"])
+        self.assertEqual(report["current_case"], "Interrupted capture")
+        self.assertEqual(report["started_cases"], ["Interrupted capture"])
+        self.assertEqual(report["report_stage"], "timeout_detected")
+        self.assertIsNone(report["returncode"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(child_pid.read_text()), 0)
+
     def test_timeout_also_stops_a_helper_that_ignores_parent_signals(self):
         heartbeat = Path(self.temporary.name) / "heartbeat"
         helper_pid = Path(self.temporary.name) / "helper.pid"

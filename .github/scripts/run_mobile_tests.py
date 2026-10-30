@@ -82,6 +82,16 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     timed_out = False
+
+    def write_report(returncode, stage):
+        report = {"returncode": returncode, "timed_out": timed_out,
+                  "phase": "build" if current_case is None else "case",
+                  "current_case": current_case, "started_cases": cases,
+                  "elapsed_seconds": round(time.monotonic() - started, 3),
+                  "build_limit_seconds": build_seconds, "case_limit_seconds": case_seconds,
+                  "report_stage": stage}
+        report_path.write_text(json.dumps(report, indent=2))
+
     try:
         while process.poll() is None or selector.get_map():
             now = time.monotonic()
@@ -89,6 +99,9 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
                         else case_started + case_seconds)
             if now >= deadline:
                 timed_out = True
+                # Capture and process retirement can be interrupted. Preserve
+                # the case first without claiming an observed process exit.
+                write_report(None, "timeout_detected")
                 if on_timeout is not None:
                     on_timeout()
                 break
@@ -122,12 +135,7 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
             returncode = 124
         else:
             returncode = process.wait()
-        report = {"returncode": returncode, "timed_out": timed_out,
-                  "phase": "build" if current_case is None else "case",
-                  "current_case": current_case, "started_cases": cases,
-                  "elapsed_seconds": round(time.monotonic() - started, 3),
-                  "build_limit_seconds": build_seconds, "case_limit_seconds": case_seconds}
-        report_path.write_text(json.dumps(report, indent=2))
+        write_report(returncode, "finished")
         return returncode
     finally:
         selector.close()
