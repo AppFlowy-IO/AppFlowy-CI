@@ -67,6 +67,12 @@ A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 
+Presentation contracts have separate package builds and an explicit ignored-test inventory, with
+owned PostgreSQL and installed media tools. The root `presentation_acceptance` target belongs to
+the required native/Gateway acceptance job rather than the generic standalone wildcard. That job
+fails until a reviewed Service repository and immutable SHA are configured; ordinary package tests
+do not establish hosted Gateway or Billing coverage. See [Presentation CI coverage](docs/presentation-ci.md).
+
 The Search, Worker, Shared libraries and Directory self-host contracts lanes start a separate Redis
 on a random loopback port and export `APPFLOWY_TEST_REDIS_URL` only to tests. Application consumers use the Compose Redis,
 so they cannot drain admission-test streams and hide unexpected enqueueing. An always-run step
@@ -114,15 +120,16 @@ The integration matrix has 16 jobs, with `max-parallel: 15`. Actions displays ea
 | Search | Database index and restore-search tests, root search integration tests, and the `appflowy-search` package |
 | Signup whitelist | Isolated GoTrue whitelist and system-configuration tests |
 | Auth | SCIM tests with Authentik and LDAP tests with OpenLDAP |
-| Standalone HTTP targets | Every non-`main` Cloud Cargo integration target, including hosted-plan and migration fixtures |
+| Standalone HTTP targets | Generic non-`main` Cloud Cargo integration targets; presentation acceptance uses its dedicated fixture job |
 | Worker service | Worker package tests |
 
 Each topic has its own Docker stack. Modules and tests run serially within it; root integration
 topics finish with seeded account deletion. Database history and restore-search run on the Search
 stack before the other search modules, while the Databases topic skips those filters to avoid an
 indexing backlog. Auth enables both Authentik and OpenLDAP profiles and runs SCIM and LDAP serially.
-The standalone topic discovers every non-`main` Cargo test target, and the coverage gate requires a
-new target to be selected explicitly or by `test_targets: "*"`. The 15-runner ceiling still leaves
+The standalone topic discovers generic non-`main` Cargo test targets, and the coverage gate requires a
+new target to be selected explicitly or by `test_targets: "*"`. Presentation acceptance requires
+`OWNED_TEST_TARGETS` in its dedicated job. The 15-runner ceiling still leaves
 room for workflow setup, coverage and cache-contract jobs.
 
 **Backup** is an additional integration topic with a dedicated private deployment. After the
@@ -179,7 +186,7 @@ Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
 python3 -B -m unittest discover -s .github/scripts
 ```
 
-The Cloud test-matrix coverage gate recognizes standard Rust, Tokio, and SQLx
+The Cloud test-matrix coverage gate recognizes standard Rust, Tokio, SQLx, and Actix
 test attributes. New test-bearing modules and standalone `tests/*.rs` targets must be assigned to
 an integration or commercial matrix entry, including modules containing only `#[sqlx::test]` cases.
 Run the coverage-checker regressions with Python 3:
