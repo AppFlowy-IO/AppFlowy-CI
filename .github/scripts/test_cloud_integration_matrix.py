@@ -143,6 +143,11 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         f"{SELF_HOST_STATUS_AUDIT}: test\n" if self_host_ignored else ""
       )
       run = render_run_tests(self.lane(service))
+      if service == "appflowy_cloud_member_packages":
+        (project / "ci-tools").symlink_to(REPO, target_is_directory=True)
+        prepare = next(step["run"] for step in self.job["steps"]
+                       if step.get("name") == "Prepare shared library test binaries")
+        run = prepare + "\n" + run
       fake_cargo = r'''cargo() {
         printf '%s\t' "$@" >> cargo-calls
         printf '\n' >> cargo-calls
@@ -156,6 +161,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           else
             return "$SELF_HOST_EXECUTION_EXIT"
           fi
+        elif [[ " $* " == *" --no-run "* ]]; then
+          return 0
         elif [[ " $* " == *" --list "* ]]; then
           if [[ " $* " == *" --ignored "* ]]; then
             cat ignored-tests
@@ -166,6 +173,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           return "$TEST_EXECUTION_EXIT"
         fi
       }
+      export -f cargo
       ''' + run
       result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", fake_cargo],
@@ -191,11 +199,13 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
   def test_managed_user_guards_and_execution_share_unfiltered_packages(self):
     result, commands = self.run_member_packages()
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertEqual(len(commands), 3)
-    packages = commands[2][2:-2]
-    self.assertEqual(commands[2][-2:], ["--", "--test-threads=1"])
+    self.assertEqual(len(commands), 4)
+    packages = commands[3][2:-2]
+    self.assertEqual(commands[3][-2:], ["--", "--test-threads=1"])
     self.assertEqual(commands[0][2:-3], packages)
     self.assertEqual(commands[1][2:-4], packages)
+    self.assertEqual(commands[2][2:-1], packages)
+    self.assertEqual(commands[2][-1], "--no-run")
     self.assertEqual(commands[0][-3:], ["--lib", "--", "--list"])
     self.assertEqual(commands[1][-4:], ["--lib", "--", "--ignored", "--list"])
     self.assertTrue(all(packages[i] == "-p" for i in range(0, len(packages), 2)))
@@ -229,8 +239,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       with self.subTest(contracts=contracts):
         result, commands = self.run_member_packages(contracts=contracts, counts=counts)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(commands), 3 if contracts else 1)
-        default_execution = commands[2] if contracts else commands[0]
+        self.assertEqual(len(commands), 4 if contracts else 2)
+        default_execution = commands[-1]
         self.assertIn("appflowy-mcp-core", default_execution)
         self.assertEqual(default_execution[-2:], ["--", "--test-threads=1"])
         self.assertFalse(any("self-host-af" in command for command in commands))
@@ -270,7 +280,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
   def test_member_package_test_failures_fail_the_job(self):
     result, commands = self.run_member_packages(execution_exit=42)
     self.assertEqual(result.returncode, 42)
-    self.assertEqual(len(commands), 3)
+    self.assertEqual(len(commands), 4)
 
   def test_directory_feature_lanes_preserve_source_fixture_and_time_budgets(self):
     hosted = self.lane("appflowy_cloud_member_packages")
@@ -437,8 +447,9 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     cleanup = next(step for step in steps if step.get("name") == "Stop Search admission test Redis")
     self.assertEqual(cleanup["if"], "always()")
     self.assertIn('docker rm --force --volumes "$SEARCH_ADMISSION_REDIS_CONTAINER"', cleanup["run"])
-    self.assertIn("-p appflowy-mcp", render_run_tests(self.lane("appflowy_cloud_member_packages")))
-    self.assertIn("-p server-infra", render_run_tests(self.lane("appflowy_cloud_member_packages")))
+    member_helper = (REPO / ".github/scripts/cloud_member_tests.sh").read_text()
+    self.assertIn("-p appflowy-mcp", member_helper)
+    self.assertIn("-p server-infra", member_helper)
 
   def test_only_search_serves_the_fake_vision_model(self):
     fake_vision_lanes = [lane["test_service"] for lane in self.lanes if lane.get("fake_vision")]
