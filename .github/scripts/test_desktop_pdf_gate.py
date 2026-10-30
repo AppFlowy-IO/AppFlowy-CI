@@ -321,10 +321,11 @@ class PdfUiGateTest(unittest.TestCase):
         self.extra_error = False
         self.emit_events = True
         self.commands = []
+        self.device = "macos"
 
     def flutter(self, command, **kwargs):
         self.commands.append(command)
-        self.assertEqual(command[:5], ["flutter", "test", ui_gate.LEGACY_ENTRYPOINT, "-d", "macos"])
+        self.assertEqual(command[:5], ["flutter", "test", ui_gate.LEGACY_ENTRYPOINT, "-d", self.device])
         events = Path(command[5].removeprefix("--file-reporter=json:"))
         data = [{"type": "testStart", "test": {"id": 1, "name": "(setUpAll)"}},
                 {"type": "testDone", "testID": 1, "result": "success", "hidden": True},
@@ -337,10 +338,11 @@ class PdfUiGateTest(unittest.TestCase):
             events.write_text("".join(json.dumps(event) + "\n" for event in data))
         return subprocess.CompletedProcess(command, self.exit_code)
 
-    def run_gate(self):
+    def run_gate(self, device="macos"):
+        self.device = device
         with patch.object(ui_gate.subprocess, "run", side_effect=self.flutter), \
              patch.object(ui_gate, "desktop_revision", return_value="a" * 40):
-            code = ui_gate.run(self.project, self.output)
+            code = ui_gate.run(self.project, self.output, device)
         self.result = json.loads((self.output / "gate-result.json").read_text())
         return code
 
@@ -348,6 +350,16 @@ class PdfUiGateTest(unittest.TestCase):
         self.assertEqual(self.run_gate(), 0)
         self.assertEqual(self.result["completed_tests"], [self.name])
         self.assertEqual(self.result["desktop_sha"], "a" * 40)
+
+    def test_linux_uses_the_same_content_contract_and_native_failure_checks(self):
+        self.assertEqual(self.run_gate(device="linux"), 0)
+        self.assertEqual(self.result["device"], "linux")
+        self.assertEqual(self.result["completed_tests"], [self.name])
+        self.skipped = True
+        self.assertEqual(self.run_gate(device="linux"), 1)
+        self.skipped = False
+        self.exit_code = 1
+        self.assertEqual(self.run_gate(device="linux"), 1)
 
     def test_skipped_bdd_cannot_pass_even_with_successful_exit_and_suite(self):
         self.skipped = True
@@ -487,25 +499,27 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertLess(upload_index, status_index)
         self.assertLess(status_index, broad_index)
 
-    def test_macos_pdf_job_uses_the_matching_prepared_native_artifact(self):
+    def test_linux_pdf_job_reuses_linux_preparation_and_preserves_its_gate(self):
         jobs = yaml.safe_load((WORKFLOWS / "flutter_ci.yaml").read_text())["jobs"]
-        prepare, job = jobs["prepare-macos"], jobs["pdf_export_ui"]
-        self.assertEqual(prepare["strategy"]["matrix"]["os"], ["macos-15-intel"])
-        self.assertEqual(job["runs-on"], "macos-15-intel")
-        self.assertEqual(job["needs"], ["prepare-macos"])
+        prepare, job = jobs["prepare-linux"], jobs["pdf_export_ui"]
+        self.assertNotIn("prepare-macos", jobs)
+        self.assertNotIn("prepare-windows", jobs)
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertEqual(job["needs"], ["prepare-linux"])
         self.assertEqual(job["if"], "always() && !cancelled()")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
         test = next(step for step in steps if step.get("id") == "pdf-ui-regression")
         self.assertIn("run_desktop_pdf_ui_tests.py", test["run"])
+        self.assertIn("--device linux", test["run"])
+        self.assertIn("xvfb-run", test["run"])
         self.assertEqual(test["if"], "steps.pdf-ui-source.outputs.enabled == 'true'")
         prepare_names = [step.get("name") for step in prepare["steps"]]
         self.assertLess(prepare_names.index("Build AppFlowy"),
                         prepare_names.index("Clean cargo build artifacts"))
-        restore = next(step for step in steps if step.get("name") == "Restore the exact prepared macOS application and native FFI")
-        self.assertIn("lipo -verify_arch x86_64", restore["run"])
-        self.assertIn("libdart_ffi.a", restore["run"])
+        download = next(step for step in steps if step.get("uses") == "actions/download-artifact@v4")
+        self.assertEqual(download["with"]["name"], "${{ github.run_id }}-ubuntu-latest")
         upload = next(step for step in steps if step.get("name") == "Upload PDF UI regression evidence")
         self.assertEqual(upload["if"], "always()")
 

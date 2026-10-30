@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the source-contracted PDF BDD on macOS and verify machine test events."""
+"""Run the source-contracted desktop PDF BDD and verify machine test events."""
 
 from __future__ import annotations
 
@@ -89,12 +89,12 @@ def verify_cloud(project: Path, output: Path, events: Path, process_status: int)
         (output / "gate-result.json").write_text(json.dumps(result, indent=2) + "\n")
 
 
-def run(project: Path, output: Path) -> int:
+def run(project: Path, output: Path, device: str = "macos") -> int:
     project, output = project.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     (output / "gate-result.json").unlink(missing_ok=True)
     (output / "test-events.jsonl").unlink(missing_ok=True)
-    result = {"kind": "ui", "status": "failed"}
+    result = {"kind": "ui", "status": "failed", "device": device}
     try:
         path, required, legacy = configuration(project, "ui")
         if legacy:
@@ -102,7 +102,7 @@ def run(project: Path, output: Path) -> int:
             return 0
         result["desktop_sha"] = desktop_revision(project)
         events = output / "test-events.jsonl"
-        command = ["flutter", "test", str(path.relative_to(project)), "-d", "macos",
+        command = ["flutter", "test", str(path.relative_to(project)), "-d", device,
                    f"--file-reporter=json:{events}",
                    "--dart-define=APPFLOWY_TEST_BACKGROUND_FRAMES=true"]
         result["command"] = command
@@ -132,12 +132,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--device", choices=["macos", "linux"], default="macos")
     parser.add_argument("--verify-cloud-events", type=Path)
     parser.add_argument("--process-status", type=int, default=0)
     args = parser.parse_args()
     if args.verify_cloud_events:
         return verify_cloud(args.project, args.output, args.verify_cloud_events, args.process_status)
-    return run(args.project, args.output)
+    return run(args.project, args.output, args.device)
 
 
 if __name__ == "__main__":
