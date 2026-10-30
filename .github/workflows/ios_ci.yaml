@@ -144,9 +144,13 @@ jobs:
         with:
           model: ${{ matrix.test_number == 4 && 'iPhone 16 Pro' || 'iPhone 17 Pro' }}
           shutdown_after_job: false
+          wait_for_boot: true
 
-      # Integration tests
+      # Runner 4 builds through flutter test below, using the selected Intel
+      # simulator. The generic pre-build can complete Xcode compilation while
+      # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
+        if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
         run: |
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
