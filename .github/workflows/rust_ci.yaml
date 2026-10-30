@@ -376,6 +376,28 @@ jobs:
             --workspace frontend/rust-lib \
             --output "$RUNNER_TEMP/pdf-regression"
 
+      - name: Upload PDF regression evidence
+        if: always() && matrix.test_group == 'integration_group2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-pdf-regression-${{ github.run_id }}
+          path: ${{ runner.temp }}/pdf-regression
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish the Desktop PDF regression result
+        if: always() && matrix.test_group == 'integration_group2'
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PDF_JOB_STATUS: ${{ job.status }}
+          PDF_GATE_OUTCOME: ${{ steps.pdf-regression.outcome || 'skipped' }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --state completed \
+            --job-status "$PDF_JOB_STATUS" \
+            --gate-outcome "$PDF_GATE_OUTCOME" \
+            --gate-result "$RUNNER_TEMP/pdf-regression/gate-result.json"
+
       - name: Run Tests
         working-directory: frontend/rust-lib
         env:
@@ -456,25 +478,3 @@ jobs:
         run: |
           docker image prune -af
           docker volume prune -f
-
-      - name: Upload PDF regression evidence
-        if: always() && matrix.test_group == 'integration_group2'
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-pdf-regression-${{ github.run_id }}
-          path: ${{ runner.temp }}/pdf-regression
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Publish the Desktop PDF regression result
-        if: always() && matrix.test_group == 'integration_group2'
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          PDF_JOB_STATUS: ${{ job.status }}
-          PDF_GATE_OUTCOME: ${{ steps.pdf-regression.outcome || 'skipped' }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --state completed \
-            --job-status "$PDF_JOB_STATUS" \
-            --gate-outcome "$PDF_GATE_OUTCOME" \
-            --gate-result "$RUNNER_TEMP/pdf-regression/gate-result.json"

@@ -476,6 +476,16 @@ class PdfWorkflowTest(unittest.TestCase):
                 self.assertLess(select, install)
                 self.assertEqual(steps[install]["uses"], "dtolnay/rust-toolchain@stable")
 
+    def test_focused_result_is_published_before_unrelated_module_tests(self):
+        steps = yaml.safe_load((WORKFLOWS / "rust_ci.yaml").read_text())["jobs"]["test"]["steps"]
+        gate_index = next(i for i, step in enumerate(steps) if step.get("id") == "pdf-regression")
+        upload_index = next(i for i, step in enumerate(steps) if step.get("name") == "Upload PDF regression evidence")
+        status_index = next(i for i, step in enumerate(steps) if step.get("name") == "Publish the Desktop PDF regression result")
+        broad_index = next(i for i, step in enumerate(steps) if step.get("name") == "Run Tests")
+        self.assertLess(gate_index, upload_index)
+        self.assertLess(upload_index, status_index)
+        self.assertLess(status_index, broad_index)
+
     def test_macos_pdf_job_uses_the_matching_prepared_native_artifact(self):
         jobs = yaml.safe_load((WORKFLOWS / "flutter_ci.yaml").read_text())["jobs"]
         prepare, job = jobs["prepare-macos"], jobs["pdf_export_ui"]
