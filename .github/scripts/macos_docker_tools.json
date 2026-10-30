@@ -1,0 +1,22 @@
+{
+  "lima": {
+    "url": "https://github.com/lima-vm/lima/releases/download/v2.2.1/lima-2.2.1-Darwin-x86_64.tar.gz",
+    "sha256": "6b776e4bc41f358e6ee01fefcc78e2eb26f11635a0fcff632234af77a566c6c4"
+  },
+  "colima": {
+    "url": "https://github.com/abiosoft/colima/releases/download/v0.10.3/colima-Darwin-x86_64",
+    "sha256": "3082737fe8a98afda11cba7d9a20b6e56fe80c6153464beda04bec630758770b"
+  },
+  "docker": {
+    "url": "https://download.docker.com/mac/static/stable/x86_64/docker-29.9.2.tgz",
+    "sha256": "089c3f618df88bdef4f1257d9d604499136a1ec5168b67d194c260acad2b522f"
+  },
+  "compose": {
+    "url": "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-x86_64",
+    "sha256": "245c191b11a6345dd3b32b8f6eadeed1e1dcd5147aa46dfa423462e95f587e93"
+  },
+  "buildx": {
+    "url": "https://github.com/docker/buildx/releases/download/v0.38.1/buildx-v0.38.1.darwin-amd64",
+    "sha256": "76e7a809cc98d34a4c1b7db23feac673def5b8dcdddd9e713ef26598689aa796"
+  }
+}

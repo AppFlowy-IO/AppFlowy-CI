@@ -18,6 +18,15 @@ Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.ya
 additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
 when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
 
+The Intel iOS runner installs Docker, Compose, Buildx, Lima and Colima from pinned upstream
+binaries with SHA256 verification. Homebrew's current Intel formulae can compile Go and Docker
+from source: run `41008324764` passed all 55 local mobile tests, then exhausted its 120-minute
+job budget during that compilation before the Cloud row-page tests started. The binary setup
+keeps the same VM backend and uses only job-owned tool/configuration directories. Download,
+checksum or daemon errors fail setup. The required test commands and their deadlines stay
+unchanged. To verify downloads locally without installing tools or starting
+a VM, run `python3 .github/scripts/setup_macos_docker.py --verify-downloads <new-directory>`.
+
 Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
 group per CI branch and private PR, so the automatic main workflow cannot cancel it
 while testing that same PR. A newer manual attempt in the same group still replaces

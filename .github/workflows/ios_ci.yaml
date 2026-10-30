@@ -216,7 +216,8 @@ jobs:
       - name: Setup Docker on macOS
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 10
+        run: python3 .mobile-ci-tools/.github/scripts/setup_macos_docker.py
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"
