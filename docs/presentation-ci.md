@@ -106,6 +106,12 @@ The runner installs SQLx CLI 0.8.6, Docker-accessible fixture dependencies and m
 
 The default Service commit is published and its migration/bridge files match the local fixture;
 private repository checkout permissions and the complete lane remain unverified in remote CI.
+Checkouts deliberately do not persist credentials. The native acceptance command separately
+supplies the same read token to Cargo's Git subprocesses through process-local Git configuration,
+scoped to HTTPS repositories under `github.com/AppFlowy-IO/`. No token is written to Git config
+or a credential file; its Basic-auth encoding is masked before child execution. A missing token
+fails before compilation. This fixes the private `app-error` fetch failure in run `41077087642`;
+successful checkout alone did not authenticate Cargo's transitive Git fetches.
 A failed prerequisite fails the job instead of skipping it. Even a successful bridge plus migrated
 full-stack fixture would not establish live Billing/Stripe webhook or production entitlement
 coverage. Real provider quality, the paid official-image test, Office/Web pixel parity, deployment

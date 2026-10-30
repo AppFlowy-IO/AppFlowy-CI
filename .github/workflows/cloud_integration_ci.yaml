@@ -1534,7 +1534,10 @@ jobs:
       - name: Install SQLx CLI for the Service-owned migration ledgers
         run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
       - name: Run native source ACL, private S3 and actual Gateway contracts
+        env:
+          PRESENTATION_CARGO_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: >-
+          python3 -B ci-tools/.github/scripts/with_private_cargo_auth.py
           python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py
           --source "$GITHUB_WORKSPACE" --service-source "$GITHUB_WORKSPACE/presentation-service"
 
