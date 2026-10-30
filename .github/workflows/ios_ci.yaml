@@ -1,6 +1,6 @@
 name: iOS-CI
 run-name: >-
-  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
+  [ci-v2 source=${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'docker_setup' && github.repository || github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
   pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
   ${{ github.workflow }}
@@ -25,6 +25,12 @@ on:
         type: choice
         default: "all"
         options: ["all", "4"]
+      validation_scope:
+        description: "Full iOS coverage, or only a CI-owned Intel Docker setup smoke test"
+        required: false
+        type: choice
+        default: "full"
+        options: ["full", "docker_setup"]
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -44,9 +50,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docker-setup-smoke:
+    name: Intel Docker setup validation (no Desktop tests)
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'docker_setup'
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Docker on macOS
+        timeout-minutes: 10
+        run: python3 .github/scripts/setup_macos_docker.py
+      - name: Verify Compose and host-to-VM connectivity
+        timeout-minutes: 3
+        run: python3 .github/scripts/smoke_macos_docker.py
+      - name: Stop job-owned Docker VM
+        if: always()
+        timeout-minutes: 2
+        env:
+          COLIMA_HOME: ${{ runner.temp }}/mobile-docker-tools/colima
+          LIMA_HOME: ${{ runner.temp }}/mobile-docker-tools/lima
+        run: |
+          colima_binary="$RUNNER_TEMP/mobile-docker-tools/tools/bin/colima"
+          if [[ -x "$colima_binary" && -d "$COLIMA_HOME" ]]; then
+            "$colima_binary" stop
+          fi
+
   integration-tests:
     name: Mobile integration tests (runner ${{ matrix.test_number }})
-    timeout-minutes: 120
+    if: github.event_name != 'workflow_dispatch' || inputs.validation_scope != 'docker_setup'
+    # Cold Intel Rust + Xcode compilation and the existing local suite can
+    # consume 120 minutes before Cloud coverage. Bound test cases separately.
+    timeout-minutes: ${{ matrix.test_number == 4 && 180 || 120 }}
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +133,7 @@ jobs:
           workspaces: |
             frontend/rust-lib
           cache-all-crates: true
+          cache-on-failure: true
 
       - uses: davidB/rust-cargo-make@v1
         with:
@@ -158,14 +193,43 @@ jobs:
           fi
           flutter build ios --simulator --debug
 
+      - name: Checkout workflow tools
+        if: "!cancelled() && matrix.test_number == 4"
+        id: cloud-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mobile-ci-tools
+
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
+        timeout-minutes: ${{ matrix.test_number == 4 && 90 || 120 }}
         working-directory: frontend/appflowy_flutter
         run: |
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+            python3 "$GITHUB_WORKSPACE/.mobile-ci-tools/.github/scripts/run_mobile_tests.py" \
+              --simulator '${{ steps.simulator-action.outputs.udid }}' \
+              --report "$RUNNER_TEMP/mobile-local-test-guard.json"
+          else
+            flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }} --reporter expanded
           fi
-          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
+
+      - name: Upload mobile timeout diagnostics
+        if: always() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-local-test-guard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mobile-local-test-guard.json
+            ${{ runner.temp }}/mobile-local-timeout.png
+            ${{ runner.temp }}/mobile-local-processes.txt
+            ${{ runner.temp }}/mobile-local-device.log
+            ${{ runner.temp }}/mobile-local-native-sample.txt
+            ${{ runner.temp }}/mobile-local-sdk-phases.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Keep checkouts below the Desktop root and after its checkout, which cleans
       # the workspace. A failed local test does not skip Cloud coverage, but a
@@ -184,17 +248,8 @@ jobs:
             echo "Cloud row-page coverage is not applicable to this older Desktop revision: its focused mobile runner is absent. The existing local runner still ran." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Checkout workflow tools
-        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-discovery.outputs.enabled == 'true'"
-        id: cloud-tools
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: .mobile-ci-tools
-
       - name: Checkout Cloud fixture
-        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success'"
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-discovery.outputs.enabled == 'true' && steps.cloud-tools.outcome == 'success'"
         id: cloud-fixture
         uses: actions/checkout@v4
         with:
@@ -216,7 +271,8 @@ jobs:
       - name: Setup Docker on macOS
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 15
+        run: python3 .mobile-ci-tools/.github/scripts/setup_macos_docker.py
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"

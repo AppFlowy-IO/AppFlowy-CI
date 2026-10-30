@@ -18,6 +18,59 @@ Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.ya
 additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
 when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
 
+The Intel iOS runner installs Docker, Compose, Buildx, Lima and Colima from pinned upstream
+binaries with SHA256 verification. Homebrew's current Intel formulae can compile Go and Docker
+from source: run `41008324764` passed all 55 local mobile tests, then exhausted its 120-minute
+job budget during that compilation before the Cloud row-page tests started. The binary setup
+keeps the same VM backend and uses only job-owned tool/configuration directories. Download,
+checksum or daemon errors fail setup. To verify downloads locally without installing tools or starting
+a VM, run `python3 .github/scripts/setup_macos_docker.py --verify-downloads <new-directory>`.
+
+Run `41067538617` spent 55 minutes compiling Rust and another 44 minutes building the
+iOS test app. Only three local cases finished before the old job deadline; Cloud coverage
+never started. Runner four has a 180-minute job
+budget and a 90-minute local-test step; the other runners retain their 120-minute limits.
+The Intel local-test process has independent host-side deadlines of 60 minutes for initial
+build/startup and eight minutes per test case. Repeated progress output for the same case
+does not reset its deadline. Terminal reporter summaries do not create cases or
+reset the active case's clock. A timeout saves its case report before diagnostic capture
+and process cleanup, then stops the owned Flutter process group and uploads
+the last case name, timing report, simulator process list, and ten minutes of
+Runner and related lifecycle logs, plus a screenshot when available. Each capture
+has a fifteen-second limit and runs before process cleanup. A native stack
+sample targets only the selected app PID. SDK shutdown evidence reads bounded
+tails of test-owned logs and exports only fixed lifecycle markers, without raw
+messages, account fields or file paths. This also
+bounds device-isolate stalls that cannot report a Dart test timeout. Rust compilation
+is cached after ordinary later-step failures. Cloud test deadlines and application
+performance assertions stay unchanged.
+
+If capture or cleanup is interrupted, the saved report retains the active case and
+`timeout_detected` stage with an unset return code. A completed guard updates it to
+`finished` with the observed result, so a partial report cannot imply success.
+If a privileged helper denies process-group signals, the guard still signals and
+reaps its own child and records the permission limitation. It does not escalate
+privileges or turn the test timeout into a successful result.
+
+Run `41099752392` reached Colima's ready message four seconds before the full
+runner's ten-minute Docker setup deadline. Allow fifteen minutes for that cold
+setup and its daemon checks. The separate Docker smoke job retains its existing
+limit; the Cloud test step retains twenty minutes. The VM uses half of physical
+RAM, capped at eight GiB, so Xcode, CoreSimulator and macOS retain host memory.
+The former allocation gave all physical RAM to the VM; setup now reports both
+host and VM capacity before startup.
+
+Validate the installer, Compose health checks, and host-to-VM port forwarding on a hosted
+Intel runner with a pinned Redis container:
+
+```bash
+gh workflow run ios_ci.yaml --repo AppFlowy-IO/AppFlowy-CI --ref <ci-branch> \
+  -f validation_scope=docker_setup
+```
+
+This manual scope reports CI-configuration validation. Full iOS and Cloud row-page coverage
+uses the default `validation_scope=full` and the existing four test runners.
+
 Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
 group per CI branch and private PR, so the automatic main workflow cannot cancel it
 while testing that same PR. A newer manual attempt in the same group still replaces

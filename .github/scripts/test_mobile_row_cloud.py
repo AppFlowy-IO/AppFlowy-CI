@@ -125,7 +125,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         return next(step for step in self.steps if step.get("name") == name)
 
     def test_cloud_reuses_runner_four_after_the_existing_local_suite(self):
-        self.assertEqual(list(self.workflow["jobs"]), ["integration-tests"])
+        self.assertEqual(set(self.workflow["jobs"]), {"integration-tests", "docker-setup-smoke"})
+        self.assertEqual(self.job["if"],
+                         "github.event_name != 'workflow_dispatch' || inputs.validation_scope != 'docker_setup'")
         self.assertEqual(self.job["strategy"]["matrix"], {"test_number":
             "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' "
             "&& '[4]' || '[1,2,3,4]') }}"})
@@ -154,7 +156,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertIn("steps.local-mobile-tests.outcome == 'success'", discovery["if"])
         tools = self.step("Checkout workflow tools")
         self.assertIn("!cancelled()", tools["if"])
-        self.assertIn("steps.cloud-discovery.outputs.enabled == 'true'", tools["if"])
+        self.assertLess(self.steps.index(tools), self.steps.index(
+            self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")))
+        self.assertIn("steps.cloud-discovery.outputs.enabled == 'true'",
+                      self.step("Checkout Cloud fixture")["if"])
         previous = tools
         for name in (
             "Checkout Cloud fixture", "Prepare private Cloud and simulator configuration",
@@ -176,8 +181,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
         self.assertNotIn("if", local)
         self.assertNotIn("--no-build", local["run"])
+        simulator_id = "00000000-0000-0000-0000-000000000004"
         command = local["run"].replace("${{ matrix.test_number }}", "4").replace(
-            "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")
+            "${{ steps.simulator-action.outputs.udid }}", simulator_id)
         with tempfile.TemporaryDirectory(prefix="selected-ios-build-") as directory:
             root = Path(directory)
             calls = root / "calls"
@@ -185,18 +191,44 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             flutter.write_text(
                 '#!/bin/sh\nprintf "%s\\n" "$XCODE_XCCONFIG_FILE" "$@" > "$CALLS"\nexit 7\n')
             flutter.chmod(0o700)
+            tools = root / ".mobile-ci-tools/.github/scripts"
+            tools.mkdir(parents=True)
+            for name in ("run_mobile_tests.py", "mobile_timeout_diagnostics.py"):
+                (tools / name).write_bytes((ROOT / ".github/scripts" / name).read_bytes())
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", command], cwd=root,
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                      "IOS_RUST_TARGET": "x86_64-apple-ios", "RUNNER_TEMP": directory,
+                     "GITHUB_ACTIONS": "true", "GITHUB_WORKSPACE": directory,
                      "CALLS": str(calls)},
                 capture_output=True, text=True, timeout=5,
             )
             self.assertEqual(result.returncode, 7)
             self.assertEqual(calls.read_text().splitlines(), [
                 str(root / "mobile-intel-simulator.xcconfig"),
-                "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+                "test", "integration_test/mobile_runner_4.dart", "-d", simulator_id,
+                "--reporter", "expanded",
             ])
+            report = json.loads((root / "mobile-local-test-guard.json").read_text())
+            self.assertEqual(report["returncode"], 7)
+            self.assertFalse(report["timed_out"])
+            self.assertEqual(report["build_limit_seconds"], 3600)
+            self.assertEqual(report["case_limit_seconds"], 480)
+
+    def test_cold_intel_budget_preserves_other_lanes_and_has_independent_stall_guard(self):
+        self.assertEqual(self.job["timeout-minutes"],
+                         "${{ matrix.test_number == 4 && 180 || 120 }}")
+        cache = next(step for step in self.steps if step.get("uses") == "Swatinem/rust-cache@v2")
+        self.assertTrue(cache["with"]["cache-on-failure"])
+        local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertEqual(local["timeout-minutes"], "${{ matrix.test_number == 4 && 90 || 120 }}")
+        self.assertIn("run_mobile_tests.py", local["run"])
+        self.assertIn("--reporter expanded", local["run"])
+        self.assertIn("else", local["run"])
+        diagnostics = self.step("Upload mobile timeout diagnostics")
+        self.assertIn("always()", diagnostics["if"])
+        self.assertIn("mobile-local-timeout.png", diagnostics["with"]["path"])
+        self.assertEqual(self.step("Run Cloud row-page tests on iOS")["timeout-minutes"], 20)
 
     def test_only_revisions_with_the_focused_entrypoint_select_cloud(self):
         discovery = self.step("Discover focused Cloud row-page runner")["run"]
@@ -333,12 +365,13 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 self.assertNotIn("GITHUB_ENV", prepare["run"])
 
     def test_only_flutter_simulator_commands_receive_the_intel_override(self):
+        simulator = "00000000-0000-0000-0000-000000000004"
         commands = {
             "Pre-build iOS app for simulator": ["build", "ios", "--simulator", "--debug"],
             "Run Flutter integration tests (runner ${{ matrix.test_number }})":
-                ["test", "integration_test/mobile_runner_4.dart", "-d", "fixture-device"],
+                ["test", "integration_test/mobile_runner_4.dart", "-d", simulator],
             "Run Cloud row-page tests on iOS":
-                ["test", "integration_test/mobile_row_page_cloud_runner.dart", "-d", "fixture-device"],
+                ["test", "integration_test/mobile_row_page_cloud_runner.dart", "-d", simulator],
         }
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.workflow.get("env", {}))
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.job["env"])
@@ -350,6 +383,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             for name, arguments in commands.items():
                 with self.subTest(target=target, step=name), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
+                    tools = root / ".mobile-ci-tools/.github/scripts"
+                    tools.mkdir(parents=True)
+                    for tool in ("run_mobile_tests.py", "mobile_timeout_diagnostics.py"):
+                        (tools / tool).write_bytes((ROOT / ".github/scripts" / tool).read_bytes())
                     flutter = root / "flutter"
                     flutter.write_text(
                         '#!/usr/bin/env python3\nimport json, os, sys\n'
@@ -359,12 +396,13 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     )
                     flutter.chmod(0o755)
                     script = self.step(name)["run"].replace("${{ matrix.test_number }}", "4").replace(
-                        "${{ steps.simulator-action.outputs.udid }}", "fixture-device")
+                        "${{ steps.simulator-action.outputs.udid }}", simulator)
                     env = {key: value for key, value in os.environ.items() if key != "XCODE_XCCONFIG_FILE"}
                     result = subprocess.run(
                         ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
                         env={**env, "PATH": f"{root}:{env['PATH']}", "RUNNER_TEMP": directory,
-                             "CAPTURE": str(root / "capture.json"), "IOS_RUST_TARGET": target},
+                             "CAPTURE": str(root / "capture.json"), "IOS_RUST_TARGET": target,
+                             "GITHUB_ACTIONS": "true", "GITHUB_WORKSPACE": directory},
                         capture_output=True, text=True, timeout=5,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)

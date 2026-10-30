@@ -1,0 +1,206 @@
+"""Bound a CI-owned Flutter test process independently of its device isolate."""
+
+import argparse
+import codecs
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import signal
+import subprocess
+import sys
+import time
+
+from mobile_timeout_diagnostics import BUNDLE_ID, read_sdk_phases, runner_pid
+
+
+CASE = re.compile(r"^\d+:\d+(?::\d+)? (?:[+~!\-]\d+\s*)+: (.+)$")
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def capture_timeout_diagnostics(simulator, directory):
+    # A black screenshot cannot distinguish a dead Runner from an async stall.
+    # Read only the selected CI simulator, before retiring the Flutter group.
+    commands = [
+        (["xcrun", "simctl", "io", simulator, "screenshot",
+          str(directory / "mobile-local-timeout.png")], None),
+        (["xcrun", "simctl", "spawn", simulator, "launchctl", "list"],
+         directory / "mobile-local-processes.txt"),
+        (["xcrun", "simctl", "spawn", simulator, "log", "show", "--last", "10m",
+          "--style", "compact", "--predicate",
+          'process == "Runner" OR ((process == "SpringBoard" OR '
+          'process == "runningboardd") AND eventMessage CONTAINS[c] "appflowy")'],
+         directory / "mobile-local-device.log"),
+    ]
+    for command, destination in commands:
+        try:
+            if destination is None:
+                subprocess.run(command, capture_output=True, timeout=15, check=False)
+            else:
+                with destination.open("w") as stream:
+                    subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                   timeout=15, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            # Diagnostics must not prevent the owned process group from stopping.
+            continue
+    try:
+        processes = (directory / "mobile-local-processes.txt").read_text(errors="replace")[:65536]
+        pid = runner_pid(processes)
+        if pid is not None:
+            subprocess.run(["/usr/bin/sample", str(pid), "5", "1", "-file",
+                            str(directory / "mobile-local-native-sample.txt")],
+                           capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        container = subprocess.check_output(
+            ["xcrun", "simctl", "get_app_container", simulator, BUNDLE_ID, "data"],
+            text=True, timeout=5).strip()
+        if Path(container).is_absolute():
+            report = read_sdk_phases(container)
+            (directory / "mobile-local-sdk-phases.json").write_text(json.dumps(report, indent=2))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def stop_process_group(process, grace_seconds):
+    # Flutter's helpers share the new session. A device-isolate hang must not
+    # leave a host test process running after this step has failed.
+    warnings = []
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+        group_denied = False
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            break
+        except PermissionError as error:
+            # A privileged helper can remain after Flutter exits. Do not
+            # escalate privileges or let that hide the original test timeout.
+            warnings.append({"process_group": process.pid, "signal": sig.name,
+                             "errno": error.errno})
+            group_denied = True
+            process.send_signal(sig)
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            continue
+        if group_denied:
+            break
+        # A helper may outlive its parent, so finish retiring this owned group.
+        if sig != signal.SIGKILL:
+            continue
+        break
+    process.wait(timeout=grace_seconds)
+    return warnings
+
+
+def run_bounded(command, *, build_seconds, case_seconds, report_path,
+                output=None, on_timeout=None, grace_seconds=5):
+    if min(build_seconds, case_seconds, grace_seconds) <= 0:
+        raise ValueError("Build, case and termination deadlines must be positive")
+    report_path = Path(report_path)
+    if report_path.exists():
+        raise FileExistsError(report_path)
+    output = output or sys.stdout
+    started = time.monotonic()
+    case_started = None
+    current_case = None
+    cases = []
+    pending = ""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    timed_out = False
+    cleanup_warnings = []
+
+    def write_report(returncode, stage):
+        report = {"returncode": returncode, "timed_out": timed_out,
+                  "phase": "build" if current_case is None else "case",
+                  "current_case": current_case, "started_cases": cases,
+                  "elapsed_seconds": round(time.monotonic() - started, 3),
+                  "build_limit_seconds": build_seconds, "case_limit_seconds": case_seconds,
+                  "report_stage": stage, "cleanup_warnings": cleanup_warnings}
+        report_path.write_text(json.dumps(report, indent=2))
+
+    try:
+        while process.poll() is None or selector.get_map():
+            now = time.monotonic()
+            deadline = (started + build_seconds if case_started is None
+                        else case_started + case_seconds)
+            if now >= deadline:
+                timed_out = True
+                # Capture and process retirement can be interrupted. Preserve
+                # the case first without claiming an observed process exit.
+                write_report(None, "timeout_detected")
+                if on_timeout is not None:
+                    on_timeout()
+                break
+            for key, _ in selector.select(timeout=min(0.2, deadline - now)):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                decoded = decoder.decode(chunk)
+                output.write(decoded)
+                output.flush()
+                pending += decoded
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    match = CASE.match(ANSI.sub("", line).rstrip("\r"))
+                    if (match is None or match[1].startswith("loading ")
+                            or match[1] in {"All tests passed!", "Some tests failed."}):
+                        continue
+                    name = match[1]
+                    if name != current_case:
+                        current_case = name
+                        case_started = time.monotonic()
+                        cases.append(name)
+                # Preserve bounded parser memory even if a process emits a long
+                # incomplete line. Forwarded output itself remains unchanged.
+                pending = pending[-65536:]
+        if timed_out:
+            output.write(f"\n::error::Mobile test exceeded its {'build' if current_case is None else 'case'} deadline: {current_case or 'application startup'}\n")
+            output.flush()
+            cleanup_warnings.extend(stop_process_group(process, grace_seconds))
+            for warning in cleanup_warnings:
+                output.write(f"::warning::Permission denied signalling mobile process group "
+                             f"{warning['process_group']}; the owned child was reaped\n")
+            output.flush()
+            returncode = 124
+        else:
+            returncode = process.wait()
+        write_report(returncode, "finished")
+        return returncode
+    finally:
+        selector.close()
+        process.stdout.close()
+        if process.poll() is None:
+            stop_process_group(process, grace_seconds)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--simulator", required=True)
+    parser.add_argument("--report", required=True, type=Path)
+    args = parser.parse_args()
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        parser.error("This command is for a job-owned CI simulator")
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", args.simulator) is None:
+        parser.error("Expected the selected simulator UUID")
+    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    if not args.report.resolve().is_relative_to(temporary):
+        parser.error("The diagnostic report must belong to RUNNER_TEMP")
+
+    return run_bounded(
+        ["flutter", "test", "integration_test/mobile_runner_4.dart", "-d", args.simulator,
+         "--reporter", "expanded"],
+        build_seconds=60 * 60, case_seconds=8 * 60, report_path=args.report,
+        on_timeout=lambda: capture_timeout_diagnostics(args.simulator, temporary),
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
