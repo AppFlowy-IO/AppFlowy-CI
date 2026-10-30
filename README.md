@@ -26,10 +26,11 @@ keeps the same VM backend and uses only job-owned tool/configuration directories
 checksum or daemon errors fail setup. To verify downloads locally without installing tools or starting
 a VM, run `python3 .github/scripts/setup_macos_docker.py --verify-downloads <new-directory>`.
 
-Cold Intel Rust builds can take 55 minutes, and a passing local mobile suite took another
-41 minutes, excluding Xcode compilation and Cloud setup. Runner four has a 180-minute job
+Run `41067538617` spent 55 minutes compiling Rust and another 44 minutes building the
+iOS test app. Only three local cases finished before the old job deadline; Cloud coverage
+never started. Runner four has a 180-minute job
 budget and a 90-minute local-test step; the other runners retain their 120-minute limits.
-The Intel local-test process has independent host-side deadlines of 40 minutes for initial
+The Intel local-test process has independent host-side deadlines of 60 minutes for initial
 build/startup and eight minutes per test case. Repeated progress output for the same case
 does not reset its deadline. A timeout stops the owned Flutter process group and uploads
 the last case name, timing report, and a simulator screenshot when available. This also

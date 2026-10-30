@@ -212,6 +212,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             report = json.loads((root / "mobile-local-test-guard.json").read_text())
             self.assertEqual(report["returncode"], 7)
             self.assertFalse(report["timed_out"])
+            self.assertEqual(report["build_limit_seconds"], 3600)
+            self.assertEqual(report["case_limit_seconds"], 480)
 
     def test_cold_intel_budget_preserves_other_lanes_and_has_independent_stall_guard(self):
         self.assertEqual(self.job["timeout-minutes"],

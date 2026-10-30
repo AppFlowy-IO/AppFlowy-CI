@@ -132,7 +132,7 @@ def main():
     return run_bounded(
         ["flutter", "test", "integration_test/mobile_runner_4.dart", "-d", args.simulator,
          "--reporter", "expanded"],
-        build_seconds=40 * 60, case_seconds=8 * 60, report_path=args.report,
+        build_seconds=60 * 60, case_seconds=8 * 60, report_path=args.report,
         on_timeout=capture_timeout,
     )
 
