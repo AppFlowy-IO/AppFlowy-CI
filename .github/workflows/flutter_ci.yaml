@@ -328,300 +328,12 @@ jobs:
           name: ${{ github.run_id }}-${{ matrix.os }}
           path: appflowy_flutter.tar.gz
 
-  prepare-windows:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [windows-latest]
-        include:
-          - os: windows-latest
-            flutter_profile: development-windows-x86
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-
-    steps:
-      - name: Enable git long paths (Windows)
-        run: git config --system core.longpaths true
-        shell: bash
-
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
-
-      - name: Setup sccache
-        id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-        continue-on-error: true
-
-      - name: Configure sccache
-        id: sccache-config
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          # Test if sccache can actually connect to GitHub cache
-          export SCCACHE_GHA_ENABLED=true
-          if sccache --start-server 2>&1 && sccache --show-stats 2>&1; then
-            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-            echo "sccache_enabled=true" >> $GITHUB_OUTPUT
-            echo "✓ sccache is available and configured"
-          else
-            sccache --stop-server 2>/dev/null || true
-            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-            echo "⚠ sccache not available, proceeding without it"
-          fi
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: ${{ matrix.os }}
-          workspaces: |
-            frontend/rust-lib
-          cache-all-crates: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
-
-      - name: Install prerequisites
-        working-directory: frontend
-        shell: bash
-        env:
-          DISABLE_CI_TEST_LOG: "true"
-        run: |
-          case $RUNNER_OS in
-            Linux)
-              sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-              sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-              sudo apt-get update
-              sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev
-              ;;
-            Windows)
-              vcpkg integrate install
-              vcpkg update
-              ;;
-            macOS)
-              # No additional prerequisites needed for macOS
-              ;;
-          esac
-          cargo make appflowy-flutter-deps-tools
-
-      - name: Configure Git credentials for Cargo
-        shell: bash
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: true
-        run: |
-          git config --global credential.helper store
-          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
-          git config --global url."https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-
-      - name: Build AppFlowy
-        working-directory: frontend
-        run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
-        shell: bash
-
-      - name: Show sccache stats
-        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
-        shell: bash
-        run: sccache --show-stats || true
-
-      - name: Clean cargo build artifacts
-        working-directory: frontend/rust-lib
-        run: cargo clean
-        shell: bash
-
-      - name: Run code generation
-        working-directory: frontend
-        run: cargo make code_generation
-        shell: bash
-
-      - name: Compress appflowy_flutter
-        run: tar -czf appflowy_flutter.tar.gz frontend/appflowy_flutter
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-          path: appflowy_flutter.tar.gz
-
-  prepare-macos:
-    strategy:
-      fail-fast: true
-      matrix:
-        # Match the x86_64 FFI profile and its PDF-test consumer explicitly.
-        os: [macos-15-intel]
-        include:
-          - os: macos-15-intel
-            flutter_profile: development-mac-x86_64
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Select SDK pins from the tested Desktop source
-        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: ${{ matrix.target }}
-
-      - name: Setup sccache
-        id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-        continue-on-error: true
-
-      - name: Configure sccache
-        id: sccache-config
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          # Test if sccache can actually connect to GitHub cache
-          export SCCACHE_GHA_ENABLED=true
-          if sccache --start-server 2>&1 && sccache --show-stats 2>&1; then
-            echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-            echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-            echo "sccache_enabled=true" >> $GITHUB_OUTPUT
-            echo "✓ sccache is available and configured"
-          else
-            sccache --stop-server 2>/dev/null || true
-            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-            echo "⚠ sccache not available, proceeding without it"
-          fi
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: ${{ matrix.os }}
-          workspaces: |
-            frontend/rust-lib
-          cache-all-crates: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
-
-      - name: Install prerequisites
-        working-directory: frontend
-        shell: bash
-        run: |
-          case $RUNNER_OS in
-            Linux)
-              sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-              sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-              sudo apt-get update
-              sudo apt-get install -y dart curl build-essential libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev keybinder-3.0 libnotify-dev libcurl4-openssl-dev
-              ;;
-            Windows)
-              vcpkg integrate install
-              vcpkg update
-              ;;
-            macOS)
-              # No additional prerequisites needed for macOS
-              ;;
-          esac
-          cargo make appflowy-flutter-deps-tools
-
-      - name: Configure Git credentials for Cargo
-        run: |
-          git config --global credential.helper store
-          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
-
-      - name: Build AppFlowy
-        working-directory: frontend
-        run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
-        shell: bash
-
-      - name: Show sccache stats
-        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
-        run: sccache --show-stats || true
-
-      - name: Clean cargo build artifacts
-        working-directory: frontend/rust-lib
-        run: cargo clean
-        shell: bash
-
-      - name: Run code generation
-        working-directory: frontend
-        run: cargo make code_generation
-        shell: bash
-
-      - name: Flutter Analyzer
-        working-directory: frontend/appflowy_flutter
-        run: |
-          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
-            | grep -v -e "\.g\.dart$" \
-            -e "\.freezed\.dart$" \
-            -e "/generated/" \
-            -e "\.dart_tool/" \
-            -e "build/" \
-            -e "packages/")
-          flutter analyze .
-        shell: bash
-
-      - name: Compress appflowy_flutter
-        run: tar -czf appflowy_flutter.tar.gz frontend/appflowy_flutter
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-          path: appflowy_flutter.tar.gz
-
   pdf_export_ui:
-    name: PDF export regression (macOS)
-    needs: [prepare-macos]
+    name: PDF export regression (Linux)
+    needs: [prepare-linux]
     # A failed preparation must produce a failing private status, not a missing success.
     if: always() && !cancelled()
-    runs-on: macos-15-intel
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - name: Checkout private repository
@@ -665,6 +377,12 @@ jobs:
             --workspace frontend/rust-lib --kind ui --state pending \
             --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
+      - name: Configure Ubuntu package downloads
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+
       - name: Install Rust toolchain
         if: steps.pdf-ui-source.outputs.enabled == 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -679,31 +397,77 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
+      - name: Install prerequisites
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
+        working-directory: frontend
+        run: |
+          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
+          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
+          sudo apt-get update
+          sudo apt-get install -y --fix-broken
+          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev xvfb xauth
+          sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
+          sudo apt-get install -y libmpv-dev mpv libasound2-dev
+          # Install GStreamer for audioplayers_linux
+          # Install libunwind-dev first to resolve dependency issues
+          sudo apt-get -y install libunwind-dev
+          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+        shell: bash
+
+      - name: Enable Flutter Desktop
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        run: |
+          flutter config --enable-linux-desktop
+        shell: bash
+
       - uses: actions/download-artifact@v4
         if: steps.pdf-ui-source.outputs.enabled == 'true'
         with:
-          name: ${{ github.run_id }}-macos-15-intel
+          name: ${{ github.run_id }}-ubuntu-latest
 
-      - name: Restore the exact prepared macOS application and native FFI
+      - name: Restore the exact prepared Linux application and native FFI
         if: steps.pdf-ui-source.outputs.enabled == 'true'
         run: |
           tar -xf appflowy_flutter.tar.gz
-          test "$(uname -m)" = x86_64
-          test -s frontend/appflowy_flutter/packages/appflowy_backend/macos/libdart_ffi.a
-          lipo -verify_arch x86_64 frontend/appflowy_flutter/packages/appflowy_backend/macos/libdart_ffi.a
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          library = Path("frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so")
+          with library.open("rb") as source:
+              header = source.read(20)
+          if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\x3e\x00":
+              raise SystemExit("Expected an AMD64 Linux FFI library from prepare-linux")
+          PYTHON
 
       - name: Resolve Flutter packages for the restored source
         if: steps.pdf-ui-source.outputs.enabled == 'true'
         working-directory: frontend/appflowy_flutter
         run: flutter pub get
 
-      - name: Run the source-contracted PDF BDD on macOS
+      - name: Prepare PDFium for Linux integration tests
+        if: steps.pdf-ui-source.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          PDFIUM_DIR="$RUNNER_TEMP/pdfium"
+          PDFIUM_ARCHIVE="$RUNNER_TEMP/pdfium-linux-x64.tgz"
+          mkdir -p "$PDFIUM_DIR"
+          curl -L \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz" \
+            -o "$PDFIUM_ARCHIVE"
+          tar -xzf "$PDFIUM_ARCHIVE" -C "$PDFIUM_DIR" lib/libpdfium.so
+          echo "APPFLOWY_PDFIUM_MODULE_PATH=$PDFIUM_DIR/lib/libpdfium.so" >> "$GITHUB_ENV"
+          ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
+        shell: bash
+
+      - name: Run the source-contracted PDF BDD on Linux
         id: pdf-ui-regression
         if: steps.pdf-ui-source.outputs.enabled == 'true'
         timeout-minutes: 15
         run: |
-          python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py \
-            --project frontend/appflowy_flutter \
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py \
+            --project frontend/appflowy_flutter --device linux \
             --output "$RUNNER_TEMP/pdf-ui-regression"
 
       - name: Upload PDF UI regression evidence

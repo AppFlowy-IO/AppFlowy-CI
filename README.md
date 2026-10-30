@@ -37,9 +37,10 @@ Desktop PDF exports have three focused commit statuses: `PDF export regression (
 `frontend/rust-lib/integration-test/pdf_export_contract.json` names the required native
 tests and BDD scenarios. The same required Rust gate runs all 12 `database_pdf_export`
 event cases and seven `pdf_export_columns` recovery components without module filters;
-passing events cannot hide a failing component suite. The local UI BDD runs on
-`macos-15-intel` using the matching prepared
-FFI artifact; the cold-cloud BDD runs in the existing Linux `pdf_export` cloud suite.
+passing events cannot hide a failing component suite. Desktop CI prepares only the
+Linux application and FFI artifact. The local PDF UI BDD reuses that artifact on
+Ubuntu with PDFium and an Xvfb display; the cold-cloud BDD remains in the existing
+Linux `pdf_export` cloud suite. Windows and macOS preparation jobs are omitted.
 Machine test events must show the contracted scenarios completed without skips,
 and native process failures are preserved. Inventories, results, logs and saved
 PDF/CSV files are retained for seven days.
