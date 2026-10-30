@@ -197,7 +197,9 @@ jobs:
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
           fi
-          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }}
+          # Print each test's start so a stalled case is identifiable before the
+          # job deadline, instead of relying on completion-only GitHub output.
+          flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart -d ${{ steps.simulator-action.outputs.udid }} --reporter expanded
 
       # Keep checkouts below the Desktop root and after its checkout, which cleans
       # the workspace. A failed local test does not skip Cloud coverage, but a

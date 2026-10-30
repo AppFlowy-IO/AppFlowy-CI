@@ -198,6 +198,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertEqual(calls.read_text().splitlines(), [
                 str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+                "--reporter", "expanded",
             ])
 
     def test_only_revisions_with_the_focused_entrypoint_select_cloud(self):
