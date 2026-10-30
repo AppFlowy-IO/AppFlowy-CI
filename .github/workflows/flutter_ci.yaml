@@ -45,8 +45,9 @@ env:
   CARGO_INCREMENTAL: "0"
 
 concurrency:
-  # Dispatches share the public workflow ref; isolate the private revision tested.
-  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
+  # A manual CI-branch validation must coexist with automatic main runs for the
+  # same private PR. Retries within that CI branch still replace older attempts.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -619,7 +620,7 @@ jobs:
     name: PDF export regression (macOS)
     needs: [prepare-macos]
     # A failed preparation must produce a failing private status, not a missing success.
-    if: always()
+    if: always() && !cancelled()
     runs-on: macos-15-intel
     timeout-minutes: 25
     steps:
@@ -923,7 +924,7 @@ jobs:
     needs: [prepare-linux]
     # Legacy heads need an explicit NA status. A current contract without its
     # matrix suite must fail instead of silently losing the required check.
-    if: always() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

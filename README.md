@@ -18,6 +18,12 @@ Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.ya
 additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
 when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
 
+Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
+group per CI branch and private PR, so the automatic main workflow cannot cancel it
+while testing that same PR. A newer manual attempt in the same group still replaces
+the old one. Cancellation does not queue new PDF reporting jobs; an ordinary failed
+preparation still reports a failing PDF status.
+
 PR #97 exposed why these triggers are separate: its CI/Gateway configuration changes started
 41 Flutter, four Rust, and four iOS jobs because those workflows accepted every CI-repository PR
 and defaulted their private source checkout to `main`.

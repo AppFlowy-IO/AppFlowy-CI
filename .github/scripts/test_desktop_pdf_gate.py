@@ -14,6 +14,7 @@ import desktop_pdf_status as status
 import run_desktop_pdf_tests as gate
 import run_desktop_pdf_ui_tests as ui_gate
 import select_desktop_toolchain as toolchain
+from test_pr_cleanup_workflows import evaluate_expression
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
@@ -492,7 +493,7 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertEqual(prepare["strategy"]["matrix"]["os"], ["macos-15-intel"])
         self.assertEqual(job["runs-on"], "macos-15-intel")
         self.assertEqual(job["needs"], ["prepare-macos"])
-        self.assertEqual(job["if"], "always()")
+        self.assertEqual(job["if"], "always() && !cancelled()")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
@@ -522,6 +523,19 @@ class PdfWorkflowTest(unittest.TestCase):
         availability = jobs["pdf_cloud_ui_availability"]
         self.assertIn("'pdf_export'", availability["if"])
         self.assertIn("always()", availability["if"])
+
+    def test_failed_preparation_reports_but_cancellation_does_not_queue_new_pdf_jobs(self):
+        jobs = yaml.safe_load((WORKFLOWS / "flutter_ci.yaml").read_text())["jobs"]
+        for name in ("pdf_export_ui", "pdf_cloud_ui_availability"):
+            with self.subTest(job=name):
+                condition = jobs[name]["if"]
+                # Python AST attribute names cannot contain GitHub job-ID hyphens.
+                condition = condition.replace("needs.prepare-linux", "needs.prepare_linux")
+                for cancelled, should_run in ((False, True), (True, False)):
+                    context = {"cancelled": cancelled, "needs": {
+                        "prepare_linux": {"result": "cancelled" if cancelled else "failure", "outputs": {}},
+                    }}
+                    self.assertEqual(evaluate_expression(condition, context), should_run)
 
     def test_both_gates_publish_pending_and_always_final_results(self):
         for name, job_name in (("rust_ci.yaml", "test"), ("flutter_ci.yaml", "pdf_export_ui")):

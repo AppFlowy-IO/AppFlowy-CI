@@ -45,17 +45,41 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
                     concurrency_group(workflow, inputs={"pr_ref": "codex/sharing"}),
                 )
 
-    def test_private_ref_is_independent_of_public_workflow_ref(self):
+    def test_automatic_private_ref_is_independent_of_public_workflow_ref(self):
         for name, workflow in self.workflows.items():
             with self.subTest(workflow=name):
                 self.assertEqual(
                     concurrency_group(workflow, payload={"pr_ref": "codex/video"}),
                     concurrency_group(
                         workflow,
-                        inputs={"pr_ref": "codex/video"},
+                        payload={"pr_ref": "codex/video"},
                         ref="refs/heads/ci-validation",
                     ),
                 )
+
+    def test_manual_ci_branch_validation_does_not_cancel_automatic_same_pr_runs(self):
+        for name in ("flutter_ci.yaml", "rust_ci.yaml"):
+            workflow = self.workflows[name]
+            with self.subTest(workflow=name):
+                automatic = concurrency_group(workflow, payload={"event_type": "pr_sync",
+                                               "pr_number": "1545", "pr_ref": "a" * 40})
+                manual = concurrency_group(workflow, event="workflow_dispatch",
+                                            inputs={"pr_number": "1545", "pr_ref": "a" * 40},
+                                            ref="refs/heads/codex/pdf-export-regression-gate")
+                self.assertNotEqual(manual, automatic)
+
+    def test_manual_retries_share_only_their_ci_branch_and_private_pr(self):
+        for name in ("flutter_ci.yaml", "rust_ci.yaml"):
+            workflow = self.workflows[name]
+            with self.subTest(workflow=name):
+                original = concurrency_group(workflow, event="workflow_dispatch",
+                    inputs={"pr_number": "1545", "pr_ref": "a" * 40}, ref="refs/heads/ci-pdf")
+                retry = concurrency_group(workflow, event="workflow_dispatch",
+                    inputs={"pr_number": "1545", "pr_ref": "b" * 40}, ref="refs/heads/ci-pdf")
+                another_branch = concurrency_group(workflow, event="workflow_dispatch",
+                    inputs={"pr_number": "1545", "pr_ref": "a" * 40}, ref="refs/heads/ci-other")
+                self.assertEqual(original, retry)
+                self.assertNotEqual(original, another_branch)
 
     def test_same_pr_still_cancels_superseded_commits(self):
         for name, workflow in self.workflows.items():
@@ -85,10 +109,12 @@ class ClientWorkflowConcurrencyTest(unittest.TestCase):
     def test_manual_validation_without_source_ref_keeps_workflow_ref_fallback(self):
         for name, workflow in self.workflows.items():
             with self.subTest(workflow=name):
+                prefix = (f"ci-branch-refs/heads/ci-validation" if name in ("flutter_ci.yaml", "rust_ci.yaml")
+                          else "validation")
                 self.assertEqual(
                     concurrency_group(workflow, event="workflow_dispatch",
                                       ref="refs/heads/ci-validation"),
-                    f"{workflow['name']}-validation-refs/heads/ci-validation".lower(),
+                    f"{workflow['name']}-{prefix}-refs/heads/ci-validation".lower(),
                 )
 
     def test_client_workflows_do_not_cancel_each_other(self):

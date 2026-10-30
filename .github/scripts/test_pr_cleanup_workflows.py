@@ -29,10 +29,10 @@ def evaluate_expression(expression, context):
     Translate tokens before parsing so operators inside quoted strings remain
     untouched. Unsupported syntax fails rather than approximating GitHub policy.
     """
-    token_pattern = re.compile(r"\s*('(?:''|[^'])*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.]*|[0-9]+)")
+    token_pattern = re.compile(r"\s*('(?:''|[^'])*'|&&|\|\||==|!=|!|[(),]|[A-Za-z_][\w.]*|[0-9]+)")
     tokens = []
     remaining = expression.strip()
-    replacements = {"&&": "and", "||": "or", "true": "True", "false": "False", "null": "None"}
+    replacements = {"&&": "and", "||": "or", "!": "not", "true": "True", "false": "False", "null": "None"}
     while remaining:
         match = token_pattern.match(remaining)
         if not match:
@@ -54,6 +54,8 @@ def evaluate_expression(expression, context):
         if isinstance(node, ast.Attribute):
             owner = visit(node.value)
             return owner.get(node.attr, "") if isinstance(owner, dict) else ""
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not truthy(visit(node.operand))
         if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
             value = visit(node.values[0])
             for operand in node.values[1:]:
@@ -71,6 +73,10 @@ def evaluate_expression(expression, context):
                 return left != right
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
             arguments = [visit(argument) for argument in node.args]
+            if node.func.id == "always" and not arguments:
+                return True
+            if node.func.id == "cancelled" and not arguments:
+                return bool(context.get("cancelled", False))
             if node.func.id == "format":
                 return arguments[0].format(*arguments[1:])
             if node.func.id == "fromJSON":
