@@ -57,13 +57,26 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          override: true
           components: rustfmt, clippy
-          profile: minimal
 
       - name: Install Dart SDK
         uses: dart-lang/setup-dart@v1
@@ -145,13 +158,35 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
 
+      - name: Check out the exact CI runtime tools
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.sha }}
+          path: .desktop-ci-tools
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select SDK pins from the tested Desktop source
+        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+
+      - name: Mark the Desktop PDF regression gate pending
+        if: matrix.test_group == 'integration_group2'
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --state pending \
+            --gate-result "$RUNNER_TEMP/pdf-regression/gate-result.json"
+
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          override: true
           components: rustfmt, clippy
-          profile: minimal
 
       - name: Install Dart SDK
         uses: dart-lang/setup-dart@v1
@@ -209,14 +244,6 @@ jobs:
           path: AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
 
       - name: Clean and Run Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
@@ -334,6 +361,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
+      - name: Run the complete PDF export regression target
+        id: pdf-regression
+        if: matrix.test_group == 'integration_group2'
+        timeout-minutes: 45
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: 1
+          af_cloud_test_base_url: http://localhost
+          af_cloud_test_ws_url: ws://localhost/ws/v2
+          af_cloud_test_gotrue_url: http://localhost/gotrue
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_tests.py \
+            --workspace frontend/rust-lib \
+            --output "$RUNNER_TEMP/pdf-regression"
+
       - name: Run Tests
         working-directory: frontend/rust-lib
         env:
@@ -414,3 +456,25 @@ jobs:
         run: |
           docker image prune -af
           docker volume prune -f
+
+      - name: Upload PDF regression evidence
+        if: always() && matrix.test_group == 'integration_group2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-pdf-regression-${{ github.run_id }}
+          path: ${{ runner.temp }}/pdf-regression
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish the Desktop PDF regression result
+        if: always() && matrix.test_group == 'integration_group2'
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PDF_JOB_STATUS: ${{ job.status }}
+          PDF_GATE_OUTCOME: ${{ steps.pdf-regression.outcome || 'skipped' }}
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+            --workspace frontend/rust-lib --state completed \
+            --job-status "$PDF_JOB_STATUS" \
+            --gate-outcome "$PDF_GATE_OUTCOME" \
+            --gate-result "$RUNNER_TEMP/pdf-regression/gate-result.json"
