@@ -38,6 +38,11 @@ bounds device-isolate stalls that cannot report a Dart test timeout. Rust compil
 is cached after ordinary later-step failures. Cloud test deadlines and application
 performance assertions stay unchanged.
 
+Run `41099752392` reached Colima's ready message four seconds before the full
+runner's ten-minute Docker setup deadline. Allow fifteen minutes for that cold
+setup and its daemon checks. The separate Docker smoke job retains its existing
+limit; the Cloud test step retains twenty minutes.
+
 Validate the installer, Compose health checks, and host-to-VM port forwarding on a hosted
 Intel runner with a pinned Redis container:
 

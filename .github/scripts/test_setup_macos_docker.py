@@ -153,7 +153,7 @@ class PrebuiltDockerTest(unittest.TestCase):
         step = next(s for s in job["steps"] if s.get("id") == "cloud-docker")
         self.assertEqual(step["run"], "python3 .mobile-ci-tools/.github/scripts/setup_macos_docker.py")
         self.assertNotIn("uses", step)
-        self.assertEqual(step["timeout-minutes"], 10)
+        self.assertEqual(step["timeout-minutes"], 15)
         cloud_tests = next(s for s in job["steps"] if s.get("id") == "cloud-tests")
         self.assertIn("mobile_row_page_cloud_runner.dart", cloud_tests["run"])
         manifest = json.loads(setup.MANIFEST.read_text())
