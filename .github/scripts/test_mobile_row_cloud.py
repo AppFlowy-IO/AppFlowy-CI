@@ -167,6 +167,37 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertIn(f"steps.{previous['id']}.outcome == 'success'", step["if"])
             previous = step
 
+    def test_runner_four_builds_for_the_booted_simulator_and_propagates_failure(self):
+        simulator = next(step for step in self.steps
+                         if step.get("id") == "simulator-action")
+        self.assertTrue(simulator["with"].get("wait_for_boot", False))
+        prebuild = self.step("Pre-build iOS app for simulator")
+        self.assertEqual(prebuild.get("if"), "matrix.test_number != 4")
+        local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertNotIn("if", local)
+        self.assertNotIn("--no-build", local["run"])
+        command = local["run"].replace("${{ matrix.test_number }}", "4").replace(
+            "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")
+        with tempfile.TemporaryDirectory(prefix="selected-ios-build-") as directory:
+            root = Path(directory)
+            calls = root / "calls"
+            flutter = root / "flutter"
+            flutter.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$XCODE_XCCONFIG_FILE" "$@" > "$CALLS"\nexit 7\n')
+            flutter.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", command], cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                     "IOS_RUST_TARGET": "x86_64-apple-ios", "RUNNER_TEMP": directory,
+                     "CALLS": str(calls)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual(calls.read_text().splitlines(), [
+                str(root / "mobile-intel-simulator.xcconfig"),
+                "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+            ])
+
     def test_only_revisions_with_the_focused_entrypoint_select_cloud(self):
         discovery = self.step("Discover focused Cloud row-page runner")["run"]
         for supported in (False, True):
