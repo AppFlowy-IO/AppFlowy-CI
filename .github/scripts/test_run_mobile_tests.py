@@ -86,6 +86,28 @@ class MobileTestGuardTest(unittest.TestCase):
         self.assertEqual(result, 124)
         self.assertIn("partial line", self.output.getvalue())
 
+    def test_timeout_diagnostics_observe_the_child_before_termination(self):
+        child_pid = Path(self.temporary.name) / "child.pid"
+        observed_live_child = []
+
+        def capture_timeout():
+            os.kill(int(child_pid.read_text()), 0)
+            observed_live_child.append(True)
+
+        result = mobile.run_bounded(
+            [sys.executable, "-u", "-c",
+             "import os,time\nfrom pathlib import Path\n"
+             f"Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+             "print('00:00 +0: Stalled case')\ntime.sleep(60)"],
+            build_seconds=3, case_seconds=.2, report_path=self.report,
+            output=self.output, on_timeout=capture_timeout, grace_seconds=.1,
+        )
+        self.assertEqual(result, 124)
+        self.assertEqual(observed_live_child, [True])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(child_pid.read_text()), 0)
+        self.assertTrue(json.loads(self.report.read_text())["timed_out"])
+
     def test_timeout_also_stops_a_helper_that_ignores_parent_signals(self):
         heartbeat = Path(self.temporary.name) / "heartbeat"
         helper_pid = Path(self.temporary.name) / "helper.pid"

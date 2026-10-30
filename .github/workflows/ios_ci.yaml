@@ -224,6 +224,8 @@ jobs:
           path: |
             ${{ runner.temp }}/mobile-local-test-guard.json
             ${{ runner.temp }}/mobile-local-timeout.png
+            ${{ runner.temp }}/mobile-local-processes.txt
+            ${{ runner.temp }}/mobile-local-device.log
           if-no-files-found: ignore
           retention-days: 7
 

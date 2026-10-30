@@ -17,6 +17,33 @@ CASE = re.compile(r"^\d+:\d+(?::\d+)? (?:[+~!\-]\d+\s*)+: (.+)$")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def capture_timeout_diagnostics(simulator, directory):
+    # A black screenshot cannot distinguish a dead Runner from an async stall.
+    # Read only the selected CI simulator, before retiring the Flutter group.
+    commands = [
+        (["xcrun", "simctl", "io", simulator, "screenshot",
+          str(directory / "mobile-local-timeout.png")], None),
+        (["xcrun", "simctl", "spawn", simulator, "launchctl", "list"],
+         directory / "mobile-local-processes.txt"),
+        (["xcrun", "simctl", "spawn", simulator, "log", "show", "--last", "10m",
+          "--style", "compact", "--predicate",
+          'process == "Runner" OR ((process == "SpringBoard" OR '
+          'process == "runningboardd") AND eventMessage CONTAINS[c] "appflowy")'],
+         directory / "mobile-local-device.log"),
+    ]
+    for command, destination in commands:
+        try:
+            if destination is None:
+                subprocess.run(command, capture_output=True, timeout=15, check=False)
+            else:
+                with destination.open("w") as stream:
+                    subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                   timeout=15, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            # Diagnostics must not prevent the owned process group from stopping.
+            continue
+
+
 def stop_process_group(process, grace_seconds):
     # Flutter's helpers share the new session. A device-isolate hang must not
     # leave a host test process running after this step has failed.
@@ -122,19 +149,11 @@ def main():
     if not args.report.resolve().is_relative_to(temporary):
         parser.error("The diagnostic report must belong to RUNNER_TEMP")
 
-    def capture_timeout():
-        try:
-            subprocess.run(["xcrun", "simctl", "io", args.simulator, "screenshot",
-                            str(temporary / "mobile-local-timeout.png")],
-                           capture_output=True, timeout=15, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
     return run_bounded(
         ["flutter", "test", "integration_test/mobile_runner_4.dart", "-d", args.simulator,
          "--reporter", "expanded"],
         build_seconds=60 * 60, case_seconds=8 * 60, report_path=args.report,
-        on_timeout=capture_timeout,
+        on_timeout=lambda: capture_timeout_diagnostics(args.simulator, temporary),
     )
 
 

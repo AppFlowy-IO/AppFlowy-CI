@@ -34,7 +34,9 @@ The Intel local-test process has independent host-side deadlines of 60 minutes f
 build/startup and eight minutes per test case. Repeated progress output for the same case
 does not reset its deadline. Terminal reporter summaries do not create cases or
 reset the active case's clock. A timeout stops the owned Flutter process group and uploads
-the last case name, timing report, and a simulator screenshot when available. This also
+the last case name, timing report, simulator process list, and ten minutes of
+Runner and related lifecycle logs, plus a screenshot when available. Each capture
+has a fifteen-second limit and runs before process cleanup. This also
 bounds device-isolate stalls that cannot report a Dart test timeout. Rust compilation
 is cached after ordinary later-step failures. Cloud test deadlines and application
 performance assertions stay unchanged.
