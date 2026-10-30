@@ -77,7 +77,8 @@ def run_bounded(command, *, build_seconds, case_seconds, report_path,
                 while "\n" in pending:
                     line, pending = pending.split("\n", 1)
                     match = CASE.match(ANSI.sub("", line).rstrip("\r"))
-                    if match is None or match[1].startswith("loading "):
+                    if (match is None or match[1].startswith("loading ")
+                            or match[1] in {"All tests passed!", "Some tests failed."}):
                         continue
                     name = match[1]
                     if name != current_case:

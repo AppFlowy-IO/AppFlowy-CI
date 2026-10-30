@@ -30,7 +30,8 @@ class MobileTestGuardTest(unittest.TestCase):
     def test_successful_cases_are_forwarded_and_case_clock_resets(self):
         result = self.run_child(
             "import time\nprint('00:00 +0: First case')\ntime.sleep(.3)\n"
-            "print('00:01 +1: Second case')\ntime.sleep(.3)\n", case=.5)
+            "print('00:01 +1: Second case')\ntime.sleep(.3)\n"
+            "print('00:02 +2: All tests passed!')\n", case=.5)
         self.assertEqual(result, 0)
         report = json.loads(self.report.read_text())
         self.assertEqual(report["started_cases"], ["First case", "Second case"])
@@ -40,6 +41,16 @@ class MobileTestGuardTest(unittest.TestCase):
     def test_failed_flutter_exit_is_preserved(self):
         self.assertEqual(self.run_child("import sys\nprint('00:00 +0: Failed case')\nsys.exit(7)"), 7)
         self.assertFalse(json.loads(self.report.read_text())["timed_out"])
+
+    def test_build_failure_summary_does_not_create_an_application_case(self):
+        result = self.run_child(
+            "import sys\nprint('00:00 +0: loading test.dart')\n"
+            "print('00:00 +0 -1: Some tests failed.')\nsys.exit(7)\n")
+        self.assertEqual(result, 7)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["phase"], "build")
+        self.assertIsNone(report["current_case"])
+        self.assertEqual(report["started_cases"], [])
 
     def test_loading_line_uses_separate_build_deadline(self):
         result = self.run_child(
