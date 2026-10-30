@@ -25,11 +25,12 @@ class TestModuleCoverage(unittest.TestCase):
     self.sample.write_text("#[sqlx::test(migrations = false)]\nasync fn sample() {}\n")
     self.workflow = self.root / "workflow.yaml"
 
-  def run_checker(self, modules, targets=""):
+  def run_checker(self, modules, targets="", owned_targets=""):
     self.workflow.write_text(
       "jobs:\n  tests:\n    strategy:\n      matrix:\n        include:\n"
       f"          - test_modules: '{modules}'\n"
       f"            test_targets: '{targets}'\n"
+      f"    env:\n      OWNED_TEST_TARGETS: '{owned_targets}'\n"
     )
     return subprocess.run(
       [sys.executable, str(pathlib.Path(coverage.__file__).resolve()),
@@ -39,7 +40,8 @@ class TestModuleCoverage(unittest.TestCase):
 
   def test_recognizes_standard_tokio_and_sqlx_test_attributes(self):
     for attribute in ("#[test]", "#[tokio::test]", "#[sqlx::test]",
-                      "#[sqlx::test(migrations = false)]"):
+                      "#[sqlx::test(migrations = false)]", "#[actix_web::test]",
+                      "#[actix_rt::test]"):
       with self.subTest(attribute=attribute):
         signature = "fn" if attribute == "#[test]" else "async fn"
         self.sample.write_text(f"{attribute}\n{signature} sample() {{}}\n")
@@ -88,6 +90,17 @@ class TestModuleCoverage(unittest.TestCase):
   def test_standalone_helper_without_tests_needs_no_selection(self):
     (self.tests / "helper.rs").write_text("fn setup() {}\n")
     result = self.run_checker("sql_test")
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+  def test_ignored_presentation_target_requires_its_own_runner_even_with_wildcard(self):
+    (self.tests / "presentation_acceptance.rs").write_text(
+      '#[actix_web::test]\n#[ignore = "requires owned services"]\nasync fn sources() {}\n'
+    )
+    for targets in ("*", "presentation_acceptance"):
+      result = self.run_checker("sql_test", targets)
+      self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+      self.assertIn("OWNED_TEST_TARGETS", result.stdout)
+    result = self.run_checker("sql_test", "*", "presentation_acceptance")
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

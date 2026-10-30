@@ -14,10 +14,11 @@ Coverage rules, mirroring how the workflows invoke ``cargo test "<module>::"``:
 * A tree is covered when its bare name is listed (runs the whole tree), or —
   for directory trees — when every *test-bearing* submodule of its ``mod.rs``
   is listed as ``tree::submodule`` (or deeper).
-* Modules without ``#[test]``, ``#[tokio::test]``, or ``#[sqlx::test]`` are helpers
-  and exempt.
+* Modules without Rust, Tokio, SQLx or Actix test attributes are helpers and exempt.
 * Separate test targets must be listed in ``test_targets``. A ``*`` entry runs
-  every non-main Cargo integration target, including newly added targets.
+  generic non-main Cargo integration targets, including newly added targets.
+* ``presentation_acceptance`` requires ``OWNED_TEST_TARGETS`` in its dedicated
+  fixture lane; the wildcard cannot execute its ignored tests.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import re
 import sys
 
 MOD_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+([A-Za-z0-9_]+)\s*;", re.M)
-TEST_ATTR_RE = re.compile(r"#\[\s*(?:(?:tokio|sqlx)\s*::\s*)?test\b")
+TEST_ATTR_RE = re.compile(r"#\[\s*(?:(?:tokio|sqlx|actix_web|actix_rt)\s*::\s*)?test\b")
 
 # Modules that intentionally never run from these matrices. Keep every entry
 # commented so an exemption cannot hide an accident.
@@ -116,11 +117,15 @@ def main() -> int:
 
   covered = parse_covered_tokens(args.workflow)
   targets = parse_covered_tokens(args.workflow, "test_targets")
+  owned_targets = parse_covered_tokens(args.workflow, "OWNED_TEST_TARGETS")
   missing: list[str] = []
 
   for source in sorted(args.tests.glob("*.rs")):
     if source.stem != "main" and target_has_tests(source):
-      if "*" not in targets and source.stem not in targets:
+      if source.stem == "presentation_acceptance":
+        if source.stem not in owned_targets:
+          missing.append(f"--test {source.stem} (requires OWNED_TEST_TARGETS and its real fixture runner)")
+      elif "*" not in targets and source.stem not in targets:
         missing.append(f"--test {source.stem}")
 
   for tree in MOD_RE.findall((args.tests / "main.rs").read_text()):

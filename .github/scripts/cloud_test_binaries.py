@@ -23,6 +23,8 @@ MANIFEST = Path("target/cloud-test-binaries.json")
 RUNTIME = Path("target/cloud-test-runtime")
 CROSS_TARGET = "x86_64-unknown-linux-gnu"
 AMD64_RUNNER = ["Linux", "x86_64", "ubuntu", "24.04"]
+# This ignored-only target owns a private native stack and an independent feature graph.
+OWNED_TEST_TARGETS = {"presentation_acceptance"}
 
 
 def command_output(*command):
@@ -274,7 +276,7 @@ def run(arguments):
     if features(" ".join(args.features)) != manifest["features"]:
         raise ValueError("Requested Cargo features differ from the precompiled test archive")
     selected = [test for test in manifest["tests"] if (
-        not (args.lib or args.bins or args.test)
+        not (args.lib or args.bins or args.test) and test["name"] not in OWNED_TEST_TARGETS
         or args.lib and "lib" in test["kind"]
         or args.bins and "bin" in test["kind"]
         or "test" in test["kind"] and test["name"] in args.test
@@ -282,6 +284,9 @@ def run(arguments):
     if not selected or any(name not in {test["name"] for test in selected
                                        if "test" in test["kind"]} for name in args.test):
         raise ValueError("Requested test target is missing from the precompiled archive")
+    if (set(args.test) & OWNED_TEST_TARGETS
+            and not any(flag in test_args for flag in ("--ignored", "--include-ignored", "--list"))):
+        raise ValueError("Presentation acceptance requires its owned fixture runner and an explicit ignored selection")
     for requested, kind in ((args.lib, "lib"), (args.bins, "bin")):
         if requested and not any(kind in test["kind"] for test in selected):
             raise ValueError(f"Requested {kind} test target is missing from the archive")
