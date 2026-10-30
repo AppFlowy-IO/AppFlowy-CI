@@ -1,6 +1,6 @@
 name: iOS-CI
 run-name: >-
-  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
+  [ci-v2 source=${{ github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'docker_setup' && github.repository || github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
   pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
   ${{ github.workflow }}
@@ -25,6 +25,12 @@ on:
         type: choice
         default: "all"
         options: ["all", "4"]
+      validation_scope:
+        description: "Full iOS coverage, or only a CI-owned Intel Docker setup smoke test"
+        required: false
+        type: choice
+        default: "full"
+        options: ["full", "docker_setup"]
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -44,8 +50,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docker-setup-smoke:
+    name: Intel Docker setup validation (no Desktop tests)
+    if: github.event_name == 'workflow_dispatch' && inputs.validation_scope == 'docker_setup'
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Docker on macOS
+        timeout-minutes: 10
+        run: python3 .github/scripts/setup_macos_docker.py
+      - name: Verify Compose and host-to-VM connectivity
+        timeout-minutes: 3
+        run: python3 .github/scripts/smoke_macos_docker.py
+      - name: Stop job-owned Docker VM
+        if: always()
+        timeout-minutes: 2
+        env:
+          COLIMA_HOME: ${{ runner.temp }}/mobile-docker-tools/colima
+          LIMA_HOME: ${{ runner.temp }}/mobile-docker-tools/lima
+        run: |
+          colima_binary="$RUNNER_TEMP/mobile-docker-tools/tools/bin/colima"
+          if [[ -x "$colima_binary" && -d "$COLIMA_HOME" ]]; then
+            "$colima_binary" stop
+          fi
+
   integration-tests:
     name: Mobile integration tests (runner ${{ matrix.test_number }})
+    if: github.event_name != 'workflow_dispatch' || inputs.validation_scope != 'docker_setup'
     timeout-minutes: 120
     strategy:
       fail-fast: false

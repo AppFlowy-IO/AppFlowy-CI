@@ -125,7 +125,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         return next(step for step in self.steps if step.get("name") == name)
 
     def test_cloud_reuses_runner_four_after_the_existing_local_suite(self):
-        self.assertEqual(list(self.workflow["jobs"]), ["integration-tests"])
+        self.assertEqual(set(self.workflow["jobs"]), {"integration-tests", "docker-setup-smoke"})
+        self.assertEqual(self.job["if"],
+                         "github.event_name != 'workflow_dispatch' || inputs.validation_scope != 'docker_setup'")
         self.assertEqual(self.job["strategy"]["matrix"], {"test_number":
             "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' "
             "&& '[4]' || '[1,2,3,4]') }}"})

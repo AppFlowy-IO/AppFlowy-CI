@@ -27,6 +27,17 @@ checksum or daemon errors fail setup. The required test commands and their deadl
 unchanged. To verify downloads locally without installing tools or starting
 a VM, run `python3 .github/scripts/setup_macos_docker.py --verify-downloads <new-directory>`.
 
+Validate the installer, Compose health checks, and host-to-VM port forwarding on a hosted
+Intel runner with a pinned Redis container:
+
+```bash
+gh workflow run ios_ci.yaml --repo AppFlowy-IO/AppFlowy-CI --ref <ci-branch> \
+  -f validation_scope=docker_setup
+```
+
+This manual scope reports CI-configuration validation. Full iOS and Cloud row-page coverage
+uses the default `validation_scope=full` and the existing four test runners.
+
 Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
 group per CI branch and private PR, so the automatic main workflow cannot cancel it
 while testing that same PR. A newer manual attempt in the same group still replaces
