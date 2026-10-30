@@ -28,26 +28,43 @@ class PdfGateTest(unittest.TestCase):
         self.root = Path(temporary.name)
         self.workspace, self.output = self.root / "rust-lib", self.root / "evidence"
         self.source = self.workspace / gate.TEST_SOURCE
-        self.source.parent.mkdir(parents=True)
-        self.source.write_text("// fixture target\n")
+        self.component_source = self.workspace / "flowy-database2/tests/pdf_export_columns.rs"
+        for path in (self.source, self.component_source):
+            path.parent.mkdir(parents=True)
+            path.write_text("// fixture target\n")
         self.contract = self.workspace / gate.CONTRACT
-        self.contract.write_text(json.dumps({"version": 1, "package": gate.PACKAGE,
-                                             "target": gate.TARGET, "required_tests": NAMES}))
-        self.all_names, self.ignored = list(NAMES), []
-        self.run_exit, self.run_count = 0, len(NAMES)
+        component_names = ["pdf_export_refreshes_valid_but_empty_blob_rows_before_filtering",
+                           "pdf_export_preserves_current_read_failures_and_concurrent_local_edits"]
+        self.contract_data = {"version": 1, "package": gate.PACKAGE, "target": gate.TARGET,
+                              "required_tests": list(NAMES), "components": {
+                                  "package": "flowy-database2", "target": "pdf_export_columns",
+                                  "required_tests": component_names}}
+        self.write_contract()
+        self.fixtures = {gate.TARGET: {"package": gate.PACKAGE, "names": list(NAMES), "ignored": [],
+                                      "exit": 0, "count": len(NAMES)},
+                         "pdf_export_columns": {"package": "flowy-database2", "names": list(component_names),
+                                                "ignored": [], "exit": 0, "count": len(component_names)}}
+        self.events, self.components = self.fixtures[gate.TARGET], self.fixtures["pdf_export_columns"]
+        self.allow_legacy_paths = False
         self.commands = []
+
+    def write_contract(self):
+        self.contract.write_text(json.dumps(self.contract_data))
 
     def cargo(self, command, **kwargs):
         self.commands.append(command)
+        target = command[command.index("--test") + 1]
+        fixture = self.fixtures[target]
         self.assertEqual(kwargs["cwd"], self.workspace.resolve())
         if "--list" in command:
-            names = self.ignored if "--ignored" in command else self.all_names
+            names = fixture["ignored"] if "--ignored" in command else fixture["names"]
             return subprocess.CompletedProcess(command, 0, "".join(f"{n}: test\n" for n in names))
         self.assertEqual(command[-2:], ["--", "--test-threads=1"])
-        self.assertEqual(kwargs["env"]["APPFLOWY_PDF_TEST_OUTPUT_DIR"],
-                         str((self.output / "saved-exports").resolve()))
-        kwargs["stdout"].write(f"test result: ok. {self.run_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n")
-        return subprocess.CompletedProcess(command, self.run_exit)
+        expected = self.output / f"{fixture['package']}-{target}" / "saved-exports"
+        if not self.allow_legacy_paths:
+            self.assertEqual(kwargs["env"]["APPFLOWY_PDF_TEST_OUTPUT_DIR"], str(expected.resolve()))
+        kwargs["stdout"].write(f"test result: ok. {fixture['count']} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n")
+        return subprocess.CompletedProcess(command, fixture["exit"])
 
     def run_gate(self):
         with patch.object(gate.subprocess, "run", side_effect=self.cargo), \
@@ -56,51 +73,91 @@ class PdfGateTest(unittest.TestCase):
         self.result = json.loads((self.output / "gate-result.json").read_text())
         return code
 
-    def test_runs_every_test_unfiltered_including_names_missed_by_database_filter(self):
+    def test_runs_every_event_and_component_without_a_name_filter(self):
         self.assertEqual(self.run_gate(), 0)
-        self.assertEqual(len(self.commands), 3)
-        self.assertEqual(self.result["tests"], sorted(NAMES))
+        self.assertEqual(len(self.commands), 6)
+        self.assertEqual(self.result["suites"][0]["tests"], sorted(NAMES))
         self.assertEqual(self.result["status"], "passed")
-        self.assertEqual(self.result["command"], ["cargo", "test", "-p", "event-integration-test",
-                                                  "--test", "database_pdf_export", "--", "--test-threads=1"])
+        self.assertEqual(self.result["runnable_count"], 4)
+        for report in self.result["suites"]:
+            self.assertEqual(report["command"], ["cargo", "test", "-p", report["package"],
+                                                  "--test", report["target"], "--", "--test-threads=1"])
+
+    def test_twelve_events_and_seven_components_aggregate_as_nineteen_required_checks(self):
+        self.events["names"] += [f"event_case_{n}" for n in range(10)]
+        self.events["count"] = 12
+        self.components["names"] += [f"component_case_{n}" for n in range(5)]
+        self.components["count"] = 7
+        self.assertEqual(self.run_gate(), 0)
+        self.assertEqual(self.result["runnable_count"], 19)
 
     def test_new_cases_run_without_having_to_edit_the_contract(self):
-        self.all_names.append("new_field_type_regression")
-        self.run_count += 1
+        self.events["names"].append("new_field_type_regression")
+        self.events["count"] += 1
         self.assertEqual(self.run_gate(), 0)
-        self.assertIn("new_field_type_regression", self.result["tests"])
+        self.assertIn("new_field_type_regression", self.result["suites"][0]["tests"])
 
-    def test_missing_required_case_fails_before_running_tests(self):
-        self.all_names.pop()
+    def test_missing_required_event_fails_before_its_execution(self):
+        self.events["names"].pop()
         self.assertEqual(self.run_gate(), 1)
-        self.assertEqual(len(self.commands), 2)
-        self.assertIn("missing=", self.result["error"])
+        self.assertIn("missing=", self.result["suites"][0]["error"])
+        self.assertEqual(self.result["suites"][1]["status"], "passed")
 
-    def test_ignored_required_case_fails_before_running_tests(self):
-        self.ignored = [NAMES[0]]
+    def test_ignored_required_event_fails_before_its_execution(self):
+        self.events["ignored"] = [NAMES[0]]
         self.assertEqual(self.run_gate(), 1)
-        self.assertIn("ignored=", self.result["error"])
+        self.assertIn("ignored=", self.result["suites"][0]["error"])
 
     def test_zero_inventory_is_not_a_passing_gate(self):
-        self.all_names = []
+        self.events["names"] = []
         self.assertEqual(self.run_gate(), 1)
-        self.assertIn("no non-ignored tests", self.result["error"])
+        self.assertIn("no non-ignored tests", self.result["suites"][0]["error"])
 
     def test_zero_executed_tests_cannot_pass_after_nonzero_inventory(self):
-        self.run_count = 0
+        self.events["count"] = 0
         self.assertEqual(self.run_gate(), 1)
         self.assertEqual(self.result["status"], "failed")
 
     def test_native_failure_is_preserved_with_artifacts(self):
-        self.run_exit = 101
+        self.events["exit"] = 101
         self.assertEqual(self.run_gate(), 101)
         self.assertEqual(self.result["status"], "failed")
-        self.assertTrue((self.output / "test.log").exists())
+        self.assertTrue((self.output / "event-integration-test-database_pdf_export/test.log").exists())
 
-    def test_deleting_a_contracted_target_fails(self):
-        self.source.unlink()
+    def test_component_failure_cannot_hide_behind_passing_events(self):
+        self.components["exit"] = 101
+        self.assertEqual(self.run_gate(), 101)
+        self.assertEqual(self.result["suites"][0]["status"], "passed")
+        self.assertEqual(self.result["suites"][1]["status"], "failed")
+        self.assertEqual(self.result["status"], "failed")
+
+    def test_missing_or_ignored_component_fails_the_same_required_gate(self):
+        for mode in ("missing", "ignored"):
+            with self.subTest(mode=mode):
+                self.components["names"] = list(self.contract_data["components"]["required_tests"])
+                self.components["ignored"] = []
+                if mode == "missing":
+                    self.components["names"].pop()
+                else:
+                    self.components["ignored"] = [self.components["names"][0]]
+                self.assertEqual(self.run_gate(), 1)
+                self.assertEqual(self.result["suites"][0]["status"], "passed")
+                self.assertEqual(self.result["suites"][1]["status"], "failed")
+
+    def test_contract_cannot_drop_its_component_suite(self):
+        del self.contract_data["components"]
+        self.write_contract()
         self.assertEqual(self.run_gate(), 1)
+        self.assertIn("component target", self.result["error"])
         self.assertEqual(self.commands, [])
+
+    def test_deleting_either_contracted_target_fails(self):
+        for source in (self.source, self.component_source):
+            with self.subTest(source=source):
+                source.unlink()
+                self.assertEqual(self.run_gate(), 1)
+                self.assertEqual(self.commands, [])
+                source.touch()
 
     def test_failed_setup_replaces_a_previous_successful_result(self):
         self.output.mkdir()
@@ -116,8 +173,14 @@ class PdfGateTest(unittest.TestCase):
         self.assertEqual(self.result["status"], "legacy_skipped")
         self.assertEqual(self.commands, [])
 
-    def test_legacy_target_without_contract_still_runs_all_cases(self):
+    def test_legacy_targets_without_contract_still_run_all_discovered_cases(self):
         self.contract.unlink()
+        self.assertEqual(self.run_gate(), 0)
+        self.assertEqual(len(self.commands), 6)
+
+    def test_legacy_event_target_without_component_source_is_supported(self):
+        self.contract.unlink()
+        self.component_source.unlink()
         self.assertEqual(self.run_gate(), 0)
         self.assertEqual(len(self.commands), 3)
 

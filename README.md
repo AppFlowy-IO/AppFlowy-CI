@@ -29,8 +29,10 @@ for input provenance, legacy behavior and CI-branch validation before receiver a
 Desktop PDF exports have three focused commit statuses: `PDF export regression (Rust)`,
 `PDF export regression (UI)` and `PDF export regression (Cloud UI)`. The source-owned
 `frontend/rust-lib/integration-test/pdf_export_contract.json` names the required native
-tests and BDD scenarios. Rust runs the complete `database_pdf_export` target without
-module filters. The local UI BDD runs on `macos-15-intel` using the matching prepared
+tests and BDD scenarios. The same required Rust gate runs all 12 `database_pdf_export`
+event cases and seven `pdf_export_columns` recovery components without module filters;
+passing events cannot hide a failing component suite. The local UI BDD runs on
+`macos-15-intel` using the matching prepared
 FFI artifact; the cold-cloud BDD runs in the existing Linux `pdf_export` cloud suite.
 Machine test events must show the contracted scenarios completed without skips,
 and native process failures are preserved. Inventories, results, logs and saved
@@ -43,6 +45,9 @@ in a PR cannot use that fallback. Test execution does not receive the bridge's t
 To validate a CI branch's statuses, dispatch Rust and Flutter with both `pr_ref=<SHA>`
 and `pr_number=<private-PR>`. Merge the workflow and Desktop contract changes and verify
 the same Desktop SHA before making these statuses required in repository rules.
+Require up-to-date branches with the main-only status rule. Once main adopts the
+contract, an older head's legacy NA statuses must not allow untested changes to
+merge with the newer main revision.
 
 Flutter's Linux jobs configure APT from the same CI revision as the workflow.
 Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent

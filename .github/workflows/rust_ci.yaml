@@ -361,7 +361,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
-      - name: Run the complete PDF export regression target
+      - name: Run the complete PDF export regression targets
         id: pdf-regression
         if: matrix.test_group == 'integration_group2'
         timeout-minutes: 45

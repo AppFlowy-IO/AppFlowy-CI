@@ -20,6 +20,7 @@ CONTEXTS = {"rust": "PDF export regression (Rust)", "ui": "PDF export regression
 REPOSITORY = "AppFlowy-IO/AppFlowy-Premium"
 PROTECTED = {f"frontend/rust-lib/{CONTRACT.as_posix()}",
              f"frontend/rust-lib/{TEST_SOURCE.as_posix()}",
+             "frontend/rust-lib/flowy-database2/tests/pdf_export_columns.rs",
              "frontend/appflowy_flutter/integration_test/desktop/bdd/database/grid/database_export_test.dart",
              "frontend/appflowy_flutter/integration_test/desktop/bdd/database/cloud_database_export/cloud_database_export_test.dart"}
 

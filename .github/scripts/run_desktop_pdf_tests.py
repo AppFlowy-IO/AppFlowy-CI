@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the complete Desktop PDF target and retain its inventory and saved files.
+"""Run complete Desktop PDF event/component targets and retain saved-file evidence.
 
 Libtest's substring filters match test names, not target filenames. This gate
 intentionally passes no filter. A source-owned contract keeps critical cases
@@ -9,6 +9,7 @@ from disappearing or becoming ignored while older Desktop refs remain usable.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,19 @@ PACKAGE = "event-integration-test"
 TARGET = "database_pdf_export"
 CONTRACT = Path("integration-test/pdf_export_contract.json")
 TEST_SOURCE = Path("integration-test/tests/database_pdf_export.rs")
+COMPONENT_SOURCE = Path("flowy-database2/tests/pdf_export_columns.rs")
+
+
+@dataclass(frozen=True)
+class Suite:
+    package: str
+    target: str
+    source: Path
+    required: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        return f"{self.package}-{self.target}"
 
 
 def inventory(text: str) -> set[str]:
@@ -44,38 +58,49 @@ def verify_result(text: str, expected: int) -> None:
         raise ValueError(f"PDF run must execute all {expected} non-ignored tests without filtering")
 
 
-def required_tests(workspace: Path) -> list[str]:
-    contract = workspace / CONTRACT
-    if not contract.exists():
-        return []
-    data = json.loads(contract.read_text())
-    if (data.get("version"), data.get("package"), data.get("target")) != (1, PACKAGE, TARGET):
-        raise ValueError("Unsupported Desktop PDF contract version/package/target")
+def required_names(data: dict) -> tuple[str, ...]:
     names = data.get("required_tests")
     if not isinstance(names, list) or not names or any(
         not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:]*", name)
         for name in names
     ) or len(names) != len(set(names)):
         raise ValueError("PDF contract must contain unique required test names")
-    return names
+    return tuple(names)
 
 
-def run(workspace: Path, output: Path) -> int:
-    workspace, output = workspace.resolve(), output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "gate-result.json").unlink(missing_ok=True)
-    result = {"kind": "rust", "package": PACKAGE, "target": TARGET, "status": "failed"}
-    try:
-        required = required_tests(workspace)
+def suites(workspace: Path) -> list[Suite]:
+    contract = workspace / CONTRACT
+    if not contract.exists():
         if not (workspace / TEST_SOURCE).exists():
-            if (workspace / CONTRACT).exists():
-                raise ValueError("Desktop PDF contract requires missing database_pdf_export target")
-            result.update(status="legacy_skipped", reason="Desktop ref predates the PDF target")
-            print(result["reason"])
-            return 0
+            return []
+        selected = [Suite(PACKAGE, TARGET, TEST_SOURCE)]
+        if (workspace / COMPONENT_SOURCE).exists():
+            selected.append(Suite("flowy-database2", "pdf_export_columns", COMPONENT_SOURCE))
+        return selected
+    data = json.loads(contract.read_text())
+    if (data.get("version"), data.get("package"), data.get("target")) != (1, PACKAGE, TARGET):
+        raise ValueError("Unsupported Desktop PDF contract version/package/target")
+    components = data.get("components")
+    if not isinstance(components, dict) or (components.get("package"), components.get("target")) != (
+        "flowy-database2", "pdf_export_columns"
+    ):
+        raise ValueError("Desktop PDF contract requires its pdf_export_columns component target")
+    selected = [Suite(PACKAGE, TARGET, TEST_SOURCE, required_names(data)),
+                Suite("flowy-database2", "pdf_export_columns", COMPONENT_SOURCE, required_names(components))]
+    for suite in selected:
+        if not (workspace / suite.source).exists():
+            raise ValueError(f"Desktop PDF contract requires missing {suite.target} target")
+    return selected
 
-        result["desktop_sha"] = desktop_revision(workspace)
-        command = ["cargo", "test", "-p", PACKAGE, "--test", TARGET]
+
+def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
+    output.mkdir(parents=True, exist_ok=True)
+    for name in ("result.json", "test.log", "inventory-all.log", "inventory-ignored.log"):
+        (output / name).unlink(missing_ok=True)
+    result = {"package": suite.package, "target": suite.target, "status": "failed",
+              "exit_code": 1, "required_tests": list(suite.required)}
+    try:
+        command = ["cargo", "test", "-p", suite.package, "--test", suite.target]
         environment = {**os.environ, "DISABLE_CI_TEST_LOG": "true",
                        "APPFLOWY_PDF_TEST_OUTPUT_DIR": str(output / "saved-exports")}
         (output / "saved-exports").mkdir(exist_ok=True)
@@ -89,19 +114,17 @@ def run(workspace: Path, output: Path) -> int:
                 raise ValueError(f"PDF {label} inventory failed ({listed.returncode})")
             lists[label] = inventory(listed.stdout)
         runnable = lists["all"] - lists["ignored"]
-        result.update(required_tests=required, tests=sorted(lists["all"]),
-                      runnable_count=len(runnable),
+        result.update(tests=sorted(lists["all"]), runnable_count=len(runnable),
                       ignored_tests=sorted(lists["ignored"]))
         if not runnable:
             raise ValueError("PDF target has no non-ignored tests")
-        missing = set(required) - lists["all"]
-        ignored = set(required) & lists["ignored"]
+        missing = set(suite.required) - lists["all"]
+        ignored = set(suite.required) & lists["ignored"]
         if missing or ignored:
             raise ValueError(f"PDF contract not satisfied: missing={sorted(missing)}, ignored={sorted(ignored)}")
-
         command += ["--", "--test-threads=1"]
         result["command"] = command
-        print(f"Running all {len(runnable)} non-ignored PDF tests without a name filter", flush=True)
+        print(f"Running all {len(runnable)} non-ignored tests in {suite.label} without a filter", flush=True)
         with (output / "test.log").open("w") as log:
             completed = subprocess.run(command, cwd=workspace, env=environment,
                                        stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -109,8 +132,31 @@ def run(workspace: Path, output: Path) -> int:
         if completed.returncode == 0:
             verify_result((output / "test.log").read_text(errors="replace"), len(runnable))
             result["status"] = "passed"
-        print(f"PDF target exit code: {completed.returncode}; evidence: {output}")
-        return completed.returncode
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        result.update(error=str(error), exit_code=1)
+        print(f"Desktop PDF gate failed for {suite.label}: {error}", file=sys.stderr)
+    finally:
+        (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def run(workspace: Path, output: Path) -> int:
+    workspace, output = workspace.resolve(), output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "gate-result.json").unlink(missing_ok=True)
+    result = {"kind": "rust", "status": "failed", "exit_code": 1}
+    try:
+        selected = suites(workspace)
+        if not selected:
+            result.update(status="legacy_skipped", exit_code=0,
+                          reason="Desktop ref predates the PDF target")
+            return 0
+        result["desktop_sha"] = desktop_revision(workspace)
+        reports = [run_suite(suite, workspace, output / suite.label) for suite in selected]
+        code = next((report["exit_code"] for report in reports if report["status"] != "passed"), 0)
+        result.update(suites=reports, runnable_count=sum(report.get("runnable_count", 0) for report in reports),
+                      status="passed" if code == 0 else "failed", exit_code=code)
+        return code
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         result["error"] = str(error)
         print(f"Desktop PDF gate failed: {error}", file=sys.stderr)
