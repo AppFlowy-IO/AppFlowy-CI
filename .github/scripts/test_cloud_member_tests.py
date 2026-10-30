@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -125,6 +127,57 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         result, calls = self.invoke("invalid")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
+
+    def test_member_preparation_receives_tools_when_root_and_ollama_are_disabled(self):
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["test"]
+        steps = job["steps"]
+        checkout = next(step for step in steps if step.get("name") == "Checkout CI tools")
+        prepare = next(step for step in steps
+                       if step.get("name") == "Prepare shared library test binaries")
+        member = next(lane for lane in job["strategy"]["matrix"]["include"]
+                      if lane["test_service"] == "appflowy_cloud_member_packages")
+        # Match the actual member lane: it uses Cargo locally and never selects Ollama.
+        self.assertEqual(member["cache_group"], "members")
+        self.assertFalse(member.get("test_package_search", False))
+        self.assertFalse(member.get("test_package_ai", False))
+        self.assertFalse(member.get("test_targets"))
+        self.assertFalse(member.get("ollama", False))
+        env = {"CLOUD_RUN_ROOT": "false", "AI_ON_OLLAMA": "false"}
+
+        def should_checkout(condition):
+            results = []
+            for term in condition.split("||"):
+                match = re.fullmatch(r"\s*(env|matrix)\.(\w+) == '([^']+)'\s*", term)
+                self.assertIsNotNone(match, f"Unsupported checkout condition: {term}")
+                scope, key, value = match.groups()
+                results.append((env if scope == "env" else member).get(key) == value)
+            return any(results)
+
+        self.assertTrue(should_checkout(checkout["if"]))
+        self.assertFalse(should_checkout(
+            "env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'"))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["with"]["path"], "ci-tools")
+        self.assertLess(steps.index(checkout), steps.index(prepare))
+        # Materialize tools only when the real workflow would perform its checkout. This
+        # prevents unconditional fixture symlinks from concealing a skipped checkout.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertFalse((root / "ci-tools").exists())
+            if should_checkout(checkout["if"]):
+                tools = root / checkout["with"]["path"] / ".github/scripts"
+                tools.mkdir(parents=True)
+                shutil.copy2(HELPER, tools / HELPER.name)
+            cargo = root / "cargo"
+            cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            cargo.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", prepare["run"]], cwd=root,
+                env={**os.environ, **env, "PATH": f"{root}:{os.environ['PATH']}"},
+                text=True, capture_output=True, timeout=10, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("--no-run", result.stdout)
 
     def test_workflow_prepares_only_members_outside_the_unchanged_test_deadline(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["test"]

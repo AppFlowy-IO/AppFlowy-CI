@@ -591,8 +591,10 @@ jobs:
 
       - &cloud_ci_tools
         name: Checkout CI tools
-        # Lanes that rerun failed tests on Ollama run them through retry_failed_tests.py.
-        if: env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'
+        # Root archives, Ollama retries and member preparation use source-pinned CI helpers.
+        if: >-
+          env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true' ||
+          matrix.test_service == 'appflowy_cloud_member_packages'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
