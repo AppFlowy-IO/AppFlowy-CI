@@ -147,6 +147,29 @@ class RequestTest(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_SHA": "f" * 40}), self.assertRaisesRegex(ValueError, "CI runtime"):
             self.prepare()
 
+    def test_web_caller_pins_tools_independently_and_requires_the_ai_artifact(self):
+        self.artifacts["artifacts"].append({"name": "docker-image-ai", "id": 5, "expired": False})
+        with patch.dict(os.environ, {"GITHUB_SHA": "e" * 40}):
+            self.assertTrue(runtime.prepare_request(
+                SOURCE, "123", self.desktop, self.cloud, DESKTOP, self.manifest,
+                self.run_command, ci_ref=CI, profile="web"))
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(state["ci_source_sha"], CI)
+        self.assertEqual(state["caller_source_sha"], "e" * 40)
+        self.assertEqual(state["runtime_profile"], "web")
+        self.assertEqual(state["image_artifacts"]["docker-image-ai"], 5)
+        self.artifacts = artifacts()
+        with self.assertRaisesRegex(ValueError, "complete, unexpired"):
+            runtime.prepare_request(SOURCE, "123", self.desktop, self.cloud, DESKTOP,
+                                    self.manifest, self.run_command, ci_ref=CI, profile="web")
+
+    def test_explicit_tools_ref_cannot_be_mutable_or_differ_from_checkout(self):
+        for revision in ("main", "f" * 40):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "CI runtime"):
+                runtime.prepare_request(SOURCE, "123", self.desktop, self.cloud, DESKTOP,
+                                        self.manifest, self.run_command, ci_ref=revision)
+        self.assertTrue(all(call[0] == "git" for call in self.calls))
+
     def test_wrong_private_repository_workflow_source_or_attempt_state_refuses(self):
         mutations = [
             ("repository", {"full_name": "someone/other"}), ("path", ".github/workflows/release.yml"),
@@ -198,6 +221,75 @@ class RequestTest(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_SHA": ci_sha}):
             self.assertTrue(runtime.prepare_request(cloud_sha, "123", self.desktop, self.cloud,
                                                     desktop_sha, self.manifest, run))
+
+
+class SelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.desktop = Path(self.directory.name)
+        write_pins(self.desktop)
+        self.calls = []
+        self.artifacts = artifacts()
+        self.artifacts["artifacts"].append({"name": "docker-image-ai", "id": 5, "expired": False})
+        self.expired = json.loads(json.dumps(self.artifacts))
+        self.expired["artifacts"][0]["expired"] = True
+        self.sync_message = f"sync: update client-api from {SOURCE[:7]}"
+        self.env = patch.dict(os.environ, {"GITHUB_SHA": CI})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def run_command(self, args, **kwargs):
+        self.calls.append(args)
+        if args[0] == "git":
+            return CI
+        endpoint = args[-1]
+        if "/git/commits/" in endpoint:
+            return json.dumps({"message": self.sync_message})
+        if "/commits/" in endpoint:
+            return json.dumps({"sha": SOURCE})
+        if "/workflows/" in endpoint:
+            return json.dumps({"workflow_runs": [
+                {"id": 999, "display_title": f"CI images 9-1 ({'f' * 40})"},
+                {"id": 122, "display_title": f"CI images 9-1 ({SOURCE})"},
+                {"id": 123, "display_title": f"CI images 9-1 ({SOURCE})"},
+            ]})
+        if "/artifacts?" in endpoint:
+            return json.dumps(self.expired if "/122/" in endpoint else self.artifacts)
+        return json.dumps(build_metadata())
+
+    def test_auto_selection_skips_wrong_sources_and_expired_builds_without_dispatch(self):
+        self.assertEqual(runtime.select_prebuilt(self.desktop, run=self.run_command), (SOURCE, "123"))
+        self.assertFalse(any("/runs/999" in args[-1] for args in self.calls))
+        self.assertTrue(all(args[0] == "git" or args[:2] == ["gh", "api"] for args in self.calls))
+
+    def test_generated_client_hint_is_resolved_to_a_full_server_candidate(self):
+        write_pins(self.desktop, "f" * 40, repository=runtime.CLIENT_URL)
+        self.assertEqual(runtime.select_prebuilt(self.desktop, run=self.run_command), (SOURCE, "123"))
+        self.assertTrue(any("AppFlowy-Client/git/commits/" in args[-1] for args in self.calls))
+        self.assertTrue(any(f"/commits/{SOURCE[:7]}" in args[-1] for args in self.calls))
+
+    def test_missing_source_hint_and_expired_sets_fail_without_registry_fallback(self):
+        write_pins(self.desktop, "f" * 40, repository=runtime.CLIENT_URL)
+        self.sync_message = "unrelated commit"
+        with self.assertRaisesRegex(ValueError, "canonical Server source hint"):
+            runtime.select_prebuilt(self.desktop, run=self.run_command)
+        write_pins(self.desktop)
+        self.artifacts = self.expired
+        with self.assertRaisesRegex(ValueError, "latest 100 builds"):
+            runtime.select_prebuilt(self.desktop, run=self.run_command)
+
+    def test_explicit_registry_selection_does_not_require_or_read_private_builds(self):
+        self.assertIsNone(runtime.select_prebuilt(self.desktop, cloud_version="published-candidate",
+                                                 run=self.run_command))
+        self.assertEqual(self.calls, [])
+
+    def test_partial_pairs_conflicting_modes_and_mutable_tools_ref_are_rejected(self):
+        for arguments in ({"source_sha": SOURCE}, {"image_run_id": "123"},
+                          {"source_sha": SOURCE, "image_run_id": "123", "cloud_version": "latest"},
+                          {"ci_ref": "main"}):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                runtime.select_prebuilt(self.desktop, run=self.run_command, **arguments)
 
 
 class GeneratedClientTest(unittest.TestCase):
@@ -352,6 +444,39 @@ class GeneratedClientTest(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertFalse(created[0].exists())
 
+    def test_standalone_prost_formatting_is_canonicalized_but_field_changes_are_rejected(self):
+        generated = "libs/appflowy-proto/src/pb/collab.rs"
+        source = ("// This file is @generated by prost-build.\n"
+                  "pub struct Row {\n  pub row_id: u64,\n}\n")
+        for directory in (self.cloud / "export", self.client):
+            (directory / "rustfmt.toml").write_text('edition = "2024"\ntab_spaces = 2\n')
+            file = directory / generated
+            file.parent.mkdir(parents=True)
+            file.write_text(source)
+        self.source = self.commit(self.cloud)
+        (self.client / generated).write_text(source.replace("  pub row_id", "    pub row_id"))
+        state = self.verify(self.commit(self.client))
+        self.assertEqual(state["normalized_prost_outputs"], [generated])
+        # The formatter operates on disposable archives, never canonical checkouts.
+        self.assertIn("    pub row_id", (self.client / generated).read_text())
+        (self.client / generated).write_text(source.replace("u64", "u32"))
+        with self.assertRaisesRegex(ValueError, "source differs"):
+            self.verify(self.commit(self.client))
+
+    def test_prost_path_marker_and_original_mode_cannot_be_hidden_by_formatting(self):
+        generated = "libs/appflowy-proto/src/pb/messages.rs"
+        for directory in (self.cloud / "export", self.client):
+            (directory / "rustfmt.toml").write_text('edition = "2024"\n')
+            file = directory / generated
+            file.parent.mkdir(parents=True)
+            file.write_text("pub struct Handwritten;\n")
+        self.source = self.commit(self.cloud)
+        with self.assertRaisesRegex(ValueError, "generation marker"):
+            self.verify(self.commit(self.client))
+        (self.client / generated).chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "source differs"):
+            self.verify(self.commit(self.client))
+
     def test_pin_cli_only_requests_client_checkout_for_generated_exact_mode(self):
         output = self.root / "outputs"
         arguments = [sys.executable, "-B", str(ROOT / ".github/scripts/desktop_cloud_runtime.py"),
@@ -414,7 +539,7 @@ class RuntimeTest(unittest.TestCase):
             if args[-1] == self.timeline_image:
                 return json.dumps([{"Id": self.timeline_id, "Os": "linux", "Architecture": "amd64",
                                     "Config": {"Labels": {"org.opencontainers.image.revision": self.timeline_source}}}])
-            service = next(name for name in runtime.SERVICES if args[-1] == runtime.image_tag(name))
+            service = next(name for name in runtime.KNOWN_IMAGES if args[-1] == runtime.image_tag(name))
             image_id = self.images[service]
             if self.wrong_loaded_image:
                 image_id = "sha256:unexpected-loaded-image"
@@ -424,7 +549,8 @@ class RuntimeTest(unittest.TestCase):
             return args[-1]
         if args[:2] == ["docker", "inspect"]:
             pulled_timeline = any(call == ["docker", "pull", self.timeline_image] for call, _ in self.calls)
-            image_id = self.timeline_id if args[-1] == "appflowy_cloud" and pulled_timeline else self.images[args[-1]]
+            role = "appflowy_ai" if args[-1] == "ai" else args[-1]
+            image_id = self.timeline_id if args[-1] == "appflowy_cloud" and pulled_timeline else self.images[role]
             return json.dumps([{"Image": "wrong" if self.wrong_container else image_id}])
         return ""
 
@@ -443,6 +569,59 @@ class RuntimeTest(unittest.TestCase):
         state = json.loads(self.manifest.read_text())
         self.assertEqual(state["stage"], "runtime_verified")
         self.assertEqual(state["images"], self.images)
+
+    def add_ai_artifact(self, profile="desktop"):
+        self.images["appflowy_ai"] = archive_image(self.root, "appflowy_ai")
+        self.config["services"]["ai"] = {"image": runtime.image_tag("appflowy_ai")}
+        state = json.loads(self.manifest.read_text())
+        state.update(runtime_profile=profile, image_artifacts={
+            f"docker-image-{name.removeprefix('appflowy_')}": index
+            for index, name in enumerate(runtime.KNOWN_IMAGES, 1)
+        })
+        runtime.write_manifest(self.manifest, state)
+
+    def test_optional_ai_is_verified_and_pinned_in_desktop_runtime(self):
+        self.add_ai_artifact()
+        self.start()
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(state["runtime_images"]["ai"], self.images["appflowy_ai"])
+        pulls = [args for args, _ in self.calls if "pull" in args]
+        self.assertFalse(any("ai" in args for args in pulls))
+
+    def test_wrong_optional_ai_source_refuses_before_any_docker_command(self):
+        self.add_ai_artifact()
+        archive_image(self.root, "appflowy_ai", source="e" * 40)
+        with self.assertRaisesRegex(ValueError, "source revision"):
+            self.start()
+        self.assertFalse(any(args[0] == "docker" for args, _ in self.calls))
+
+    def test_web_profile_uses_web_compose_and_pins_the_ai_container(self):
+        self.add_ai_artifact("web")
+        self.config["services"].pop("appflowy_mcp")
+        override = self.root / "web-override.yml"
+        override.write_text("services: {}\n")
+        runtime.start_runtime(self.root, self.root, self.manifest, run=self.run_command,
+                              compose_override=override)
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(state["runtime_images"]["ai"], self.images["appflowy_ai"])
+        self.assertNotIn("appflowy_mcp", state["runtime_images"])
+        up = next(args for args, _ in self.calls if "up" in args)
+        self.assertIn(str(self.root / "docker-compose-web-ci.yml"), up)
+        self.assertIn(str(override.resolve()), up)
+        self.assertEqual(up[-5:], ["up", "-d", "--no-build", "--pull", "never"])
+        self.assertFalse(any("ai" in args for args, _ in self.calls if "pull" in args))
+
+    def test_web_profile_requires_its_override_and_trusted_ai_compose_role(self):
+        self.add_ai_artifact("web")
+        with self.assertRaisesRegex(ValueError, "Compose override"):
+            self.start()
+        override = self.root / "web-override.yml"
+        override.write_text("services: {}\n")
+        self.config["services"]["ai"]["image"] = "untrusted/image:latest"
+        with self.assertRaisesRegex(ValueError, "verified artifact for ai"):
+            runtime.start_runtime(self.root, self.root, self.manifest, run=self.run_command,
+                                  compose_override=override)
+        self.assertFalse(any(args[:2] == ["docker", "load"] for args, _ in self.calls))
 
     def test_archive_revision_architecture_tag_and_duplicate_paths_fail_before_docker_mutation(self):
         for changes in ({"source": "e" * 40}, {"architecture": "arm64"}, {"tag": "wrong:latest"}, {"duplicate": True}):
