@@ -36,10 +36,6 @@ class Suite:
     def label(self) -> str:
         return f"{self.package}-{self.target}"
 
-    @property
-    def command(self) -> list[str]:
-        return ["cargo", "test", "-p", self.package, "--test", self.target]
-
 
 def inventory(text: str) -> set[str]:
     return set(re.findall(r"^([A-Za-z_][A-Za-z0-9_:]*): test$", text, re.MULTILINE))
@@ -97,14 +93,25 @@ def suites(workspace: Path) -> list[Suite]:
     return selected
 
 
-def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
+def cargo_command(selected: list[Suite], targets: list[str]) -> list[str]:
+    # Mixed cdylib/rlib dependencies share unhashed artifacts. Keep package feature
+    # unification identical while building, listing, and executing individual targets.
+    command = ["cargo", "test"]
+    for package in dict.fromkeys(suite.package for suite in selected):
+        command += ["-p", package]
+    for target in targets:
+        command += ["--test", target]
+    return command
+
+
+def run_suite(suite: Suite, workspace: Path, output: Path, selected: list[Suite]) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     for name in ("result.json", "test.log", "inventory-all.log", "inventory-ignored.log"):
         (output / name).unlink(missing_ok=True)
     result = {"package": suite.package, "target": suite.target, "status": "failed",
               "exit_code": 1, "required_tests": list(suite.required)}
     try:
-        command = suite.command
+        command = cargo_command(selected, [suite.target])
         environment = {**os.environ, "DISABLE_CI_TEST_LOG": "true",
                        "APPFLOWY_PDF_TEST_OUTPUT_DIR": str(output / "saved-exports")}
         (output / "saved-exports").mkdir(exist_ok=True)
@@ -150,22 +157,22 @@ def build(workspace: Path, output: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
     # A successful build must never be mistaken for an executed regression gate.
     (output / "gate-result.json").unlink(missing_ok=True)
+    (output / "build.log").unlink(missing_ok=True)
     result = {"kind": "rust_build", "status": "failed", "exit_code": 1, "suites": []}
     try:
         selected = suites(workspace)
         result["desktop_sha"] = desktop_revision(workspace)
-        for suite in selected:
-            suite_output = output / suite.label
-            suite_output.mkdir(exist_ok=True)
-            command = suite.command + ["--no-run"]
-            print(f"Building {suite.label} before the PDF execution gate", flush=True)
-            with (suite_output / "build.log").open("w") as log:
+        result["suites"] = [{"package": suite.package, "target": suite.target}
+                            for suite in selected]
+        if selected:
+            command = cargo_command(selected, [suite.target for suite in selected]) + ["--no-run"]
+            result["command"] = command
+            print("Building all PDF targets with shared package features before execution", flush=True)
+            with (output / "build.log").open("w") as log:
                 completed = subprocess.run(command, cwd=workspace,
                                            stdout=log, stderr=subprocess.STDOUT, check=False)
-            result["suites"].append({"package": suite.package, "target": suite.target,
-                                    "command": command, "exit_code": completed.returncode})
+            result["exit_code"] = completed.returncode
             if completed.returncode:
-                result["exit_code"] = completed.returncode
                 return completed.returncode
         result.update(status="built" if selected else "legacy_skipped", exit_code=0)
         return 0
@@ -189,7 +196,7 @@ def run(workspace: Path, output: Path) -> int:
                           reason="Desktop ref predates the PDF target")
             return 0
         result["desktop_sha"] = desktop_revision(workspace)
-        reports = [run_suite(suite, workspace, output / suite.label) for suite in selected]
+        reports = [run_suite(suite, workspace, output / suite.label, selected) for suite in selected]
         code = next((report["exit_code"] for report in reports if report["status"] != "passed"), 0)
         result.update(suites=reports, runnable_count=sum(report.get("runnable_count", 0) for report in reports),
                       status="passed" if code == 0 else "failed", exit_code=code)

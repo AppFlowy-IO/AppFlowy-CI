@@ -54,13 +54,23 @@ class PdfGateTest(unittest.TestCase):
 
     def cargo(self, command, **kwargs):
         self.commands.append(command)
-        target = command[command.index("--test") + 1]
-        fixture = self.fixtures[target]
+        targets = [command[index + 1] for index, arg in enumerate(command) if arg == "--test"]
+        packages = [command[index + 1] for index, arg in enumerate(command) if arg == "-p"]
+        expected_packages = [gate.PACKAGE]
+        if self.component_source.exists():
+            expected_packages.append("flowy-database2")
+        self.assertEqual(packages, expected_packages)
         self.assertEqual(kwargs["cwd"], self.workspace.resolve())
         if "--no-run" in command:
             self.assertEqual(command[-1], "--no-run")
-            kwargs["stdout"].write(f"Compiled {target}\n")
-            return subprocess.CompletedProcess(command, fixture["exit"])
+            for target in targets:
+                kwargs["stdout"].write(f"Compiled {target}\n")
+            code = next((self.fixtures[target]["exit"] for target in targets
+                         if self.fixtures[target]["exit"]), 0)
+            return subprocess.CompletedProcess(command, code)
+        self.assertEqual(len(targets), 1, "each runtime report must contain exactly one target")
+        target = targets[0]
+        fixture = self.fixtures[target]
         if "--list" in command:
             names = fixture["ignored"] if "--ignored" in command else fixture["names"]
             return subprocess.CompletedProcess(command, 0, "".join(f"{n}: test\n" for n in names))
@@ -85,7 +95,8 @@ class PdfGateTest(unittest.TestCase):
         self.assertEqual(self.result["status"], "passed")
         self.assertEqual(self.result["runnable_count"], 4)
         for report in self.result["suites"]:
-            self.assertEqual(report["command"], ["cargo", "test", "-p", report["package"],
+            self.assertEqual(report["command"], ["cargo", "test", "-p", gate.PACKAGE,
+                                                  "-p", "flowy-database2",
                                                   "--test", report["target"], "--", "--test-threads=1"])
 
     def build_gate(self):
@@ -101,10 +112,11 @@ class PdfGateTest(unittest.TestCase):
         self.assertEqual(self.build_gate(), 0)
         self.assertEqual(self.build_result["status"], "built")
         self.assertFalse((self.output / "gate-result.json").exists())
-        self.assertEqual(self.commands, [suite.command + ["--no-run"]
-                                        for suite in gate.suites(self.workspace)])
+        self.assertEqual(self.commands, [["cargo", "test", "-p", gate.PACKAGE,
+                                          "-p", "flowy-database2", "--test", gate.TARGET,
+                                          "--test", "pdf_export_columns", "--no-run"]])
         for suite in gate.suites(self.workspace):
-            self.assertIn("Compiled", (self.output / suite.label / "build.log").read_text())
+            self.assertIn(f"Compiled {suite.target}", (self.output / "build.log").read_text())
         self.commands.clear()
         self.assertEqual(self.run_gate(), 0)
         self.assertEqual(len(self.commands), 6)
@@ -114,9 +126,9 @@ class PdfGateTest(unittest.TestCase):
         self.components["exit"] = 101
         self.assertEqual(self.build_gate(), 101)
         self.assertEqual(self.build_result["status"], "failed")
-        self.assertEqual(self.build_result["suites"][-1]["exit_code"], 101)
+        self.assertEqual(self.build_result["exit_code"], 101)
         self.assertFalse((self.output / "gate-result.json").exists())
-        self.assertTrue((self.output / "flowy-database2-pdf_export_columns/build.log").exists())
+        self.assertTrue((self.output / "build.log").exists())
 
     def test_build_cannot_bypass_the_source_owned_contract(self):
         self.component_source.unlink()
@@ -224,6 +236,21 @@ class PdfGateTest(unittest.TestCase):
         self.component_source.unlink()
         self.assertEqual(self.run_gate(), 0)
         self.assertEqual(len(self.commands), 3)
+
+    def test_legacy_event_only_build_selects_no_unavailable_component(self):
+        self.contract.unlink()
+        self.component_source.unlink()
+        self.assertEqual(self.build_gate(), 0)
+        self.assertEqual(self.commands, [["cargo", "test", "-p", gate.PACKAGE,
+                                          "--test", gate.TARGET, "--no-run"]])
+
+    def test_legacy_build_without_targets_does_not_invoke_cargo_or_pass_the_gate(self):
+        self.contract.unlink()
+        self.source.unlink()
+        self.assertEqual(self.build_gate(), 0)
+        self.assertEqual(self.build_result["status"], "legacy_skipped")
+        self.assertEqual(self.commands, [])
+        self.assertFalse((self.output / "gate-result.json").exists())
 
 
 class PdfStatusTest(unittest.TestCase):
