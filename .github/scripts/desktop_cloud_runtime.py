@@ -284,6 +284,53 @@ def image_tag(service):
     return f"appflowyinc/{service}_premium:latest-amd64"
 
 
+def archive_image_ids(archive, manifest, encoded):
+    config_id = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    identities = {config_id}
+    if "index.json" not in archive.getnames():
+        return identities
+    # Classic Docker identifies an image by its config. The containerd store
+    # identifies the same image by its manifest; bind that identity to the
+    # already verified config and exact layer set before accepting either ID.
+    member = archive.getmember("index.json")
+    if not member.isfile() or member.size > 1024 * 1024:
+        raise ValueError("Invalid OCI archive index")
+    index = json.load(archive.extractfile(member))
+    descriptors = index.get("manifests", [])
+    if index.get("schemaVersion") != 2 or len(descriptors) != 1:
+        raise ValueError("Expected one OCI archive image")
+    descriptor = descriptors[0]
+    digest = descriptor.get("digest", "")
+    if (descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+            or descriptor.get("platform") != {"architecture": "amd64", "os": "linux"}):
+        raise ValueError("Invalid OCI archive image descriptor")
+    member = archive.getmember("blobs/sha256/" + digest.removeprefix("sha256:"))
+    if not member.isfile() or member.size > 4 * 1024 * 1024 or descriptor.get("size") != member.size:
+        raise ValueError("Invalid OCI archive manifest size")
+    contents = archive.extractfile(member).read()
+    if "sha256:" + hashlib.sha256(contents).hexdigest() != digest:
+        raise ValueError("OCI archive manifest digest differs")
+    oci = json.loads(contents)
+    if (oci.get("schemaVersion") != 2
+            or oci.get("mediaType") != descriptor["mediaType"]
+            or oci.get("config", {}).get("digest") != config_id
+            or oci["config"].get("size") != len(encoded)):
+        raise ValueError("OCI archive manifest differs from verified config")
+    layers = oci.get("layers", [])
+    if len(layers) != len(manifest.get("Layers", [])):
+        raise ValueError("OCI archive layers differ from Docker manifest")
+    for layer, path in zip(layers, manifest["Layers"]):
+        if (not re.fullmatch(r"sha256:[a-f0-9]{64}", layer.get("digest", ""))
+                or path != "blobs/sha256/" + layer["digest"].removeprefix("sha256:")):
+            raise ValueError("OCI archive layers differ from Docker manifest")
+        member = archive.getmember(path)
+        if not member.isfile() or member.size != layer.get("size"):
+            raise ValueError("Invalid OCI archive layer size")
+    identities.add(digest)
+    return identities
+
+
 def verify_archive(path, service, source_sha):
     # Read metadata directly: never extract arbitrary paths from the tarball.
     with tarfile.open(path, "r:gz") as archive:
@@ -303,7 +350,7 @@ def verify_archive(path, service, source_sha):
         encoded = archive.extractfile(member).read()
         config = json.loads(encoded)
         verify_image(config, source_sha)
-        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return archive_image_ids(archive, manifests[0], encoded)
 
 
 def verify_image(config, source_sha):
@@ -380,10 +427,11 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
         raise ValueError("Missing exact Cloud image role")
     if profile == "web" and (compose_override is None or not compose_override.is_file()):
         raise ValueError("Web runtime requires its checked-out Compose override")
-    images = {role: verify_archive(archives / f"{role}.tar.gz", role, source_sha)
-              for role in (known_roles[name] for name in artifact_names)}
+    archive_ids = {role: verify_archive(archives / f"{role}.tar.gz", role, source_sha)
+                   for role in (known_roles[name] for name in artifact_names)}
+    images = {}
     env = gateway_environment(cloud, timeline)
-    for service in images:
+    for service in archive_ids:
         env[f"{service.upper()}_VERSION"] = "latest-amd64"
     compose_name = "docker-compose-web-ci.yml" if profile == "web" else "docker-compose-ci.yml"
     compose = ["docker", "compose", "-f", str(cloud / compose_name)]
@@ -391,12 +439,14 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
         compose += ["-f", str(compose_override.resolve())]
     config = json.loads(run(compose + ["config", "--format", "json"], cwd=cloud, env=env))
     dependencies = dependency_services(config, env.get("COMPOSE_PROFILES", "").split(","), protected_images)
-    for service, expected_id in images.items():
+    for service, expected_ids in archive_ids.items():
         run(["docker", "load", "--input", str(archives / f"{service}.tar.gz")], cwd=cloud, capture=False)
         loaded = json.loads(run(["docker", "image", "inspect", image_tag(service)]))[0]
         verify_image(loaded, source_sha)
-        if loaded["Id"] != expected_id:
-            raise ValueError(f"Loaded image differs from verified archive for {service}")
+        if loaded["Id"] not in expected_ids:
+            raise ValueError(f"Loaded image differs from verified archive for {service}: "
+                             f"{loaded['Id']} is not one of {sorted(expected_ids)}")
+        images[service] = loaded["Id"]
     if dependencies:
         run(compose + ["pull", "--quiet", *dependencies], cwd=cloud, env=env, capture=False)
     override = manifest.with_suffix(".compose.json")
@@ -412,7 +462,9 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
         protected["appflowy_cloud"]["image"] = pulled["Id"]
     write_manifest(override, {"services": protected})
     compose += ["-f", str(override)]
-    state.update(stage="images_verified", images=images, timeline_image=timeline_image if timeline else None)
+    state.update(stage="images_verified", images=images,
+                 archive_image_ids={role: sorted(ids) for role, ids in archive_ids.items()},
+                 timeline_image=timeline_image if timeline else None)
     write_manifest(manifest, state)
     run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, env=env, capture=False)
     # Verify the images actually attached to the containers, not only local tags.

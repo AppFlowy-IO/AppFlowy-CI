@@ -60,7 +60,8 @@ def write_pins(root, source=SOURCE, extra="", repository=runtime.SERVER_URL):
     ))
 
 
-def archive_image(root, service, *, source=SOURCE, architecture="amd64", tag=None, duplicate=False):
+def archive_image(root, service, *, source=SOURCE, architecture="amd64", tag=None, duplicate=False,
+                  oci=False, corrupt=""):
     encoded = json.dumps({
         "os": "linux", "architecture": architecture,
         "config": {"Labels": {"org.opencontainers.image.revision": source}},
@@ -72,6 +73,36 @@ def archive_image(root, service, *, source=SOURCE, architecture="amd64", tag=Non
         }]).encode(),
         f"{digest}.json": encoded,
     }
+    image_id = "sha256:" + digest
+    if oci:
+        layer = b"test compressed layer"
+        layer_digest = hashlib.sha256(layer).hexdigest()
+        layer_path = f"blobs/sha256/{layer_digest}"
+        docker = json.loads(entries["manifest.json"])
+        docker[0]["Layers"] = [layer_path]
+        entries["manifest.json"] = json.dumps(docker).encode()
+        entries[layer_path] = layer
+        manifest = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "config": {"digest": image_id, "size": len(encoded)},
+                    "layers": [{"digest": "sha256:" + layer_digest, "size": len(layer)}]}
+        if corrupt == "config":
+            manifest["config"]["digest"] = "sha256:" + "e" * 64
+        if corrupt == "layers":
+            manifest["layers"][0]["digest"] = "sha256:" + "f" * 64
+        if corrupt == "layer-size":
+            manifest["layers"][0]["size"] += 1
+        contents = json.dumps(manifest).encode()
+        manifest_digest = hashlib.sha256(contents).hexdigest()
+        image_id = "sha256:" + manifest_digest
+        entries[f"blobs/sha256/{manifest_digest}"] = contents + (b" " if corrupt == "digest" else b"")
+        descriptor = {"mediaType": manifest["mediaType"], "digest": image_id,
+                      "size": len(entries[f"blobs/sha256/{manifest_digest}"]),
+                      "platform": {"architecture": "amd64", "os": "linux"}}
+        if corrupt == "platform":
+            descriptor["platform"]["architecture"] = "arm64"
+        if corrupt == "manifest-size":
+            descriptor["size"] += 1
+        entries["index.json"] = json.dumps({"schemaVersion": 2, "manifests": [descriptor]}).encode()
     path = root / f"{service}.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
         for name, contents in entries.items():
@@ -80,7 +111,7 @@ def archive_image(root, service, *, source=SOURCE, architecture="amd64", tag=Non
             archive.addfile(member, io.BytesIO(contents))
         if duplicate:
             archive.addfile(member, io.BytesIO(contents))
-    return "sha256:" + digest
+    return image_id
 
 
 class RequestTest(unittest.TestCase):
@@ -569,6 +600,31 @@ class RuntimeTest(unittest.TestCase):
         state = json.loads(self.manifest.read_text())
         self.assertEqual(state["stage"], "runtime_verified")
         self.assertEqual(state["images"], self.images)
+
+    def test_containerd_manifest_ids_are_bound_to_verified_config_and_pinned(self):
+        self.add_ai_artifact()
+        self.images = {name: archive_image(self.root, name, oci=True) for name in self.images}
+        self.start()
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(state["images"], self.images)
+        self.assertEqual(state["runtime_images"]["ai"], self.images["appflowy_ai"])
+        override = json.loads(self.manifest.with_suffix(".compose.json").read_text())
+        self.assertEqual(override["services"]["ai"]["image"], self.images["appflowy_ai"])
+        self.assertTrue(all(len(ids) == 2 for ids in state["archive_image_ids"].values()))
+
+    def test_oci_archive_also_accepts_legacy_config_id(self):
+        expected = self.images.copy()
+        for name in self.images:
+            archive_image(self.root, name, oci=True)
+        self.start()
+        self.assertEqual(json.loads(self.manifest.read_text())["images"], expected)
+
+    def test_oci_metadata_cannot_substitute_config_layers_or_manifest(self):
+        for corruption in ("config", "layers", "layer-size", "digest", "platform", "manifest-size"):
+            with self.subTest(corruption=corruption), self.assertRaisesRegex(ValueError, "OCI archive"):
+                archive_image(self.root, runtime.SERVICES[-1], oci=True, corrupt=corruption)
+                self.start()
+        self.assertTrue(all(args[0] == "git" for args, _ in self.calls))
 
     def add_ai_artifact(self, profile="desktop"):
         self.images["appflowy_ai"] = archive_image(self.root, "appflowy_ai")

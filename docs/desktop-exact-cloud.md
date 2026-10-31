@@ -83,6 +83,9 @@ Each exact runtime verifies:
   complete unexpired artifact set.
 - Artifact IDs, Docker tags, Linux AMD64 architecture and OCI source revision
   labels, then loaded image IDs and the images attached to actual containers.
+  Classic Docker config IDs and containerd manifest IDs are both supported;
+  the OCI manifest digest must bind to the verified config and layer metadata.
+  Compose and container checks use the immutable ID actually reported by Docker.
 
 Timeline exact mode pulls its separately published flavor, requires its OCI
 revision label to match `cloud_source_sha`, and pins the inspected local image
