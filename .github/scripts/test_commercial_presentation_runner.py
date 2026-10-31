@@ -1,4 +1,6 @@
+import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -10,6 +12,42 @@ import commercial_presentation_runner as runner
 
 
 class CommercialPresentationTest(unittest.TestCase):
+    def test_failed_cargo_retains_stdout_stderr_and_failure(self):
+        repository = Path(__file__).resolve().parents[2]
+        helper = repository / ".github/scripts/commercial_presentation_runner.py"
+        with tempfile.TemporaryDirectory(prefix="commercial-failed-output-") as directory:
+            source = Path(directory)
+            tests = source / "tests/commercial_test/presentation_test.rs"
+            tests.parent.mkdir(parents=True)
+            tests.touch()
+            tools = source / "bin"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text(
+                "#!/usr/bin/env python3\nimport sys\n"
+                f"names={sorted(runner.REQUIRED)!r}\n"
+                "if '--list' in sys.argv:\n"
+                " if '--ignored' not in sys.argv:\n"
+                "  print('\\n'.join(name + ': test' for name in names))\n"
+                "else:\n"
+                " print('commercial stdout before failure', flush=True)\n"
+                " print('test result: FAILED. 3 passed; 1 failed; 0 ignored;', flush=True)\n"
+                " print('commercial stderr before failure', file=sys.stderr, flush=True)\n"
+                " sys.exit(7)\n"
+            )
+            cargo.chmod(0o755)
+            result = subprocess.run(
+                [sys.executable, "-B", str(helper), "--source", str(source)],
+                env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                     "APPFLOWY_PRESENTATION_COMMERCIAL_OWNED_FIXTURE": "1"},
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("commercial stdout before failure", result.stdout)
+            self.assertIn("3 passed; 1 failed; 0 ignored;", result.stdout)
+            self.assertIn("commercial stderr before failure", result.stderr)
+            self.assertIn("exit status 7", result.stderr)
+
     def test_workflow_uses_self_host_image_and_dedicated_guard_before_generic_suite(self):
         repository = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((repository / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())

@@ -160,6 +160,8 @@ policy: each case first checks `/api/server-info` reports a self-hosted deployme
 
 The dedicated runner requires all four named cases to be discovered and executed, rejects ignored
 bodies and zero-pass summaries, and excludes this module from the later generic commercial run.
+Captured Cargo stdout is printed before its exit status is checked, so a failing command retains
+its case results and summary. Stderr remains visible, and a nonzero exit still fails the lane.
 Sources predating the follow-up remain supported; removing the suite from a source with the
 follow-up production marker fails.
 

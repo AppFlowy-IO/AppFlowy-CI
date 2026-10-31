@@ -34,8 +34,9 @@ def run_contracts(source, run=subprocess.run, profile="dev"):
 
     def invoke(arguments):
         result = run(command + arguments, cwd=source, text=True, env=environment,
-                     stdout=subprocess.PIPE, check=True, timeout=7200)
+                     stdout=subprocess.PIPE, check=False, timeout=7200)
         print(result.stdout, flush=True)
+        result.check_returncode()
         return result.stdout
 
     selected = test_names(invoke(["--list"]))
