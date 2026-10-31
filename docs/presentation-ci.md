@@ -29,6 +29,14 @@ The three libraries also run Cargo doctests.
 | `appflowy-ai` | 600 | 8 | Service binary unit tests, including presentation/research handler contracts |
 | `gotrue` | 30 | 0 | Parameter validation and loopback transport/log redaction |
 
+The presentation admin/paywall/metrics follow-up raises Cloud-AI's database inventory to 77
+(118 across the three database-backed packages). Its production `read_policy.rs` module selects
+the updated inventory: seven added contracts and the renamed admin workspace-identity contract.
+This keeps older main/PR revisions on their original required 70 cases. Selection never depends
+on which tests happen to be discovered, so deleting a required follow-up test still fails CI.
+The added contracts cover global-admin source identity fences, draft prompt execution without
+publication or billing, company-style paywalls, self-host bypass, and publication/cache metrics.
+
 The exact ignored names are in
 [`presentation_test_inventory.json`](../.github/scripts/presentation_test_inventory.json).
 The 111 database cases cover:

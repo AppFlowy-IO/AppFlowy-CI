@@ -33,6 +33,28 @@ def local_run(args, *, environment=None, capture_output=False, inherit_stderr=Fa
 
 
 class CoverageGuardsTest(unittest.TestCase):
+    def test_production_source_selects_required_followup_contracts_without_mutating_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory)
+            binaries = [runner.Binary(owner / "libtest", owner)]
+            package = "appflowy-cloud-ai"
+            baseline = runner.POLICIES[package]
+            original = json.loads(json.dumps(baseline))
+            self.assertEqual(runner.policy_for_source(package, binaries), baseline)
+            update = baseline["source_updates"][0]
+            marker = owner / update["when_file"]
+            marker.parent.mkdir(parents=True)
+            marker.write_text("// production read authority exists\n")
+            current = runner.policy_for_source(package, binaries)
+            self.assertEqual(len(current["database"]), 77)
+            self.assertTrue(set(update["database"]).issubset(current["database"]))
+            self.assertFalse(set(update["remove_database"]) & set(current["database"]))
+            self.assertEqual(runner.POLICIES[package], original)
+            # The production marker stays present if a regression body disappears.
+            with self.assertRaises(RuntimeError):
+                runner.require_tests("followup", set(current["database"]) - {update["database"][0]},
+                                     len(current["database"]), required=current["database"])
+
     def test_discovery_requires_counts_and_each_required_name(self):
         for selected, minimum, required in [(set(), 1, ()), ({"a"}, 2, ()), ({"a"}, 1, ("b",))]:
             with self.subTest(selected=selected), self.assertRaises(RuntimeError):

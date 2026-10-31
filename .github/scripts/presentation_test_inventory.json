@@ -82,7 +82,25 @@
       "biz::presentation::source::resolver::authorization_tests::native_folder_view_sources_reject_private_and_trashed_ancestry_without_collab_rows",
       "biz::presentation::tests::gateway_contract::actual_gateway_cloud_http_error_contract"
     ],
-    "external": []
+    "external": [],
+    "source_updates": [
+      {
+        "when_file": "src/biz/presentation/source/resolver/read_policy.rs",
+        "remove_database": [
+          "api::presentation_admin::tests::maintainer_test_still_checks_workspace_authority_after_admin_verification"
+        ],
+        "database": [
+          "api::presentation_admin::tests::maintainer_test_still_checks_workspace_identity_after_admin_verification",
+          "api::presentation_admin::tests::maintainer_can_generate_with_unsaved_prompts_without_publishing_or_charging",
+          "api::presentation_admin::auth_http_tests::source_access::global_admin_tests_sources_without_membership_but_cannot_use_workspace_apis",
+          "biz::presentation::source::resolver::read_policy::tests::admin_workspace_read_rechecks_retirement_after_initial_admission",
+          "biz::presentation::source::resolver::read_policy::tests::admin_collab_batch_keeps_workspace_type_tombstone_and_pending_identity_fences",
+          "biz::presentation::tests::exports::paywalls::company_style_paywall_preserves_free_templates_and_requires_owner_across_versions",
+          "biz::presentation::tests::exports::paywalls::status_projects_authoritative_limits_and_self_host_bypasses_hosted_company_policy",
+          "biz::presentation::tests::observability::publication_cache_reuse_and_invalid_output_have_distinct_metric_outcomes"
+        ]
+      }
+    ]
   },
   "appflowy-presentation": {
     "ordinary_minimum": 70,
