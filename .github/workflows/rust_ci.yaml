@@ -362,6 +362,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
+      - name: Build the complete PDF export regression targets
+        if: matrix.test_group == 'integration_group2'
+        timeout-minutes: 60
+        run: |
+          python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_tests.py \
+            --workspace frontend/rust-lib \
+            --output "$RUNNER_TEMP/pdf-regression" --build-only
+
       - name: Run the complete PDF export regression targets
         id: pdf-regression
         if: matrix.test_group == 'integration_group2'

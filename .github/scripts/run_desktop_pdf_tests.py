@@ -36,6 +36,10 @@ class Suite:
     def label(self) -> str:
         return f"{self.package}-{self.target}"
 
+    @property
+    def command(self) -> list[str]:
+        return ["cargo", "test", "-p", self.package, "--test", self.target]
+
 
 def inventory(text: str) -> set[str]:
     return set(re.findall(r"^([A-Za-z_][A-Za-z0-9_:]*): test$", text, re.MULTILINE))
@@ -100,7 +104,7 @@ def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
     result = {"package": suite.package, "target": suite.target, "status": "failed",
               "exit_code": 1, "required_tests": list(suite.required)}
     try:
-        command = ["cargo", "test", "-p", suite.package, "--test", suite.target]
+        command = suite.command
         environment = {**os.environ, "DISABLE_CI_TEST_LOG": "true",
                        "APPFLOWY_PDF_TEST_OUTPUT_DIR": str(output / "saved-exports")}
         (output / "saved-exports").mkdir(exist_ok=True)
@@ -140,6 +144,39 @@ def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
     return result
 
 
+def build(workspace: Path, output: Path) -> int:
+    """Compile the same source-owned targets before starting their execution budget."""
+    workspace, output = workspace.resolve(), output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    # A successful build must never be mistaken for an executed regression gate.
+    (output / "gate-result.json").unlink(missing_ok=True)
+    result = {"kind": "rust_build", "status": "failed", "exit_code": 1, "suites": []}
+    try:
+        selected = suites(workspace)
+        result["desktop_sha"] = desktop_revision(workspace)
+        for suite in selected:
+            suite_output = output / suite.label
+            suite_output.mkdir(exist_ok=True)
+            command = suite.command + ["--no-run"]
+            print(f"Building {suite.label} before the PDF execution gate", flush=True)
+            with (suite_output / "build.log").open("w") as log:
+                completed = subprocess.run(command, cwd=workspace,
+                                           stdout=log, stderr=subprocess.STDOUT, check=False)
+            result["suites"].append({"package": suite.package, "target": suite.target,
+                                    "command": command, "exit_code": completed.returncode})
+            if completed.returncode:
+                result["exit_code"] = completed.returncode
+                return completed.returncode
+        result.update(status="built" if selected else "legacy_skipped", exit_code=0)
+        return 0
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        result["error"] = str(error)
+        print(f"Desktop PDF build failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        (output / "build-result.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
 def run(workspace: Path, output: Path) -> int:
     workspace, output = workspace.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -169,8 +206,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--build-only", action="store_true",
+                        help="Compile all contracted targets without executing or passing the gate")
     args = parser.parse_args()
-    return run(args.workspace, args.output)
+    return (build if args.build_only else run)(args.workspace, args.output)
 
 
 if __name__ == "__main__":

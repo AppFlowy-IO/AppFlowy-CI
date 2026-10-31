@@ -57,6 +57,10 @@ class PdfGateTest(unittest.TestCase):
         target = command[command.index("--test") + 1]
         fixture = self.fixtures[target]
         self.assertEqual(kwargs["cwd"], self.workspace.resolve())
+        if "--no-run" in command:
+            self.assertEqual(command[-1], "--no-run")
+            kwargs["stdout"].write(f"Compiled {target}\n")
+            return subprocess.CompletedProcess(command, fixture["exit"])
         if "--list" in command:
             names = fixture["ignored"] if "--ignored" in command else fixture["names"]
             return subprocess.CompletedProcess(command, 0, "".join(f"{n}: test\n" for n in names))
@@ -83,6 +87,42 @@ class PdfGateTest(unittest.TestCase):
         for report in self.result["suites"]:
             self.assertEqual(report["command"], ["cargo", "test", "-p", report["package"],
                                                   "--test", report["target"], "--", "--test-threads=1"])
+
+    def build_gate(self):
+        with patch.object(gate.subprocess, "run", side_effect=self.cargo), \
+             patch.object(gate, "desktop_revision", return_value="a" * 40):
+            code = gate.build(self.workspace, self.output)
+        self.build_result = json.loads((self.output / "build-result.json").read_text())
+        return code
+
+    def test_builds_every_contracted_target_without_publishing_a_passing_test_result(self):
+        self.output.mkdir()
+        (self.output / "gate-result.json").write_text('{"status":"passed"}')
+        self.assertEqual(self.build_gate(), 0)
+        self.assertEqual(self.build_result["status"], "built")
+        self.assertFalse((self.output / "gate-result.json").exists())
+        self.assertEqual(self.commands, [suite.command + ["--no-run"]
+                                        for suite in gate.suites(self.workspace)])
+        for suite in gate.suites(self.workspace):
+            self.assertIn("Compiled", (self.output / suite.label / "build.log").read_text())
+        self.commands.clear()
+        self.assertEqual(self.run_gate(), 0)
+        self.assertEqual(len(self.commands), 6)
+        self.assertEqual(self.result["runnable_count"], 4)
+
+    def test_compile_failure_retains_diagnostics_and_cannot_publish_test_success(self):
+        self.components["exit"] = 101
+        self.assertEqual(self.build_gate(), 101)
+        self.assertEqual(self.build_result["status"], "failed")
+        self.assertEqual(self.build_result["suites"][-1]["exit_code"], 101)
+        self.assertFalse((self.output / "gate-result.json").exists())
+        self.assertTrue((self.output / "flowy-database2-pdf_export_columns/build.log").exists())
+
+    def test_build_cannot_bypass_the_source_owned_contract(self):
+        self.component_source.unlink()
+        self.assertEqual(self.build_gate(), 1)
+        self.assertEqual(self.commands, [])
+        self.assertIn("missing", self.build_result["error"])
 
     def test_twelve_events_and_seven_components_aggregate_as_nineteen_required_checks(self):
         self.events["names"] += [f"event_case_{n}" for n in range(10)]
@@ -474,10 +514,22 @@ class PdfWorkflowTest(unittest.TestCase):
         gate_step = gates[0]
         self.assertEqual(gate_step["if"], "matrix.test_group == 'integration_group2'")
         self.assertIn("run_desktop_pdf_tests.py", gate_step["run"])
+        self.assertEqual(gate_step["timeout-minutes"], 45)
         self.assertNotIn("GH_TOKEN", gate_step.get("env", {}))
         artifact = next(step for step in steps if step.get("name") == "Upload PDF regression evidence")
         self.assertIn("always()", artifact["if"])
         self.assertEqual(artifact["with"]["retention-days"], 7)
+
+    def test_compile_budget_precedes_the_unchanged_execution_budget(self):
+        steps = yaml.safe_load((WORKFLOWS / "rust_ci.yaml").read_text())["jobs"]["test"]["steps"]
+        build_index = next(i for i, step in enumerate(steps)
+                           if "--build-only" in step.get("run", ""))
+        gate_index = next(i for i, step in enumerate(steps) if step.get("id") == "pdf-regression")
+        self.assertLess(build_index, gate_index)
+        self.assertEqual(steps[build_index]["if"], steps[gate_index]["if"])
+        self.assertIn("run_desktop_pdf_tests.py", steps[build_index]["run"])
+        self.assertIn('--output "$RUNNER_TEMP/pdf-regression"', steps[build_index]["run"])
+        self.assertNotIn("--build-only", steps[gate_index]["run"])
 
     def test_sdk_selection_precedes_installs_in_both_rust_jobs(self):
         jobs = yaml.safe_load((WORKFLOWS / "rust_ci.yaml").read_text())["jobs"]
