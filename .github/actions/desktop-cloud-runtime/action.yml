@@ -16,6 +16,15 @@ inputs:
   cloud-path:
     description: Existing Cloud checkout with the job's Compose environment prepared.
     default: AppFlowy-Cloud-Premium
+  ci-tools-ref:
+    description: Immutable AppFlowy-CI tools revision for callers in another repository.
+    default: ''
+  runtime-profile:
+    description: Compose service profile (desktop or web).
+    default: desktop
+  compose-override:
+    description: Checked-out Web Compose override; required by the web profile.
+    default: ''
   github-token:
     description: Existing token with read access to private Client source and Cloud Actions/artifacts.
     required: true
@@ -53,6 +62,12 @@ runs:
         path: .ci-generated-client
         token: ${{ inputs.github-token }}
         persist-credentials: false
+    - name: Install the generated-source formatter
+      if: steps.pins.outputs.client-sha != ''
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: '1.98.0'
+        components: rustfmt
     - name: Verify paired inputs, source checkouts and private build
       id: request
       shell: bash
@@ -63,11 +78,14 @@ runs:
         DESKTOP_REF: ${{ inputs.desktop-ref }}
         DESKTOP_PATH: ${{ inputs.desktop-path }}
         CLOUD_PATH: ${{ inputs.cloud-path }}
+        CI_TOOLS_REF: ${{ inputs.ci-tools-ref }}
+        RUNTIME_PROFILE: ${{ inputs.runtime-profile }}
       run: |
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" request \
           --cloud-source-sha "$CLOUD_SHA" --image-run-id "$IMAGE_RUN" \
           --desktop-ref "$DESKTOP_REF" --desktop "$DESKTOP_PATH" --cloud "$CLOUD_PATH" \
           --client "$GITHUB_WORKSPACE/.ci-generated-client" \
+          --ci-ref "$CI_TOOLS_REF" --profile "$RUNTIME_PROFILE" \
           --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json"
     - name: Download the verified private image set
       if: steps.request.outputs.enabled == 'true'
@@ -86,9 +104,11 @@ runs:
         CLOUD_PATH: ${{ inputs.cloud-path }}
         TIMELINE: ${{ inputs.timeline }}
         TIMELINE_IMAGE: ${{ inputs.timeline-image }}
+        COMPOSE_OVERRIDE: ${{ inputs.compose-override }}
       run: |
         args=()
         if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
+        if [[ -n "$COMPOSE_OVERRIDE" ]]; then args+=(--compose-override "$COMPOSE_OVERRIDE"); fi
         python3 "$GITHUB_ACTION_PATH/../../scripts/desktop_cloud_runtime.py" start \
           --cloud "$CLOUD_PATH" --archives "$RUNNER_TEMP/desktop-cloud-images" \
           --manifest "$RUNNER_TEMP/desktop-cloud-manifest.json" \
