@@ -65,14 +65,14 @@ jobs:
             --build-arg FEATURES="self-host-af, commercial-ci, test-mailer" \
             appflowy_cloud
           # Each writer owns its deployment feature; a shared-crate feature cannot select it.
-          export APPFLOWY_WORKER_VERSION=latest APPFLOWY_SEARCH_VERSION=latest APPFLOWY_MCP_VERSION=latest
+          export APPFLOWY_WORKER_VERSION=latest APPFLOWY_SEARCH_VERSION=latest APPFLOWY_MCP_VERSION=latest APPFLOWY_AI_VERSION=latest
           docker compose -f docker-compose-ci.yml build --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg PROFILE=debug \
-            --build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp
+            --build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp ai
 
       - name: Save Docker Images
         run: |
-          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp; do
+          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
             docker save "appflowyinc/${service}_premium:latest" | gzip > "${service}.tar.gz"
           done
 
@@ -85,6 +85,7 @@ jobs:
             appflowy_worker.tar.gz
             appflowy_search.tar.gz
             appflowy_mcp.tar.gz
+            appflowy_ai.tar.gz
           retention-days: 1
 
   test:
@@ -109,6 +110,13 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref }}
+
+      - name: Checkout CI contract helpers
+        uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-CI
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -157,7 +165,7 @@ jobs:
 
       - name: Load Docker Images
         run: |
-          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp; do
+          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
             docker load < "${service}.tar.gz"
             docker tag "appflowyinc/${service}_premium:latest" "appflowyinc/${service}_premium:${{ env.CLOUD_VERSION }}"
           done
@@ -274,6 +282,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Run real self-host presentation contracts
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        env:
+          APPFLOWY_PRESENTATION_COMMERCIAL_OWNED_FIXTURE: "1"
+          APPFLOWY_PRESENTATION_TEST_AI_URL: http://localhost:5001
+        run: python3 -B ci-tools/.github/scripts/commercial_presentation_runner.py --source "$GITHUB_WORKSPACE"
+
       - name: Run Tests
         run: |
           set -e
@@ -292,7 +307,7 @@ jobs:
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                 --features=commercial-ci "${module}" \
-                -- --skip stress_test --skip whitelist --test-threads=1
+                -- --skip stress_test --skip whitelist --skip commercial_test::presentation_test:: --test-threads=1
             done
           fi
 
