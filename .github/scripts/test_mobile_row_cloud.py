@@ -142,6 +142,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertLess(self.steps.index(local), self.steps.index(setup))
         self.assertLess(self.steps.index(setup), self.steps.index(cloud))
         for step in self.steps[self.steps.index(local) + 1:]:
+            if step.get("name") == "Upload local mobile test results":
+                continue
             self.assertIn("matrix.test_number == 4", step["if"])
         self.assertIn(mobile_row_cloud.ROW_PAGE_TEST, cloud["run"])
         self.assertIn('--dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json"', cloud["run"])
@@ -186,7 +188,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 '#!/bin/sh\nprintf "%s\\n" "$XCODE_XCCONFIG_FILE" "$@" > "$CALLS"\nexit 7\n')
             flutter.chmod(0o700)
             result = subprocess.run(
-                ["bash", "-e", "-o", "pipefail", "-c", command], cwd=root,
+                ["bash", "-c", command], cwd=root,
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                      "IOS_RUST_TARGET": "x86_64-apple-ios", "RUNNER_TEMP": directory,
                      "CALLS": str(calls)},
@@ -196,7 +198,42 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertEqual(calls.read_text().splitlines(), [
                 str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+                "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
             ])
+
+    def test_report_capture_retains_stdout_stderr_and_the_flutter_failure(self):
+        for name, report_directory in (
+            ("Run Flutter integration tests (runner ${{ matrix.test_number }})", "mobile-local-results"),
+            ("Run Cloud row-page tests on iOS", "mobile-cloud-results"),
+        ):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                temporary = root / "job reports"
+                temporary.mkdir()
+                flutter = root / "flutter"
+                flutter.write_text(
+                    '#!/usr/bin/env python3\nimport json, sys\nfrom pathlib import Path\n'
+                    'report = sys.argv[sys.argv.index("--file-reporter") + 1]\n'
+                    'assert report.startswith("json:")\n'
+                    'Path(report.removeprefix("json:")).write_text(json.dumps({"type":"testStart"}) + "\\n")\n'
+                    'print("fixture stdout", flush=True)\n'
+                    'print("fixture stderr", file=sys.stderr, flush=True)\n'
+                    'sys.exit(7)\n'
+                )
+                flutter.chmod(0o755)
+                script = self.step(name)["run"].replace("${{ matrix.test_number }}", "4").replace(
+                    "${{ steps.simulator-action.outputs.udid }}", "fixture-device")
+                result = subprocess.run(
+                    ["bash", "-c", script], cwd=root,
+                    env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                         "RUNNER_TEMP": str(temporary), "IOS_RUST_TARGET": "x86_64-apple-ios"},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 7, result.stderr)
+                reports = temporary / report_directory
+                self.assertEqual(json.loads((reports / "tests.json").read_text()), {"type": "testStart"})
+                self.assertEqual((reports / "flutter.log").read_text().splitlines(),
+                                 ["fixture stdout", "fixture stderr"])
 
     def test_only_revisions_with_the_focused_entrypoint_select_cloud(self):
         discovery = self.step("Discover focused Cloud row-page runner")["run"]
