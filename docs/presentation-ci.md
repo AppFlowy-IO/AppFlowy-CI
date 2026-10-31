@@ -108,7 +108,10 @@ The runner installs SQLx CLI 0.8.6, Docker-accessible fixture dependencies and m
    creates an empty database and applies full Cloud history, then verifies bounded current Folder
    checks over 100 pages and immediate trash/mention revocation. It must report exactly one pass.
 3. `script/test_presentation_gateway_contract.py` with separately built default-feature
-   Cloud-AI and Gateway test binaries. It requires both ignored bridge names, owns its Redis and
+   Cloud-AI and Gateway test binaries. Cloud uses its custom `ci` profile; Gateway uses Cargo's
+   built-in `test` profile because the pinned Service workspace does not define Cloud's profile.
+   No profile or manifest is injected into the Service checkout.
+   It requires both ignored bridge names, owns its Redis and
    SQLx database, and checks the actual Gateway router → hosted usage adapter → Cloud HTTP
    error contract. The source runner must complete and its Cloud test must report one pass.
 
