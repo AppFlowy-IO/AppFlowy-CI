@@ -147,3 +147,30 @@ The existing full binary-archive fixture assumes a Linux runtime and currently f
 canonical temporary path before the archive tests start; report that separately from the new
 checks. No Cloud Rust suite, Service fixture, remote CI run or deployment is certified by the
 local Python/structural checks.
+
+## Real self-host commercial contracts
+
+The commercial workflow runs `commercial_test::presentation_test::` against its running
+Cloud and AI Docker images, each built with its own `self-host-af` feature. The test binary's
+`commercial-ci` feature does not choose server
+policy: each case first checks `/api/server-info` reports a self-hosted deployment.
+
+The dedicated runner requires all four named cases to be discovered and executed, rejects ignored
+bodies and zero-pass summaries, and excludes this module from the later generic commercial run.
+Sources predating the follow-up remain supported; removing the suite from a source with the
+follow-up production marker fails.
+
+These real HTTP cases cover unmetered status, all map directions/connectors and reopening,
+unchanged structural-map reuse, two separate 13-slide deck imports, repeated native exports,
+54 MiB template uploads, company-style review/reopening, missing presentation-admin routes,
+ordinary authentication/workspace authorization, and absence of hosted usage receipts.
+
+The AI case requires `APPFLOWY_PRESENTATION_COMMERCIAL_OWNED_FIXTURE=1` and an initially
+unlicensed installation. It verifies AI preparation and private execution reject that license,
+installs the existing signed Team test entitlement without deleting users, and removes it after
+the test. It generates Custom 13 and 4-slide decks plus an AI map using the configured provider,
+reuses unchanged results, and exports twice while hosted ledger accounts are exhausted.
+Publication must retain the self-host reservation policy and leave hosted accounts unchanged.
+Three non-inference cases can also run independently on public self-host images. Technical
+parser/queue limits and the installation-wide AI license are retained. Provider credentials and
+fresh Billing/Gateway schema are required for the complete commercial lane.
