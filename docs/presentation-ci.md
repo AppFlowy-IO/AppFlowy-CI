@@ -77,15 +77,25 @@ archive execution. Explicit archive execution without an ignored selection is re
 checker recognizes Actix test attributes and requires `OWNED_TEST_TARGETS: presentation_acceptance`
 in the dedicated lane; the standalone wildcard is insufficient.
 
-The lane defaults to the published `AppFlowy-IO/AppFlowy-Cloud-Service` commit
-`44bcd0f16baa75d95d8d4c2ea873cd246498738a`. Its Billing/Gateway migrations and bridge test were
-checked against the local acceptance fixture on 2026-10-30. Optional repository variables override
-this pair when a different reviewed Service revision is required:
+The lane resolves its reviewed `AppFlowy-IO/AppFlowy-Cloud-Service` pin after checking out the
+exact Cloud source and CI tools, and before checking out Service or constructing its cache key.
+`presentation_gateway_protocol.py` recognizes Cloud's explicit
+`PRESENTATION_CLOUD_BRIDGE_ADDRESS` rendezvous in the source-owned Gateway contract runner:
+
+| Cloud bridge protocol | Default Service commit |
+| --- | --- |
+| Legacy signed accounting callback | `44bcd0f16baa75d95d8d4c2ea873cd246498738a` |
+| Gateway ingress → standalone Cloud | `c1e15d6698dbfa604e24453114f923cd1fbe955f` (merged Service #60) |
+
+This keeps older Cloud sources on their matching fixture while ingress-capable sources receive the
+new routing and accounting fixture. Both defaults are published immutable commits. Optional
+repository variables retain explicit override semantics:
 
 - `PRESENTATION_SERVICE_REPOSITORY`: the private repository containing
   `appflowy-cloud-billing/` and `appflowy-cloud-gateway/`.
-- `PRESENTATION_SERVICE_SHA`: a reviewed immutable 40-character commit with the matching
-  Billing/Gateway migrations and the Gateway bridge test. `ADMIN_GITHUB_TOKEN` must read it.
+- `PRESENTATION_SERVICE_SHA`: a nonempty reviewed immutable 40-character commit overrides the
+  selected default; an unset/empty value uses the source-compatible default. The caller remains
+  responsible for choosing a compatible custom revision. `ADMIN_GITHUB_TOKEN` must read it.
 
 An empty or invalid resolved pin, a mismatched checkout, missing migrations/bridge, an ignored-name mismatch,
 failed readiness, or a zero-test execution fails this job. The job does not infer a developer's
@@ -109,14 +119,19 @@ The runner installs SQLx CLI 0.8.6, Docker-accessible fixture dependencies and m
    checks over 100 pages and immediate trash/mention revocation. It must report exactly one pass.
 3. `script/test_presentation_gateway_contract.py` with separately built default-feature
    Cloud-AI and Gateway test binaries. Cloud uses its custom `ci` profile; Gateway uses Cargo's
-   built-in `test` profile because the pinned Service workspace does not define Cloud's profile.
+   built-in `test` profile and the `--bin appflowy-cloud-gateway` target: Service's bridge and
+   production HTTP router belong to `main.rs`, and its library does not expose those tests.
    No profile or manifest is injected into the Service checkout.
-   It requires both ignored bridge names, owns its Redis and
-   SQLx database, and checks the actual Gateway router → hosted usage adapter → Cloud HTTP
-   error contract. The source runner must complete and its Cloud test must report one pass.
+   It requires both ignored bridge names, owns its Redis and SQLx database, and checks the matching
+   source-owned protocol: legacy hosted callbacks or Gateway ingress → standalone Cloud with
+   durable job reconciliation. The source runner must complete, its Cloud test must report one
+   pass, and its completion marker must match that source protocol. A marker from the other
+   protocol cannot satisfy the gate.
 
-The default Service commit is published and its migration/bridge files match the local fixture;
-private repository checkout permissions and the complete lane remain unverified in remote CI.
+The selected Service revision supplies its actual migration/bridge files. The local CI regression
+builds and executes a real Gateway-shaped binary fixture in both protocol modes, and validates
+pin selection, explicit overrides, workflow ordering and completion markers. These script checks
+are separate from private checkout permissions and full-stack runtime acceptance in remote CI.
 Checkouts deliberately do not persist credentials. The native acceptance command separately
 supplies the same read token to Cargo's Git subprocesses through process-local Git configuration,
 scoped to HTTPS repositories under `github.com/AppFlowy-IO/`. No token is written to Git config

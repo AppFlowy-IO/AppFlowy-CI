@@ -11,6 +11,7 @@ import sys
 from presentation_test_runner import (
     POLICIES, build_artifacts, check_database, execute, require_passed, require_tests, test_names,
 )
+from presentation_gateway_protocol import gateway_protocol
 
 
 ROOT_TESTS = (
@@ -69,9 +70,9 @@ def run_acceptance(source, service, profile, run):
     # built-in test profile without injecting profiles into that reviewed checkout.
     gateway = build_artifacts(service, "appflowy-cloud-gateway", "test", run,
                               manifest=service / "appflowy-cloud-gateway/Cargo.toml",
-                              selection=("--lib",))
+                              selection=("--bin", "appflowy-cloud-gateway"))
     if len(cloud) != 1 or len(gateway) != 1:
-        raise RuntimeError("Expected one Cloud AI and one Gateway library test executable")
+        raise RuntimeError("Expected one Cloud AI library and one Gateway binary test executable")
     exact_ignored(cloud[0], [*NATIVE_TESTS, CLOUD_BRIDGE], run, environment)
     exact_ignored(gateway[0], [GATEWAY_BRIDGE], run, environment)
     # The source-owned runner builds the actual hosted Cloud binary and provisions its own
@@ -93,7 +94,7 @@ def run_acceptance(source, service, profile, run):
                   "--gateway-test-binary", str(gateway[0].path)], cwd=source,
                  run=run, environment=environment, timeout=600)
     require_passed(result.stdout, 1)  # Gateway harness also must exit successfully inside the runner
-    if "API02 actual Gateway router -> HostedPresentationUsage -> Cloud HTTP -> AppResponse: PASS" not in result.stdout:
+    if gateway_protocol(source).completion_marker not in result.stdout:
         raise RuntimeError("The actual Gateway bridge did not complete")
 
 
