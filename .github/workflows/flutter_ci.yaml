@@ -1,1310 +1,582 @@
-name: Flutter-CI
-run-name: >-
-  [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
-  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
-  parent=none]
-  ${{ github.workflow }}
-
-on:
-  repository_dispatch:
-    types: [private-repo-flutter-ci]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "PR number from private repo"
-        required: false
-        type: string
-      pr_ref:
-        description: "Git ref to checkout from private repo"
-        required: false
-        type: string
-        default: "main"
-      cloud_source_sha:
-        description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
-        required: false
-        type: string
-      cloud_image_run_id:
-        description: "Successful private image build for cloud_source_sha (manual premerge validation)"
-        required: false
-        type: string
-      timeline_cloud_image:
-        description: "Optional self-hosted image override; defaults to public appflowy_cloud:latest-amd64"
-        required: false
-        type: string
-
+name: PR 1546 failed-test validation
+run-name: 'PR 1546: unit shard 2, database_rows, document at a51a923d42'
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
 env:
   CARGO_TERM_COLOR: always
-  FLUTTER_VERSION: "3.41.9"
-  RUST_TOOLCHAIN: "1.92.0"
-  CARGO_MAKE_VERSION: "0.37.18"
+  FLUTTER_VERSION: 3.41.9
+  RUST_TOOLCHAIN: 1.92.0
+  CARGO_MAKE_VERSION: 0.37.18
   CLOUD_VERSION: latest-amd64
-  TIMELINE_CLOUD_IMAGE: ${{ inputs.timeline_cloud_image || vars.DESKTOP_TIMELINE_CLOUD_IMAGE || 'appflowyinc/appflowy_cloud:latest-amd64' }}
-  # Speed up crate downloads with sparse registry
+  TIMELINE_CLOUD_IMAGE: appflowyinc/appflowy_cloud:latest-amd64
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
-  # Disable incremental compilation in CI (faster clean builds)
-  CARGO_INCREMENTAL: "0"
-
+  CARGO_INCREMENTAL: '0'
+  PREPARED_RUN_ID: '41284363196'
+  DESKTOP_SOURCE_SHA: a51a923d421525d77ce527796796c625dd496383
 concurrency:
-  # A manual CI-branch validation must coexist with automatic main runs for the
-  # same private PR. Retries within that CI branch still replace older attempts.
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
-  cancel-in-progress: true
-
+  group: pr1546-failed-tests-a51a923d42
+  cancel-in-progress: false
 jobs:
-  prepare-linux:
-    outputs:
-      cloud_test_suites: ${{ steps.cloud-test-suites.outputs.suites }}
-      desktop_test_runners: ${{ steps.desktop-test-runners.outputs.runners }}
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest]
-        include:
-          - os: ubuntu-latest
-            flutter_profile: development-linux-x86_64
-            target: x86_64-unknown-linux-gnu
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-
-    steps:
-      # the following step is required to avoid running out of space
-      - name: Maximize build space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - name: Configure Ubuntu package downloads
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
-
-      - name: Select desktop test runners from the tested revision
-        id: desktop-test-runners
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          directory = Path("frontend/appflowy_flutter/integration_test")
-          runners = sorted({
-              int(match[1])
-              for path in directory.glob("desktop_runner_*.dart")
-              if path.is_file()
-              and (match := re.fullmatch(r"desktop_runner_([1-9][0-9]*)\.dart", path.name))
-          })
-          if not runners:
-              raise SystemExit("No desktop integration test runners found")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"runners={json.dumps(runners)}\n")
-          print(f"Desktop integration test runners: {runners}")
-          PY
-
-      - name: Select cloud test suites from the tested revision
-        id: cloud-test-suites
-        shell: bash
-        run: |
-          manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
-          if [ -f "$manifest" ]; then
-            suites=$(jq -ce '
-              if type == "array" and length > 0
-                and all(.[]; type == "string" and test("^[a-z][a-z0-9_]*$"))
-                and (unique | length) == length
-              then . else error("Expected a nonempty array of unique cloud suite names") end
-            ' "$manifest")
-          else
-            # Older AppFlowy branches do not understand the split suite names.
-            suites='["core_workspace","sidebar","database","document"]'
-          fi
-          echo "suites=$suites" >> "$GITHUB_OUTPUT"
-          echo "Cloud integration suites: $suites"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Select SDK pins from the tested Desktop source
-        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: ${{ matrix.target }}
-
-      - name: Setup sccache
-        id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-        continue-on-error: true
-
-      - name: Configure sccache
-        id: sccache-config
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          # Unset RUSTC_WRAPPER first (sccache-action sets it automatically)
-          echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-          # Stop any existing sccache server
-          sccache --stop-server 2>/dev/null || true
-          # Test if sccache can actually connect to GitHub cache
-          export SCCACHE_GHA_ENABLED=true
-          export RUSTC_WRAPPER=
-          if sccache --start-server 2>&1; then
-            if sccache --show-stats 2>&1; then
-              echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-              echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-              echo "sccache_enabled=true" >> $GITHUB_OUTPUT
-              echo "✓ sccache is available and configured"
-            else
-              sccache --stop-server 2>/dev/null || true
-              echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-              echo "⚠ sccache stats failed, proceeding without it"
-            fi
-          else
-            echo "sccache_enabled=false" >> $GITHUB_OUTPUT
-            echo "⚠ sccache server startup failed, proceeding without it"
-          fi
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: ${{ matrix.os }}
-          workspaces: |
-            frontend/rust-lib
-          cache-all-crates: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        shell: bash
-        run: |
-          case $RUNNER_OS in
-            Linux)
-              sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-              sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-              sudo apt-get update
-              sudo apt-get install -y --fix-broken
-              sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-              sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
-              sudo apt-get install -y libmpv-dev mpv libasound2-dev
-              # Install GStreamer for audioplayers_linux
-              # Install libunwind-dev first to resolve dependency issues
-              sudo apt-get -y install libunwind-dev
-              sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-              ;;
-            Windows)
-              vcpkg integrate install
-              vcpkg update
-              ;;
-            macOS)
-              # No additional prerequisites needed for macOS
-              ;;
-          esac
-          cargo make appflowy-flutter-deps-tools
-
-      - name: Configure Git credentials for Cargo
-        shell: bash
-        run: |
-          git config --global credential.helper store
-          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
-
-      - name: Build AppFlowy
-        working-directory: frontend
-        run: cargo make --profile ${{ matrix.flutter_profile }} appflowy-core-dev
-        shell: bash
-
-      - name: Bundle libmpv into AppFlowy bundle
-        run: |
-          set -euo pipefail
-          # The Flutter bundle structure is:
-          # frontend/appflowy_flutter/build/linux/x64/release/bundle/
-          #   AppFlowy          <- executable
-          #   lib/              <- shared libraries (flutter build output)
-          BUNDLE="frontend/appflowy_flutter/build/linux/x64/release/bundle"
-          mkdir -p "$BUNDLE/lib"
-          # Download libmpv1 from Ubuntu jammy (22.04) for maximum compatibility
-          # This ensures the .so file is bundled and doesn't rely on system packages
-          wget -q -O /tmp/libmpv1.deb \
-            http://archive.ubuntu.com/ubuntu/pool/universe/m/mpv/libmpv1_0.34.1-1ubuntu3_amd64.deb
-          ls -lh /tmp/libmpv1.deb
-          dpkg-deb -x /tmp/libmpv1.deb /tmp/libmpv-extracted
-          ls -la /tmp/libmpv-extracted/usr/lib/x86_64-linux-gnu/
-          cp -r /tmp/libmpv-extracted/usr/lib/x86_64-linux-gnu/* "$BUNDLE/lib/"
-          echo "✅ libmpv bundled into $BUNDLE/lib/"
-          ls -la "$BUNDLE/lib/libmpv"*
-        shell: bash
-
-      - name: Show sccache stats
-        if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
-        run: sccache --show-stats || true
-
-      - name: Check FFI library size
-        shell: bash
-        run: |
-          LIB=$(find frontend/rust-lib/target -type f \( \
-            -name "libappflowy_backend.so" -o \
-            -name "libappflowy_backend.a" -o \
-            -name "libappflowy_backend.dylib" -o \
-            -name "appflowy_backend.dll" \
-          \) 2>/dev/null | head -1)
-          if [ -n "$LIB" ]; then
-            SIZE_BYTES=$(stat -c%s "$LIB")
-            SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
-            echo "## FFI Library Size" >> $GITHUB_STEP_SUMMARY
-            echo "**$(basename "$LIB"): ${SIZE_MB} MB**" >> $GITHUB_STEP_SUMMARY
-            echo "FFI library size: ${SIZE_MB} MB"
-
-            MAX_SIZE_MB=150
-            if (( $(echo "$SIZE_MB > $MAX_SIZE_MB" | bc -l) )); then
-              echo "::error::FFI library size (${SIZE_MB} MB) exceeds limit (${MAX_SIZE_MB} MB)"
-              exit 1
-            fi
-          else
-            echo "::warning::Could not find AppFlowy backend FFI library"
-          fi
-
-      - name: Clean cargo build artifacts
-        working-directory: frontend/rust-lib
-        run: cargo clean
-        shell: bash
-
-      - name: Run code generation
-        working-directory: frontend
-        run: cargo make code_generation
-        shell: bash
-
-      - name: Flutter Analyzer
-        working-directory: frontend/appflowy_flutter
-        run: |
-          dart format --output=none --set-exit-if-changed $(find . -name "*.dart" \
-            | grep -v -e "\.g\.dart$" \
-            -e "\.freezed\.dart$" \
-            -e "/generated/" \
-            -e "\.dart_tool/" \
-            -e "build/" \
-            -e "packages/")
-          flutter analyze .
-        shell: bash
-
-      - name: Compress appflowy_flutter
-        run: tar -czf appflowy_flutter.tar.gz frontend/appflowy_flutter
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-          path: appflowy_flutter.tar.gz
-
-  pdf_export_ui:
-    name: PDF export regression (Linux)
-    needs: [prepare-linux]
-    # A failed preparation must produce a failing private status, not a missing success.
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          persist-credentials: false
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Select SDK pins from the tested Desktop source
-        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
-
-      - name: Detect the source PDF UI contract
-        id: pdf-ui-source
-        run: |
-          if [ -f frontend/rust-lib/integration-test/pdf_export_contract.json ] || \
-             [ -f frontend/appflowy_flutter/integration_test/desktop/bdd/database/grid/database_export_test.dart ]; then
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mark the Desktop PDF UI gate pending
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --kind ui --state pending \
-            --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
-
-      - name: Configure Ubuntu package downloads
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
-
-      - name: Install Rust toolchain
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Install Flutter
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Install prerequisites
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-          sudo apt-get update
-          sudo apt-get install -y --fix-broken
-          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev xvfb xauth
-          sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
-          sudo apt-get install -y libmpv-dev mpv libasound2-dev
-          # Install GStreamer for audioplayers_linux
-          # Install libunwind-dev first to resolve dependency issues
-          sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-        shell: bash
-
-      - name: Enable Flutter Desktop
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        run: |
-          flutter config --enable-linux-desktop
-        shell: bash
-
-      - uses: actions/download-artifact@v4
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        with:
-          name: ${{ github.run_id }}-ubuntu-latest
-
-      - name: Restore the exact prepared Linux application and native FFI
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        run: |
-          tar -xf appflowy_flutter.tar.gz
-          python3 - <<'PYTHON'
-          from pathlib import Path
-          library = Path("frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so")
-          with library.open("rb") as source:
-              header = source.read(20)
-          if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\x3e\x00":
-              raise SystemExit("Expected an AMD64 Linux FFI library from prepare-linux")
-          PYTHON
-
-      - name: Resolve Flutter packages for the restored source
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        working-directory: frontend/appflowy_flutter
-        run: flutter pub get
-
-      - name: Prepare PDFium for Linux integration tests
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        run: |
-          set -euo pipefail
-          PDFIUM_DIR="$RUNNER_TEMP/pdfium"
-          PDFIUM_ARCHIVE="$RUNNER_TEMP/pdfium-linux-x64.tgz"
-          mkdir -p "$PDFIUM_DIR"
-          curl -L \
-            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz" \
-            -o "$PDFIUM_ARCHIVE"
-          tar -xzf "$PDFIUM_ARCHIVE" -C "$PDFIUM_DIR" lib/libpdfium.so
-          echo "APPFLOWY_PDFIUM_MODULE_PATH=$PDFIUM_DIR/lib/libpdfium.so" >> "$GITHUB_ENV"
-          ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
-        shell: bash
-
-      - name: Run the source-contracted PDF BDD on Linux
-        id: pdf-ui-regression
-        if: steps.pdf-ui-source.outputs.enabled == 'true'
-        timeout-minutes: 15
-        run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python3 .desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py \
-            --project frontend/appflowy_flutter --device linux \
-            --output "$RUNNER_TEMP/pdf-ui-regression"
-
-      - name: Upload PDF UI regression evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-pdf-ui-regression-${{ github.run_id }}
-          path: ${{ runner.temp }}/pdf-ui-regression
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Publish the Desktop PDF UI result
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          PDF_JOB_STATUS: ${{ job.status }}
-          PDF_GATE_OUTCOME: ${{ steps.pdf-ui-regression.outcome || 'skipped' }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --kind ui --state completed \
-            --job-status "$PDF_JOB_STATUS" \
-            --gate-outcome "$PDF_GATE_OUTCOME" \
-            --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
-
   unit_test:
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
-    needs: [prepare-linux]
     strategy:
       fail-fast: false
-      # Keep capacity available for integration and mobile jobs.
       max-parallel: 2
       matrix:
-        os: [ubuntu-latest]
-        shard: [0, 1, 2, 3]
+        os:
+        - ubuntu-latest
+        shard:
+        - 2
         include:
-          - os: ubuntu-latest
-            flutter_profile: development-linux-x86_64
-            target: x86_64-unknown-linux-gnu
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - name: Configure Ubuntu package downloads
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: ${{ matrix.os }}
-          workspaces: |
-            frontend/rust-lib
-          cache-all-crates: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-            sudo apt-get update
-            sudo apt-get install -y --fix-broken
-            sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-            sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
-            sudo apt-get install -y libmpv-dev mpv libasound2-dev
-            # Install GStreamer for audioplayers_linux
-            # Install libunwind-dev first to resolve dependency issues
-            sudo apt-get -y install libunwind-dev
-            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-          fi
-        shell: bash
-
-      - name: Enable Flutter Desktop
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            flutter config --enable-linux-desktop
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            flutter config --enable-macos-desktop
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            git config --system core.longpaths true
-            flutter config --enable-windows-desktop
-          fi
-        shell: bash
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-
-      - name: Uncompress appflowy_flutter
-        run: tar -xf appflowy_flutter.tar.gz
-
-      - name: Run flutter pub get
-        working-directory: frontend
-        run: cargo make pub_get
-
-      - name: Run Flutter unit tests
-        timeout-minutes: 45
-        shell: bash
-        run: |
-          cd frontend
-
-          set +e
-          (
-            set -e
-            case "$RUNNER_OS" in
-              macOS)
-                test_profile="test-macos-$(uname -m)"
-                cargo make --profile "$test_profile" inner_build_test_backend
-                ;;
-              Linux)
-                test_profile=test-linux
-                cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
-                ;;
-              Windows)
-                test_profile=test-windows
-                cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
-                ;;
-              *) echo "Unsupported unit-test runner: $RUNNER_OS" >&2; exit 1 ;;
-            esac
-            if [ "$APPFLOWY_DART_TEST_SHARD_INDEX" = "0" ]; then
-              cargo make --profile "$test_profile" dart_package_unit_test
-            fi
-            cd appflowy_flutter
-            # Dart's shard flags divide tests within each suite, so every
-            # runner still compiles every file. Partition files before loading.
-            test_list="$(mktemp)"
-            trap 'rm -f "$test_list"' EXIT
-            python3 - "$test_list" <<'PY'
-          import os
-          from pathlib import Path
-          import sys
-
-          count = int(os.environ["APPFLOWY_DART_TEST_TOTAL_SHARDS"])
-          index = int(os.environ["APPFLOWY_DART_TEST_SHARD_INDEX"])
-          if count < 1 or not 0 <= index < count:
-              raise SystemExit("Invalid Flutter test shard")
-          files = sorted(str(path) for path in Path("test").rglob("*_test.dart") if path.is_file())
-          selected = files[index::count]
-          if not selected:
-              raise SystemExit("Flutter test shard has no test files")
-          Path(sys.argv[1]).write_bytes(b"".join(path.encode() + b"\0" for path in selected))
-          PY
-            test_files=()
-            while IFS= read -r -d '' test_file; do
-              test_files+=("$test_file")
-            done < "$test_list"
-            flutter test --verbose --concurrency=1 --coverage \
-              --file-reporter=json:/tmp/unit-test-events.jsonl "${test_files[@]}"
-          ) 2>&1 | tee /tmp/test_output.txt
-          TEST_EXIT=$?
-          set -eo pipefail
-
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} passed"
-          else
-            echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} failed (exit $TEST_EXIT)"
-          fi
-
-          exit $TEST_EXIT
-        env:
-          APPFLOWY_DART_TEST_TOTAL_SHARDS: "4"
-          APPFLOWY_DART_TEST_SHARD_INDEX: ${{ matrix.shard }}
-          DISABLE_EVENT_LOG: true
-          DISABLE_CI_TEST_LOG: "true"
-
-      - name: Upload unit test output
-        if: always()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-output-${{ matrix.os }}-${{ matrix.shard }}-${{ github.run_id }}
-          path: |
-            /tmp/test_output.txt
-            /tmp/unit-test-events.jsonl
-          retention-days: 7
-
-  pdf_cloud_ui_availability:
-    name: PDF cloud suite availability
-    needs: [prepare-linux]
-    # Legacy heads need an explicit NA status. A current contract without its
-    # matrix suite must fail instead of silently losing the required check.
-    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          persist-credentials: false
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Report an absent PDF cloud suite explicitly
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --kind cloud_ui --state completed \
-            --gate-outcome skipped
-
-  cloud_integration_test:
-    name: Cloud integration test (${{ matrix.cloud_test_suite }})
-    needs: [prepare-linux]
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        os: [ubuntu-latest]
-        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.cloud_test_suites) }}
-        include:
-          - os: ubuntu-latest
-            flutter_profile: development-linux-x86_64
-            target: x86_64-unknown-linux-gnu
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    env:
-      MINIO_DATA_DIR: /tmp/minio-data
-      APPFLOWY_CLOUD_URL: https://localhost
-      # Only this job's disposable Compose database; never infer a developer database.
-      APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
-
-    steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Select SDK pins from the tested Desktop source
-        run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
-
-      - name: Mark the Desktop cloud PDF UI gate pending
-        if: matrix.cloud_test_suite == 'pdf_export'
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --kind cloud_ui --state pending \
-            --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
-
-      - name: Configure Ubuntu package downloads
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
-
-      - name: Checkout AppFlowy-Cloud-Premium code
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          path: AppFlowy-Cloud-Premium
-          ref: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha || 'main' }}
-
-      - name: Prepare appflowy cloud env
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          # log level
-          cp deploy.env .env
-          #sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=trace,appflowy_collaborate=trace|' .env
-          sed -i 's|^FQDN=.*|FQDN=localhost|' .env
-          sed -i 's|^SCHEME=.*|SCHEME=https|' .env
-          sed -i 's|^WS_SCHEME=.*|WS_SCHEME=wss|' .env
-          sed -i 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
-          sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
-          sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=https://localhost|' .env
-          sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
-          sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
-          sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
-          sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=https://localhost/minio-api|' .env
-
-          echo '' >> .env
-          echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
-          echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
-          echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
-          echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
-          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
-          echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
-
-      - name: Trust localhost HTTPS for cloud tests
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          # Public Forms require HTTPS. Use a fresh localhost certificate and
-          # the runner's trust store so Dart, native HTTP, and WebSockets verify TLS.
-          umask 077
-          cert_dir=$(mktemp -d "$RUNNER_TEMP/appflowy-ci-tls.XXXXXX")
-          trap 'rm -rf "$cert_dir"' EXIT
-          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-            -subj '/CN=AppFlowy CI Root' \
-            -addext 'basicConstraints=critical,CA:TRUE' \
-            -addext 'keyUsage=critical,keyCertSign,cRLSign' \
-            -keyout "$cert_dir/ca.key" -out "$cert_dir/ca.crt"
-          openssl req -new -newkey rsa:2048 -nodes -subj '/CN=localhost' \
-            -keyout nginx/ssl/private_key.key -out "$cert_dir/server.csr"
-          cat > "$cert_dir/server.ext" <<'EOF'
-          basicConstraints=critical,CA:FALSE
-          keyUsage=critical,digitalSignature,keyEncipherment
-          extendedKeyUsage=serverAuth
-          subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1
-          EOF
-          openssl x509 -req -days 2 -in "$cert_dir/server.csr" \
-            -CA "$cert_dir/ca.crt" -CAkey "$cert_dir/ca.key" -CAcreateserial \
-            -extfile "$cert_dir/server.ext" -out nginx/ssl/certificate.crt
-          chmod 600 nginx/ssl/private_key.key
-          sudo install -m 0644 "$cert_dir/ca.crt" \
-            /usr/local/share/ca-certificates/appflowy-ci.crt
-          sudo update-ca-certificates
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
-      - name: Clean Docker-Compose
-        working-directory: AppFlowy-Cloud-Premium
-        env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
-        run: |
-          echo "Cleaning up any existing containers..."
-          docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
-          docker container prune -f || true
-          docker volume prune -f || true
-          sudo rm -rf /tmp/minio-data || true
-
-      - name: Start the verified exact Cloud runtime
-        id: exact-cloud
-        uses: ./.desktop-ci-tools/.github/actions/desktop-cloud-runtime
-        with:
-          cloud-source-sha: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
-          image-run-id: ${{ github.event.client_payload.cloud_image_run_id || inputs.cloud_image_run_id }}
-          desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
-          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          timeline: ${{ matrix.cloud_test_suite == 'timeline' }}
-          timeline-image: ${{ env.TIMELINE_CLOUD_IMAGE }}
-
-      - name: Run Docker-Compose from published registry images
-        if: steps.exact-cloud.outputs.enabled == 'false'
-        working-directory: AppFlowy-Cloud-Premium
-        env:
-          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
-          APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
-          TIMELINE: ${{ matrix.cloud_test_suite == 'timeline' }}
-          TIMELINE_IMAGE: ${{ env.TIMELINE_CLOUD_IMAGE }}
-        run: |
-          echo "Pulling and starting containers..."
-          args=()
-          if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
-          python3 ../.desktop-ci-tools/.github/scripts/desktop_cloud_runtime.py registry \
-            --cloud . --timeline-image "$TIMELINE_IMAGE" "${args[@]}"
-          docker ps -a
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
-
-      - name: Wait for appflowy cloud to be ready
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          echo "Waiting for services to be ready..."
-          for i in {1..60}; do
-            if curl --fail --show-error --max-time 5 "$APPFLOWY_CLOUD_URL/api/health"; then
-              echo "Health check passed after $((i*5)) seconds"
-              exit 0
-            fi
-            echo "Attempt $i: Health check failed, waiting 5 seconds..."
-            sleep 5
-          done
-          echo "::error::Cloud HTTPS health check timed out"
-          exit 1
-
-      - name: Verify self-hosted Cloud for Timeline tests
-        if: matrix.cloud_test_suite == 'timeline'
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          curl --fail --show-error --silent "$APPFLOWY_CLOUD_URL/api/server-info" \
-            > /tmp/timeline-server-info.json
-          python3 - <<'PY'
-          import json
-
-          with open('/tmp/timeline-server-info.json', encoding='utf-8') as handle:
-              payload = json.load(handle)
-          server_info = payload.get('data', payload)
-          if server_info.get('self_hosted') is not True:
-              raise SystemExit(
-                  'Timeline tests require a self-hosted Cloud image; '
-                  f"server-info reported self_hosted={server_info.get('self_hosted')!r}"
-              )
-          print('Timeline Cloud server reports self_hosted=true')
-          PY
-
-      - name: Wait for MinIO to be ready
-        working-directory: AppFlowy-Cloud-Premium
-        run: |
-          echo "Waiting for MinIO to be ready..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:9000/minio/health/ready 2>/dev/null; then
-              echo "MinIO ready after $((i*3)) seconds"
-              break
-            fi
-            echo "Attempt $i: MinIO not ready, waiting 3 seconds..."
-            sleep 3
-          done
-
-          # Verify bucket is accessible via S3 API
-          echo "Verifying MinIO bucket access..."
-          for i in {1..10}; do
-            if docker compose -f docker-compose-ci.yml exec -T minio mc ls local/ 2>/dev/null; then
-              echo "MinIO bucket listing succeeded"
-              exit 0
-            fi
-            # Fallback: try raw S3 list via curl
-            if curl -sf http://localhost:9000/appflowy/ 2>/dev/null; then
-              echo "MinIO bucket accessible via HTTP"
-              exit 0
-            fi
-            echo "Attempt $i: Bucket not accessible, waiting 3 seconds..."
-            sleep 3
-          done
-          echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
-          docker compose -f docker-compose-ci.yml logs minio
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        shell: bash
-        run: |
-          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
-          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
-          echo "Installing Flutter Linux prerequisites..."
-          {
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-            sudo apt-get update
-            sudo apt-get install -y --fix-broken
-            sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-            sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
-            sudo apt-get install -y libmpv-dev mpv libasound2-dev
-            # Install GStreamer for audioplayers_linux
-            # Install libunwind-dev first to resolve dependency issues
-            sudo apt-get -y install libunwind-dev
-            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-          } > "$setup_log" 2>&1
-          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
-
-      - name: Enable Flutter Desktop
-        run: |
-          flutter config --enable-linux-desktop
-        shell: bash
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-
-      - name: Uncompressed appflowy_flutter
-        run: |
-          tar -xf appflowy_flutter.tar.gz
-
-      - name: Inspect media_kit native plugin
-        working-directory: frontend/appflowy_flutter
-        run: |
-          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
-          pkg-config --modversion mpv || true
-          pkg-config --modversion epoxy || true
-
-      - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
-        id: cloud-test-run
-        # Leave time inside the 60-minute job limit to upload partial results.
-        timeout-minutes: 45
-        shell: bash
-        run: |
-          cd frontend/appflowy_flutter
-          flutter pub get
-          dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          docker ps -a
-          rm -f /tmp/cloud-test-events.jsonl
-          if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
-            export APPFLOWY_PDF_TEST_OUTPUT_DIR="$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports"
-            mkdir -p "$APPFLOWY_PDF_TEST_OUTPUT_DIR"
-          fi
-
-          set +e
-          flutter test \
-            --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
-            --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
-            integration_test/desktop/cloud/cloud_runner.dart \
-            -d Linux \
-            --file-reporter=json:/tmp/cloud-test-events.jsonl \
-            --coverage 2>&1 | tee /tmp/test_output.txt
-          # bash runs with pipefail, so tee cannot hide a failing Flutter exit.
-          TEST_EXIT=$?
-          set -eo pipefail
-
-          if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
-            cp /tmp/test_output.txt "$RUNNER_TEMP/pdf-cloud-ui-regression/test.log"
-            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py" \
-              --project "$GITHUB_WORKSPACE/frontend/appflowy_flutter" \
-              --output "$RUNNER_TEMP/pdf-cloud-ui-regression" \
-              --verify-cloud-events /tmp/cloud-test-events.jsonl \
-              --process-status "$TEST_EXIT"
-          fi
-
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
-
-          if [ "${{ matrix.cloud_test_suite }}" != pdf_export ] && [ "$TEST_EXIT" -ne 0 ] &&
-            grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
-            grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
-            grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
-            ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
-            echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
-            TEST_EXIT=0
-          fi
-
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "✅ All $PASS_COUNT cloud integration tests passed"
-          else
-            echo "❌ $FAIL_COUNT cloud integration test(s) failed, $PASS_COUNT test(s) passed"
-          fi
-
-          exit $TEST_EXIT
-
-      - name: Upload exact Cloud runtime manifest
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-cloud-manifest-flutter-${{ matrix.cloud_test_suite }}
-          path: ${{ runner.temp }}/desktop-cloud-manifest.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload cloud test output
-        if: always()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-test-output-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
-          path: |
-            /tmp/test_output.txt
-            /tmp/cloud-test-events.jsonl
-            ${{ runner.temp }}/flutter-prerequisites.log
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Collect Docker logs
-        if: failure() || cancelled()
-        timeout-minutes: 2
-        run: |
-          docker ps -a > docker-ps-output.txt
-          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
-
-      - name: Upload Docker logs
-        if: failure() || cancelled()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-integration-test-logs-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
-          path: |
-            docker-ps-output.txt
-            appflowy_cloud_logs.txt
-            appflowy_worker_logs.txt
-            minio_logs.txt
-            gotrue_logs.txt
-            nginx_logs.txt
-          retention-days: 1
-
-      - name: Upload PDF cloud UI regression evidence
-        if: always() && matrix.cloud_test_suite == 'pdf_export'
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-pdf-cloud-ui-regression-${{ github.run_id }}
-          path: ${{ runner.temp }}/pdf-cloud-ui-regression
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Publish the Desktop cloud PDF UI result
-        if: always() && matrix.cloud_test_suite == 'pdf_export'
-        env:
-          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          PDF_JOB_STATUS: ${{ job.status }}
-          PDF_GATE_OUTCOME: ${{ steps.cloud-test-run.outcome || 'skipped' }}
-        run: |
-          python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
-            --workspace frontend/rust-lib --kind cloud_ui --state completed \
-            --job-status "$PDF_JOB_STATUS" --gate-outcome "$PDF_GATE_OUTCOME" \
-            --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
-
-  integration_test:
-    needs: [prepare-linux]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        test_number: ${{ fromJSON(needs.prepare-linux.outputs.desktop_test_runners) }}
-        include:
-          - os: ubuntu-latest
-            target: "x86_64-unknown-linux-gnu"
+        - os: ubuntu-latest
+          flutter_profile: development-linux-x86_64
+          target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - name: Checkout private repository
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-Premium
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Check out the exact CI runtime tools
-        uses: actions/checkout@v4
-        with:
-          repository: AppFlowy-IO/AppFlowy-CI
-          ref: ${{ github.sha }}
-          path: .desktop-ci-tools
-          persist-credentials: false
-
-      - name: Configure Ubuntu package downloads
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
-
-      - name: Install Rust toolchain
-        id: rust_toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: ${{ matrix.target }}
-          override: true
-          profile: minimal
-
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        run: |
+    - name: Checkout private repository
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Premium
+        token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        ref: ${{ env.DESKTOP_SOURCE_SHA }}
+    - name: Check out the exact CI runtime tools
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-CI
+        ref: ${{ github.sha }}
+        path: .desktop-ci-tools
+        persist-credentials: false
+    - name: Configure Ubuntu package downloads
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+    - name: Install Rust toolchain
+      id: rust_toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        target: ${{ matrix.target }}
+        override: true
+        profile: minimal
+    - name: Install flutter
+      id: flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        cache: true
+    - uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: ${{ matrix.os }}
+        workspaces: |
+          frontend/rust-lib
+        cache-all-crates: true
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}, duckscript_cli
+    - name: Install prerequisites
+      timeout-minutes: 10
+      working-directory: frontend
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
           sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
           sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
           sudo apt-get update
           sudo apt-get install -y --fix-broken
           sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-          sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
+          sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
           sudo apt-get install -y libmpv-dev mpv libasound2-dev
           # Install GStreamer for audioplayers_linux
           # Install libunwind-dev first to resolve dependency issues
           sudo apt-get -y install libunwind-dev
           sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-        shell: bash
-
-      - name: Enable Flutter Desktop
-        run: |
+        fi
+      shell: bash
+    - name: Enable Flutter Desktop
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
           flutter config --enable-linux-desktop
-        shell: bash
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          flutter config --enable-macos-desktop
+        elif [ "$RUNNER_OS" == "Windows" ]; then
+          git config --system core.longpaths true
+          flutter config --enable-windows-desktop
+        fi
+      shell: bash
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ env.PREPARED_RUN_ID }}-ubuntu-latest
+        run-id: ${{ env.PREPARED_RUN_ID }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+    - name: Uncompress appflowy_flutter
+      run: tar -xf appflowy_flutter.tar.gz
+    - name: Verify prepared source and Linux backend
+      shell: bash
+      run: |
+        python3 - <<'PYCODE'
+        import os
+        from pathlib import Path
+        import subprocess
+        expected = os.environ['DESKTOP_SOURCE_SHA']
+        actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != expected:
+            raise SystemExit('Checkout differs from the source used by the prepared build')
+        files = ['integration_test/shared/common_operations.dart', 'test/shared/database_tab_bar_test_helpers.dart', 'test/step/_remote_nested_database_board_helpers.dart', 'test/step/the_user_inspects_each_created_row_template_page.dart', 'test/widget_test/dashboard_history_shortcuts_test.dart', 'test/widget_test/database_view_switcher_test.dart', 'test/widget_test/open_page_in_tab_helper_test.dart']
+        for relative in files:
+            path = 'frontend/appflowy_flutter/' + relative
+            trusted = subprocess.check_output(['git', 'show', 'HEAD:' + path])
+            if Path(path).read_bytes() != trusted:
+                raise SystemExit('Prepared artifact changed the tested source: ' + relative)
+        library = Path('frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so')
+        with library.open('rb') as handle:
+            header = handle.read(20)
+        if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
+            raise SystemExit('Expected the prepared AMD64 Linux FFI library')
+        print('Verified prepared artifact source', expected)
+        PYCODE
+    - name: Run flutter pub get
+      working-directory: frontend
+      run: cargo make pub_get
+    - name: Run Flutter unit tests
+      timeout-minutes: 45
+      shell: bash
+      run: |
+        cd frontend
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.run_id }}-ubuntu-latest
-
-      - name: Uncompressed appflowy_flutter
-        run: tar -xf appflowy_flutter.tar.gz
-        shell: bash
-
-      - name: Inspect media_kit native plugin
-        working-directory: frontend/appflowy_flutter
-        run: |
-          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
-          pkg-config --modversion mpv || true
-          pkg-config --modversion epoxy || true
-        shell: bash
-
-      - name: Prepare PDFium for Linux integration tests
-        run: |
-          set -euo pipefail
-          PDFIUM_DIR="$RUNNER_TEMP/pdfium"
-          PDFIUM_ARCHIVE="$RUNNER_TEMP/pdfium-linux-x64.tgz"
-          mkdir -p "$PDFIUM_DIR"
-          curl -L \
-            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz" \
-            -o "$PDFIUM_ARCHIVE"
-          tar -xzf "$PDFIUM_ARCHIVE" -C "$PDFIUM_DIR" lib/libpdfium.so
-          echo "APPFLOWY_PDFIUM_MODULE_PATH=$PDFIUM_DIR/lib/libpdfium.so" >> "$GITHUB_ENV"
-          ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
-        shell: bash
-
-      - name: Run Flutter integration tests
-        # Leave time inside the 60-minute job limit to upload partial results.
-        timeout-minutes: 45
-        shell: bash
-        run: |
-          cd frontend/appflowy_flutter
-          flutter pub get
-          dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          sudo apt-get install network-manager
-
-          set +e
-          flutter test \
-            integration_test/desktop_runner_${{ matrix.test_number }}.dart \
-            -d Linux \
-            --file-reporter=json:/tmp/desktop-test-events.jsonl \
-            --coverage 2>&1 | tee /tmp/test_output.txt
-          TEST_EXIT=${PIPESTATUS[0]}
-          set -eo pipefail
-
-          PASS_COUNT=$(grep -c '✅' /tmp/test_output.txt || true)
-          FAIL_COUNT=$(grep -c '❌' /tmp/test_output.txt || true)
-
-          if [ "$TEST_EXIT" -ne 0 ] &&
-            grep -Eq '🎉 [0-9]+ tests passed(, [0-9]+ skipped)?\.' /tmp/test_output.txt &&
-            grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&
-            grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&
-            ! grep -q '❌.*(failed)' /tmp/test_output.txt; then
-            echo "::warning::Ignoring Flutter test listener cleanup failure after all tests passed"
-            TEST_EXIT=0
+        set +e
+        (
+          set -e
+          case "$RUNNER_OS" in
+            macOS)
+              test_profile="test-macos-$(uname -m)"
+              cargo make --profile "$test_profile" inner_build_test_backend
+              ;;
+            Linux)
+              test_profile=test-linux
+              cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
+              ;;
+            Windows)
+              test_profile=test-windows
+              cargo make --allow-private --profile "$test_profile" copy-from-build-to-sandbox-folder
+              ;;
+            *) echo "Unsupported unit-test runner: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          if [ "$APPFLOWY_DART_TEST_SHARD_INDEX" = "0" ]; then
+            cargo make --profile "$test_profile" dart_package_unit_test
           fi
+          cd appflowy_flutter
+          # Dart's shard flags divide tests within each suite, so every
+          # runner still compiles every file. Partition files before loading.
+          test_list="$(mktemp)"
+          trap 'rm -f "$test_list"' EXIT
+          python3 - "$test_list" <<'PY'
+        import os
+        from pathlib import Path
+        import sys
 
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "✅ All $PASS_COUNT integration tests passed"
-          else
-            echo "❌ $FAIL_COUNT integration test(s) failed, $PASS_COUNT test(s) passed"
+        count = int(os.environ["APPFLOWY_DART_TEST_TOTAL_SHARDS"])
+        index = int(os.environ["APPFLOWY_DART_TEST_SHARD_INDEX"])
+        if count < 1 or not 0 <= index < count:
+            raise SystemExit("Invalid Flutter test shard")
+        files = sorted(str(path) for path in Path("test").rglob("*_test.dart") if path.is_file())
+        selected = files[index::count]
+        if not selected:
+            raise SystemExit("Flutter test shard has no test files")
+        Path(sys.argv[1]).write_bytes(b"".join(path.encode() + b"\0" for path in selected))
+        PY
+          test_files=()
+          while IFS= read -r -d '' test_file; do
+            test_files+=("$test_file")
+          done < "$test_list"
+          flutter test --verbose --concurrency=1 --coverage \
+            --file-reporter=json:/tmp/unit-test-events.jsonl "${test_files[@]}"
+        ) 2>&1 | tee /tmp/test_output.txt
+        TEST_EXIT=$?
+        set -eo pipefail
+
+        if [ $TEST_EXIT -eq 0 ]; then
+          echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} passed"
+        else
+          echo "Unit test shard ${APPFLOWY_DART_TEST_SHARD_INDEX:-0} failed (exit $TEST_EXIT)"
+        fi
+
+        exit $TEST_EXIT
+      env:
+        APPFLOWY_DART_TEST_TOTAL_SHARDS: '4'
+        APPFLOWY_DART_TEST_SHARD_INDEX: ${{ matrix.shard }}
+        DISABLE_EVENT_LOG: true
+        DISABLE_CI_TEST_LOG: 'true'
+    - name: Upload unit test output
+      if: always()
+      timeout-minutes: 3
+      uses: actions/upload-artifact@v4
+      with:
+        name: unit-test-output-${{ matrix.os }}-${{ matrix.shard }}-${{ github.run_id }}
+        path: |
+          /tmp/test_output.txt
+          /tmp/unit-test-events.jsonl
+        retention-days: 7
+  cloud_integration_test:
+    name: Cloud integration test (${{ matrix.cloud_test_suite }})
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        os:
+        - ubuntu-latest
+        cloud_test_suite:
+        - database_rows
+        - document
+        include:
+        - os: ubuntu-latest
+          flutter_profile: development-linux-x86_64
+          target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MINIO_DATA_DIR: /tmp/minio-data
+      APPFLOWY_CLOUD_URL: https://localhost
+      APPFLOWY_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/postgres
+    steps:
+    - name: Checkout private repository
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Premium
+        token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        ref: ${{ env.DESKTOP_SOURCE_SHA }}
+    - name: Check out the exact CI runtime tools
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-CI
+        ref: ${{ github.sha }}
+        path: .desktop-ci-tools
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Select SDK pins from the tested Desktop source
+      run: python3 .desktop-ci-tools/.github/scripts/select_desktop_toolchain.py --source frontend --fallback-rust "$RUST_TOOLCHAIN"
+    - name: Configure Ubuntu package downloads
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/configure_flutter_apt.py"
+    - name: Checkout AppFlowy-Cloud-Premium code
+      uses: actions/checkout@v4
+      with:
+        repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+        token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        path: AppFlowy-Cloud-Premium
+        ref: main
+    - name: Prepare appflowy cloud env
+      working-directory: AppFlowy-Cloud-Premium
+      run: |
+        # log level
+        cp deploy.env .env
+        #sed -i 's|RUST_LOG=.*|RUST_LOG=appflowy_cloud=trace,appflowy_collaborate=trace|' .env
+        sed -i 's|^FQDN=.*|FQDN=localhost|' .env
+        sed -i 's|^SCHEME=.*|SCHEME=https|' .env
+        sed -i 's|^WS_SCHEME=.*|WS_SCHEME=wss|' .env
+        sed -i 's/GOTRUE_EXTERNAL_GOOGLE_ENABLED=.*/GOTRUE_EXTERNAL_GOOGLE_ENABLED=true/' .env
+        sed -i 's|GOTRUE_MAILER_AUTOCONFIRM=.*|GOTRUE_MAILER_AUTOCONFIRM=true|' .env
+        sed -i 's|API_EXTERNAL_URL=.*|API_EXTERNAL_URL=https://localhost|' .env
+        sed -i 's|AI_OPENAI_API_KEY=.*|AI_OPENAI_API_KEY=${{ secrets.CI_OPENAI_API_KEY }}|' .env
+        sed -i 's|APPFLOWY_SPAM_DETECT_ENABLED=.*|APPFLOWY_SPAM_DETECT_ENABLED=false|' .env
+        sed -i 's|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=.*|APPFLOWY_DATABASE_BLOB_APPEND_FLUSH_INTERVAL_MS=500|' .env
+        sed -i 's|.*APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=.*|APPFLOWY_S3_PRESIGNED_URL_ENDPOINT=https://localhost/minio-api|' .env
+
+        echo '' >> .env
+        echo 'APPFLOWY_PAGE_HISTORY_ENABLE=true' >> .env
+        echo 'APPFLOWY_FEATURE_RULES_DOMAIN=appflowy.io' >> .env
+        echo 'APPFLOWY_INVITE_MIN_ACCOUNT_AGE_SECS=0' >> .env
+        echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
+        echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
+        echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
+    - name: Trust localhost HTTPS for cloud tests
+      working-directory: AppFlowy-Cloud-Premium
+      run: |
+        # Public Forms require HTTPS. Use a fresh localhost certificate and
+        # the runner's trust store so Dart, native HTTP, and WebSockets verify TLS.
+        umask 077
+        cert_dir=$(mktemp -d "$RUNNER_TEMP/appflowy-ci-tls.XXXXXX")
+        trap 'rm -rf "$cert_dir"' EXIT
+        openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+          -subj '/CN=AppFlowy CI Root' \
+          -addext 'basicConstraints=critical,CA:TRUE' \
+          -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+          -keyout "$cert_dir/ca.key" -out "$cert_dir/ca.crt"
+        openssl req -new -newkey rsa:2048 -nodes -subj '/CN=localhost' \
+          -keyout nginx/ssl/private_key.key -out "$cert_dir/server.csr"
+        cat > "$cert_dir/server.ext" <<'EOF'
+        basicConstraints=critical,CA:FALSE
+        keyUsage=critical,digitalSignature,keyEncipherment
+        extendedKeyUsage=serverAuth
+        subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1
+        EOF
+        openssl x509 -req -days 2 -in "$cert_dir/server.csr" \
+          -CA "$cert_dir/ca.crt" -CAkey "$cert_dir/ca.key" -CAcreateserial \
+          -extfile "$cert_dir/server.ext" -out nginx/ssl/certificate.crt
+        chmod 600 nginx/ssl/private_key.key
+        sudo install -m 0644 "$cert_dir/ca.crt" \
+          /usr/local/share/ca-certificates/appflowy-ci.crt
+        sudo update-ca-certificates
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+    - name: Clean Docker-Compose
+      working-directory: AppFlowy-Cloud-Premium
+      env:
+        APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+      run: |
+        echo "Cleaning up any existing containers..."
+        docker compose -f docker-compose-ci.yml down -v --remove-orphans || true
+        docker container prune -f || true
+        docker volume prune -f || true
+        sudo rm -rf /tmp/minio-data || true
+    - name: Start the verified exact Cloud runtime
+      id: exact-cloud
+      uses: ./.desktop-ci-tools/.github/actions/desktop-cloud-runtime
+      with:
+        cloud-source-sha: ''
+        image-run-id: ''
+        desktop-ref: ${{ env.DESKTOP_SOURCE_SHA }}
+        github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        timeline: ${{ matrix.cloud_test_suite == 'timeline' }}
+        timeline-image: ${{ env.TIMELINE_CLOUD_IMAGE }}
+    - name: Run Docker-Compose from published registry images
+      if: steps.exact-cloud.outputs.enabled == 'false'
+      working-directory: AppFlowy-Cloud-Premium
+      env:
+        APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_HISTORY_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_WORKER_VERSION: ${{ env.CLOUD_VERSION }}
+        APPFLOWY_ADMIN_FRONTEND_VERSION: ${{ env.CLOUD_VERSION }}
+        TIMELINE: ${{ matrix.cloud_test_suite == 'timeline' }}
+        TIMELINE_IMAGE: ${{ env.TIMELINE_CLOUD_IMAGE }}
+      run: |
+        echo "Pulling and starting containers..."
+        args=()
+        if [[ "$TIMELINE" == true ]]; then args+=(--timeline); fi
+        python3 ../.desktop-ci-tools/.github/scripts/desktop_cloud_runtime.py registry \
+          --cloud . --timeline-image "$TIMELINE_IMAGE" "${args[@]}"
+        docker ps -a
+        docker compose -f docker-compose-ci.yml logs appflowy_cloud
+    - name: Wait for appflowy cloud to be ready
+      working-directory: AppFlowy-Cloud-Premium
+      run: |
+        echo "Waiting for services to be ready..."
+        for i in {1..60}; do
+          if curl --fail --show-error --max-time 5 "$APPFLOWY_CLOUD_URL/api/health"; then
+            echo "Health check passed after $((i*5)) seconds"
+            exit 0
           fi
+          echo "Attempt $i: Health check failed, waiting 5 seconds..."
+          sleep 5
+        done
+        echo "::error::Cloud HTTPS health check timed out"
+        exit 1
+    - name: Verify self-hosted Cloud for Timeline tests
+      if: matrix.cloud_test_suite == 'timeline'
+      working-directory: AppFlowy-Cloud-Premium
+      run: |
+        curl --fail --show-error --silent "$APPFLOWY_CLOUD_URL/api/server-info" \
+          > /tmp/timeline-server-info.json
+        python3 - <<'PY'
+        import json
 
-          echo ""
-          echo "::group::Failed tests (click to expand)"
-          awk '/❌.*\(failed\)/{found=1} found{print} /##\[endgroup\]/ && found{found=0}' /tmp/test_output.txt
-          echo "::endgroup::"
+        with open('/tmp/timeline-server-info.json', encoding='utf-8') as handle:
+            payload = json.load(handle)
+        server_info = payload.get('data', payload)
+        if server_info.get('self_hosted') is not True:
+            raise SystemExit(
+                'Timeline tests require a self-hosted Cloud image; '
+                f"server-info reported self_hosted={server_info.get('self_hosted')!r}"
+            )
+        print('Timeline Cloud server reports self_hosted=true')
+        PY
+    - name: Wait for MinIO to be ready
+      working-directory: AppFlowy-Cloud-Premium
+      run: |
+        echo "Waiting for MinIO to be ready..."
+        for i in {1..30}; do
+          if curl -sf http://localhost:9000/minio/health/ready 2>/dev/null; then
+            echo "MinIO ready after $((i*3)) seconds"
+            break
+          fi
+          echo "Attempt $i: MinIO not ready, waiting 3 seconds..."
+          sleep 3
+        done
 
-          exit $TEST_EXIT
-
-      - name: Upload desktop test output
-        if: always()
-        timeout-minutes: 3
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-test-output-${{ matrix.test_number }}-${{ github.run_id }}
-          path: |
-            /tmp/test_output.txt
-            /tmp/desktop-test-events.jsonl
-          if-no-files-found: warn
-          retention-days: 7
+        # Verify bucket is accessible via S3 API
+        echo "Verifying MinIO bucket access..."
+        for i in {1..10}; do
+          if docker compose -f docker-compose-ci.yml exec -T minio mc ls local/ 2>/dev/null; then
+            echo "MinIO bucket listing succeeded"
+            exit 0
+          fi
+          # Fallback: try raw S3 list via curl
+          if curl -sf http://localhost:9000/appflowy/ 2>/dev/null; then
+            echo "MinIO bucket accessible via HTTP"
+            exit 0
+          fi
+          echo "Attempt $i: Bucket not accessible, waiting 3 seconds..."
+          sleep 3
+        done
+        echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
+        docker compose -f docker-compose-ci.yml logs minio
+    - name: Install flutter
+      id: flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        cache: true
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
+    - name: Install prerequisites
+      timeout-minutes: 10
+      working-directory: frontend
+      shell: bash
+      run: |
+        setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
+        trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
+        echo "Installing Flutter Linux prerequisites..."
+        {
+          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
+          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
+          sudo apt-get update
+          sudo apt-get install -y --fix-broken
+          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+          sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
+          sudo apt-get install -y libmpv-dev mpv libasound2-dev
+          # Install GStreamer for audioplayers_linux
+          # Install libunwind-dev first to resolve dependency issues
+          sudo apt-get -y install libunwind-dev
+          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+        } > "$setup_log" 2>&1
+        echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
+    - name: Enable Flutter Desktop
+      run: |
+        flutter config --enable-linux-desktop
+      shell: bash
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ env.PREPARED_RUN_ID }}-ubuntu-latest
+        run-id: ${{ env.PREPARED_RUN_ID }}
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+    - name: Uncompressed appflowy_flutter
+      run: |
+        tar -xf appflowy_flutter.tar.gz
+    - name: Verify prepared source and Linux backend
+      shell: bash
+      run: |
+        python3 - <<'PYCODE'
+        import os
+        from pathlib import Path
+        import subprocess
+        expected = os.environ['DESKTOP_SOURCE_SHA']
+        actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != expected:
+            raise SystemExit('Checkout differs from the source used by the prepared build')
+        files = ['integration_test/shared/common_operations.dart', 'test/shared/database_tab_bar_test_helpers.dart', 'test/step/_remote_nested_database_board_helpers.dart', 'test/step/the_user_inspects_each_created_row_template_page.dart', 'test/widget_test/dashboard_history_shortcuts_test.dart', 'test/widget_test/database_view_switcher_test.dart', 'test/widget_test/open_page_in_tab_helper_test.dart']
+        for relative in files:
+            path = 'frontend/appflowy_flutter/' + relative
+            trusted = subprocess.check_output(['git', 'show', 'HEAD:' + path])
+            if Path(path).read_bytes() != trusted:
+                raise SystemExit('Prepared artifact changed the tested source: ' + relative)
+        library = Path('frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so')
+        with library.open('rb') as handle:
+            header = handle.read(20)
+        if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
+            raise SystemExit('Expected the prepared AMD64 Linux FFI library')
+        print('Verified prepared artifact source', expected)
+        PYCODE
+    - name: Inspect media_kit native plugin
+      working-directory: frontend/appflowy_flutter
+      run: |
+        find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
+        pkg-config --modversion mpv || true
+        pkg-config --modversion epoxy || true
+    - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
+      id: cloud-test-run
+      timeout-minutes: 45
+      shell: bash
+      run: "cd frontend/appflowy_flutter\nflutter pub get\ndart run pdfrx:remove_wasm_modules\ntrap 'dart run pdfrx:remove_wasm_modules --revert' EXIT\nexport DISPLAY=:99\nsudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &\ndocker ps -a\nrm -f /tmp/cloud-test-events.jsonl\nif [ \"${{ matrix.cloud_test_suite }}\" = pdf_export ]; then\n  export APPFLOWY_PDF_TEST_OUTPUT_DIR=\"$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports\"\n  mkdir -p \"$APPFLOWY_PDF_TEST_OUTPUT_DIR\"\nfi\n\nset +e\nflutter test \\\n  --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \\\n  --dart-define=APPFLOWY_CLOUD_URL=\"$APPFLOWY_CLOUD_URL\" \\\n  integration_test/desktop/cloud/cloud_runner.dart \\\n  -d Linux \\\n  --file-reporter=json:/tmp/cloud-test-events.jsonl \\\n  --coverage 2>&1 | tee /tmp/test_output.txt\n# bash runs with pipefail, so tee cannot hide a failing Flutter exit.\nTEST_EXIT=$?\nset -eo pipefail\n\nif [ \"${{ matrix.cloud_test_suite }}\" = pdf_export ]; then\n  cp /tmp/test_output.txt\
+        \ \"$RUNNER_TEMP/pdf-cloud-ui-regression/test.log\"\n  python3 \"$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/run_desktop_pdf_ui_tests.py\" \\\n    --project \"$GITHUB_WORKSPACE/frontend/appflowy_flutter\" \\\n    --output \"$RUNNER_TEMP/pdf-cloud-ui-regression\" \\\n    --verify-cloud-events /tmp/cloud-test-events.jsonl \\\n    --process-status \"$TEST_EXIT\"\nfi\n\nPASS_COUNT=$(grep -c '\u2705' /tmp/test_output.txt || true)\nFAIL_COUNT=$(grep -c '\u274C' /tmp/test_output.txt || true)\n\nif [ \"${{ matrix.cloud_test_suite }}\" != pdf_export ] && [ \"$TEST_EXIT\" -ne 0 ] &&\n  grep -Eq '\U0001F389 [0-9]+ tests passed(, [0-9]+ skipped)?\\.' /tmp/test_output.txt &&\n  grep -q 'unhandled error during finalization of test' /tmp/test_output.txt &&\n  grep -q 'PathNotFoundException: Deletion failed.*flutter_test_listener' /tmp/test_output.txt &&\n  ! grep -q '\u274C.*(failed)' /tmp/test_output.txt; then\n  echo \"::warning::Ignoring Flutter test listener cleanup failure after all\
+        \ tests passed\"\n  TEST_EXIT=0\nfi\n\nif [ $TEST_EXIT -eq 0 ]; then\n  echo \"\u2705 All $PASS_COUNT cloud integration tests passed\"\nelse\n  echo \"\u274C $FAIL_COUNT cloud integration test(s) failed, $PASS_COUNT test(s) passed\"\nfi\n\nexit $TEST_EXIT\n"
+    - name: Upload exact Cloud runtime manifest
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: desktop-cloud-manifest-flutter-${{ matrix.cloud_test_suite }}
+        path: ${{ runner.temp }}/desktop-cloud-manifest.json
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload cloud test output
+      if: always()
+      timeout-minutes: 3
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloud-test-output-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
+        path: |
+          /tmp/test_output.txt
+          /tmp/cloud-test-events.jsonl
+          ${{ runner.temp }}/flutter-prerequisites.log
+        if-no-files-found: warn
+        retention-days: 7
+    - name: Collect Docker logs
+      if: failure() || cancelled()
+      timeout-minutes: 2
+      run: |
+        docker ps -a > docker-ps-output.txt
+        docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+        docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
+        docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+        docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
+        docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
+    - name: Upload Docker logs
+      if: failure() || cancelled()
+      timeout-minutes: 3
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloud-integration-test-logs-${{ matrix.cloud_test_suite }}-${{ github.run_id }}
+        path: |
+          docker-ps-output.txt
+          appflowy_cloud_logs.txt
+          appflowy_worker_logs.txt
+          minio_logs.txt
+          gotrue_logs.txt
+          nginx_logs.txt
+        retention-days: 1
+    - name: Upload PDF cloud UI regression evidence
+      if: always() && matrix.cloud_test_suite == 'pdf_export'
+      uses: actions/upload-artifact@v4
+      with:
+        name: desktop-pdf-cloud-ui-regression-${{ github.run_id }}
+        path: ${{ runner.temp }}/pdf-cloud-ui-regression
+        if-no-files-found: warn
+        retention-days: 7
+    - name: Publish the Desktop cloud PDF UI result
+      if: always() && matrix.cloud_test_suite == 'pdf_export'
+      env:
+        GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        PDF_JOB_STATUS: ${{ job.status }}
+        PDF_GATE_OUTCOME: ${{ steps.cloud-test-run.outcome || 'skipped' }}
+      run: |
+        python3 .desktop-ci-tools/.github/scripts/desktop_pdf_status.py \
+          --workspace frontend/rust-lib --kind cloud_ui --state completed \
+          --job-status "$PDF_JOB_STATUS" --gate-outcome "$PDF_GATE_OUTCOME" \
+          --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
