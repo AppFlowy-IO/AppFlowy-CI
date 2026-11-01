@@ -605,17 +605,17 @@ jobs:
         if-no-files-found: warn
         retention-days: 7
     - name: Collect Docker logs
-      if: failure() || cancelled()
+      if: failure() || cancelled() || matrix.cloud_test_suite == 'database_rows'
       timeout-minutes: 2
       run: |
         docker ps -a > docker-ps-output.txt
-        docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-        docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
-        docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
-        docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
-        docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
+        docker logs --tail 10000 appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+        docker logs --tail 10000 appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
+        docker logs --tail 10000 appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+        docker logs --tail 10000 appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
+        docker logs --tail 10000 appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
     - name: Upload Docker logs
-      if: failure() || cancelled()
+      if: failure() || cancelled() || matrix.cloud_test_suite == 'database_rows'
       timeout-minutes: 3
       uses: actions/upload-artifact@v4
       with:
