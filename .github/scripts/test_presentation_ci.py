@@ -12,6 +12,7 @@ from unittest.mock import patch
 import yaml
 
 import presentation_acceptance_runner as acceptance
+import presentation_gateway_protocol as protocol
 import presentation_test_runner as runner
 import cloud_test_binaries as archive
 
@@ -217,7 +218,7 @@ fn relative_fixture() { assert_eq!(std::fs::read_to_string("relative-fixture").u
 
 class AcceptanceTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("cargo") and shutil.which("cc"), "requires Rust and a C compiler")
-    def test_gateway_build_uses_its_own_workspace_profile_and_executes_the_bridge(self):
+    def test_gateway_build_uses_its_own_binary_target_and_both_bridge_protocols(self):
         with tempfile.TemporaryDirectory(prefix="presentation-service-profile-") as directory:
             service = Path(directory).resolve()
             gateway = service / "appflowy-cloud-gateway"
@@ -226,80 +227,94 @@ class AcceptanceTest(unittest.TestCase):
                 '[workspace]\nmembers = ["appflowy-cloud-gateway"]\nresolver = "2"\n')
             (gateway / "Cargo.toml").write_text(
                 '[package]\nname = "appflowy-cloud-gateway"\nversion = "0.1.0"\nedition = "2021"\n')
-            (gateway / "src/lib.rs").write_text('''mod api { mod ai_usage_tests { mod bridge {
+            # Match Service: its public library has no API router; the bridge belongs to main.rs.
+            (gateway / "src/lib.rs").write_text('pub fn library_without_http_router() {}\n')
+            (gateway / "src/main.rs").write_text("""fn main() {}
+mod api { mod ai_usage_tests { mod bridge {
 #[test]
 #[ignore]
 fn presentation_gateway_contract_bridge() {
     std::fs::write("gateway-bridge-ran", "yes").unwrap();
 }
 }}}
-''')
+""")
             environment = {**os.environ, "RUSTC_WRAPPER": "", "CARGO_NET_OFFLINE": "true",
                            "CARGO_TARGET_DIR": str(service / "target")}
             local_run(["cargo", "generate-lockfile", "--offline"], cwd=service,
                       environment=environment, check=True, timeout=60)
-            profiles, gateway_binaries = {}, []
+            source = service / "cloud"
+            script = source / "script/test_presentation_gateway_contract.py"
+            script.parent.mkdir(parents=True)
+            for mode in (protocol.LEGACY, protocol.INGRESS):
+                with self.subTest(mode=mode.service_sha):
+                    script.write_text("PRESENTATION_CLOUD_BRIDGE_ADDRESS" if mode == protocol.INGRESS
+                                      else "legacy signed-accounting bridge")
+                    profiles, gateway_binaries = {}, []
 
-            def run(args, **kwargs):
-                if args[0] == "cargo" or args[0] in [str(b.path) for b in gateway_binaries]:
-                    return local_run(args, **{**kwargs, "environment": environment})
-                if "--list" in args:
-                    names = (acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else
-                             [*acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE])
-                    return completed(args, "\n".join(name + ": test" for name in names))
-                fullstack = "test_presentation_acceptance.py" in " ".join(args)
-                if "test_presentation_gateway_contract.py" in " ".join(args):
-                    binary = gateway_binaries[0]
-                    result = local_run([str(binary.path), acceptance.GATEWAY_BRIDGE,
-                                        "--exact", "--ignored"], cwd=binary.cwd,
-                                       environment=environment, capture_output=True,
-                                       check=True, timeout=30)
-                    return completed(args, result.stdout +
-                                     "API02 actual Gateway router -> HostedPresentationUsage -> Cloud HTTP -> AppResponse: PASS")
-                return completed(args, f"test result: ok. {3 if fullstack else 1} passed; 0 failed; 0 ignored;")
+                    def run(args, **kwargs):
+                        if args[0] == "cargo" or args[0] in [str(b.path) for b in gateway_binaries]:
+                            return local_run(args, **{**kwargs, "environment": environment})
+                        if "--list" in args:
+                            names = (acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else
+                                     [*acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE])
+                            return completed(args, "\n".join(name + ": test" for name in names))
+                        fullstack = "test_presentation_acceptance.py" in " ".join(args)
+                        if "test_presentation_gateway_contract.py" in " ".join(args):
+                            binary = gateway_binaries[0]
+                            result = local_run([str(binary.path), acceptance.GATEWAY_BRIDGE,
+                                                "--exact", "--ignored"], cwd=binary.cwd,
+                                               environment=environment, capture_output=True,
+                                               check=True, timeout=30)
+                            return completed(args, result.stdout + mode.completion_marker)
+                        return completed(args, f"test result: ok. {3 if fullstack else 1} passed; 0 failed; 0 ignored;")
 
-            def build(source, package, profile, builder, **kwargs):
-                profiles[package] = profile
-                if package == "appflowy-cloud-gateway":
-                    gateway_binaries.extend(runner.build_artifacts(source, package, profile,
-                                                                  builder, **kwargs))
-                    return gateway_binaries
-                return [runner.Binary(Path("/" + package), Path("/owner"))]
+                    def build(source, package, profile, builder, **kwargs):
+                        profiles[package] = profile
+                        if package == "appflowy-cloud-gateway":
+                            gateway_binaries.extend(runner.build_artifacts(source, package, profile,
+                                                                          builder, **kwargs))
+                            return gateway_binaries
+                        return [runner.Binary(Path("/" + package), Path("/owner"))]
 
-            with patch.object(acceptance, "build_artifacts", side_effect=build), \
-                    patch.object(acceptance, "check_database"):
-                acceptance.run_acceptance(Path("/cloud"), service, "ci", run)
-            self.assertEqual(profiles, {"appflowy-cloud": "ci", "appflowy-cloud-ai": "ci",
-                                        "appflowy-cloud-gateway": "test"})
-            self.assertEqual((gateway / "gateway-bridge-ran").read_text(), "yes")
+                    with patch.object(acceptance, "build_artifacts", side_effect=build), \
+                            patch.object(acceptance, "check_database"):
+                        acceptance.run_acceptance(source, service, "ci", run)
+                    self.assertEqual(profiles, {"appflowy-cloud": "ci", "appflowy-cloud-ai": "ci",
+                                                "appflowy-cloud-gateway": "test"})
+                    self.assertEqual((gateway / "gateway-bridge-ran").read_text(), "yes")
+                    (gateway / "gateway-bridge-ran").unlink()
 
     def test_missing_service_revision_or_migrations_are_failing_prerequisites(self):
         for revision in (None, "main", "a" * 40):
             with self.subTest(revision=revision), self.assertRaises(RuntimeError):
                 acceptance.prerequisites(Path("/absent-cloud"), Path("/absent-service"), revision)
 
-    def test_zero_native_fullstack_or_gateway_execution_fails(self):
-        for failed_phase in ("fullstack", "native", "gateway", None):
-            def run(args, **kwargs):
-                if "--list" in args:
-                    names = (acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else
-                             [acceptance.GATEWAY_BRIDGE] if args[0] == "/appflowy-cloud-gateway" else
-                             [*acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE])
-                    return completed(args, "\n".join(name + ": test" for name in names))
-                fullstack = "test_presentation_acceptance.py" in " ".join(args)
-                phase = "fullstack" if fullstack else "native" if args[0] == "/appflowy-cloud-ai" else "gateway"
-                count = 0 if phase == failed_phase else 3 if fullstack else 1
-                return completed(args, f"test result: ok. {count} passed; 0 failed; 0 ignored;\n"
-                                 "API02 actual Gateway router -> HostedPresentationUsage -> Cloud HTTP -> AppResponse: PASS")
-            def build(source, package, *args, **kwargs):
-                return [runner.Binary(Path("/" + package), Path("/owner"))]
-            with patch.object(acceptance, "build_artifacts", side_effect=build), \
-                    patch.object(acceptance, "check_database"):
-                if failed_phase:
-                    with self.assertRaises(RuntimeError):
-                        acceptance.run_acceptance(Path("/cloud"), Path("/service"), "ci", run)
-                else:
-                    acceptance.run_acceptance(Path("/cloud"), Path("/service"), "ci", run)
+    def test_zero_execution_and_mismatched_protocol_completion_markers_fail(self):
+        for mode in (protocol.LEGACY, protocol.INGRESS):
+            for failed_phase in ("fullstack", "native", "gateway", "marker", None):
+                with self.subTest(mode=mode.service_sha, failed_phase=failed_phase):
+                    def run(args, **kwargs):
+                        if "--list" in args:
+                            names = (acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else
+                                     [acceptance.GATEWAY_BRIDGE] if args[0] == "/appflowy-cloud-gateway" else
+                                     [*acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE])
+                            return completed(args, "\n".join(name + ": test" for name in names))
+                        fullstack = "test_presentation_acceptance.py" in " ".join(args)
+                        phase = "fullstack" if fullstack else "native" if args[0] == "/appflowy-cloud-ai" else "gateway"
+                        count = 0 if phase == failed_phase else 3 if fullstack else 1
+                        other = protocol.INGRESS if mode == protocol.LEGACY else protocol.LEGACY
+                        marker = other.completion_marker if failed_phase == "marker" else mode.completion_marker
+                        return completed(args, f"test result: ok. {count} passed; 0 failed; 0 ignored;\n{marker}")
+                    def build(source, package, *args, **kwargs):
+                        return [runner.Binary(Path("/" + package), Path("/owner"))]
+                    with patch.object(acceptance, "build_artifacts", side_effect=build), \
+                            patch.object(acceptance, "check_database"), \
+                            patch.object(acceptance, "gateway_protocol", return_value=mode):
+                        if failed_phase:
+                            with self.assertRaises(RuntimeError):
+                                acceptance.run_acceptance(Path("/cloud"), Path("/service"), "ci", run)
+                        else:
+                            acceptance.run_acceptance(Path("/cloud"), Path("/service"), "ci", run)
 
     def test_new_ignored_root_acceptance_case_requires_reviewed_execution(self):
         names = [*acceptance.ROOT_TESTS, "unowned_case"]
@@ -377,8 +392,18 @@ class PresentationWorkflowTest(unittest.TestCase):
         self.assertEqual(job["env"]["OWNED_TEST_TARGETS"], "presentation_acceptance")
         self.assertEqual(job["env"]["PRESENTATION_SERVICE_REPOSITORY"],
                          "${{ vars.PRESENTATION_SERVICE_REPOSITORY || 'AppFlowy-IO/AppFlowy-Cloud-Service' }}")
-        self.assertEqual(job["env"]["PRESENTATION_SERVICE_SHA"],
-                         "${{ vars.PRESENTATION_SERVICE_SHA || '44bcd0f16baa75d95d8d4c2ea873cd246498738a' }}")
+        self.assertEqual(job["env"]["PRESENTATION_SERVICE_SHA"], "${{ vars.PRESENTATION_SERVICE_SHA }}")
+        steps = job["steps"]
+        resolve = next(i for i, step in enumerate(steps)
+                       if step.get("name") == "Resolve the Service revision for this Cloud bridge protocol")
+        cloud = next(i for i, step in enumerate(steps) if step.get("name") == "Checkout exact Cloud source")
+        tools = next(i for i, step in enumerate(steps) if step.get("name") == "Checkout pinned CI tools")
+        service = next(i for i, step in enumerate(steps) if step.get("name") == "Checkout pinned Billing and Gateway source")
+        self.assertLess(max(cloud, tools), resolve)
+        self.assertLess(resolve, service)
+        self.assertIn('presentation_gateway_protocol.py', steps[resolve]["run"])
+        self.assertIn('--github-env "$GITHUB_ENV"', steps[resolve]["run"])
+        self.assertEqual(steps[service]["with"]["ref"], "${{ env.PRESENTATION_SERVICE_SHA }}")
         cache = next(step for step in job["steps"] if step.get("uses") == "Swatinem/rust-cache@v2")
         self.assertEqual(cache["with"]["key"], "presentation-acceptance-ci-${{ env.PRESENTATION_SERVICE_SHA }}")
         self.assertIn("presentation-acceptance", WORKFLOW["jobs"]["notify-webhook"]["needs"])

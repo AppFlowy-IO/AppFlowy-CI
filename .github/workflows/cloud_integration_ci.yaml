@@ -1435,13 +1435,13 @@ jobs:
       APPFLOWY_PRESENTATION_CI_OWNED_POSTGRES: '1'
       CARGO_BUILD_JOBS: '2'
       PRESENTATION_SERVICE_REPOSITORY: ${{ vars.PRESENTATION_SERVICE_REPOSITORY || 'AppFlowy-IO/AppFlowy-Cloud-Service' }}
-      PRESENTATION_SERVICE_SHA: ${{ vars.PRESENTATION_SERVICE_SHA || '44bcd0f16baa75d95d8d4c2ea873cd246498738a' }}
+      PRESENTATION_SERVICE_SHA: ${{ vars.PRESENTATION_SERVICE_SHA }}
     steps:
       - name: Require pinned Service acceptance prerequisites
         shell: bash
         run: |
           if [[ ! "$PRESENTATION_SERVICE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
-                ! "$PRESENTATION_SERVICE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+                ( -n "$PRESENTATION_SERVICE_SHA" && ! "$PRESENTATION_SERVICE_SHA" =~ ^[a-f0-9]{40}$ ) ]]; then
             echo '::error::Set PRESENTATION_SERVICE_REPOSITORY and PRESENTATION_SERVICE_SHA to the reviewed Billing/Gateway source. Presentation acceptance cannot skip.'
             exit 1
           fi
@@ -1458,6 +1458,10 @@ jobs:
           ref: ${{ github.sha }}
           path: ci-tools
           persist-credentials: false
+      - name: Resolve the Service revision for this Cloud bridge protocol
+        run: >-
+          python3 -B ci-tools/.github/scripts/presentation_gateway_protocol.py
+          --source "$GITHUB_WORKSPACE" --github-env "$GITHUB_ENV"
       - name: Checkout pinned Billing and Gateway source
         uses: actions/checkout@v4
         with:
