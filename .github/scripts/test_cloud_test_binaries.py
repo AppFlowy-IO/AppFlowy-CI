@@ -433,6 +433,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                          {"worker", "search", "members", "directory-self-host", "ai"})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            # The member lane delegates to the same checked-in CI helper in both phases.
+            (root / "ci-tools").symlink_to(REPO, target_is_directory=True)
             cargo = root / "cargo"
             cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             cargo.chmod(0o755)

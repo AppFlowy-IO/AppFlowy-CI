@@ -171,6 +171,14 @@ case in its nonignored inventory. Moving that feature graph to its own runner ke
 out of the Shared libraries budget without changing the hosted member-package selection, features
 or unfiltered test/doc-test coverage. Each feature graph runs once and owns a separate Cargo cache;
 these member binaries compile on their runner and do not use the root Cloud binary archive.
+The hosted Shared libraries lane has a separate 45-minute preparation step for its ordinary and
+ignored library inventories, required coverage checks, and a full-target `cargo test --no-run`.
+Its unchanged, unfiltered Cargo execution (including doctests) then gets the existing 50-minute
+deadline. One helper owns both phases' complete package selection, preserving Cargo feature
+unification. Only this lane has a 105-minute overall job budget for preparation, execution,
+setup and cleanup. In job `124147400988`, cold preparation took about 28 minutes and passing
+serial tests were still running when the combined step reached 50 minutes; this separation
+keeps that build cost out of the test deadline without reducing coverage.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.
