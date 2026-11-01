@@ -1,5 +1,5 @@
 name: PR 1546 failed-test validation
-run-name: 'PR 1546: unit shard 2, database_rows, document at 884687307e'
+run-name: 'PR 1546: unit shard 2, database_rows, document at 24cd880b64'
 'on':
   workflow_dispatch: {}
 permissions:
@@ -15,10 +15,10 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   CARGO_INCREMENTAL: '0'
   PREPARED_RUN_ID: '41284363196'
-  DESKTOP_SOURCE_SHA: 884687307ebbc4f508ff3620f13c978eb78febb7
+  DESKTOP_SOURCE_SHA: 24cd880b6405cd056fdeaed6ad20386e97702c8e
   PREPARED_DESKTOP_SHA: a51a923d421525d77ce527796796c625dd496383
 concurrency:
-  group: pr1546-failed-tests-884687307e
+  group: pr1546-failed-tests-24cd880b64
   cancel-in-progress: false
 jobs:
   unit_test:
@@ -44,7 +44,7 @@ jobs:
         repository: AppFlowy-IO/AppFlowy-Premium
         token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         ref: ${{ env.DESKTOP_SOURCE_SHA }}
-        fetch-depth: 3
+        fetch-depth: 4
     - name: Check out the exact CI runtime tools
       uses: actions/checkout@v4
       with:
@@ -136,6 +136,9 @@ jobs:
             'frontend/appflowy_flutter/integration_test/desktop/cloud/document/document_lock_page_test.dart',
             'frontend/appflowy_flutter/test/step/_remote_nested_database_board_helpers.dart',
             'frontend/appflowy_flutter/test/widget_test/database_view_switcher_test.dart',
+            'frontend/appflowy_flutter/test/step/_board_editability_test_helpers.dart',
+            'frontend/appflowy_flutter/test/step/the_user_opens_the_board_page.dart',
+            'frontend/appflowy_flutter/test/widget_test/sidebar_creation_readiness_test.dart',
         }
         allowed = overlay | {
             'frontend/.claude/skills/appflowy-bdd-test/references/helpers.md',
@@ -155,6 +158,9 @@ jobs:
             'test/widget_test/database_view_switcher_test.dart',
             'test/widget_test/open_page_in_tab_helper_test.dart',
             'integration_test/desktop/cloud/document/document_lock_page_test.dart',
+            'test/step/_board_editability_test_helpers.dart',
+            'test/step/the_user_opens_the_board_page.dart',
+            'test/widget_test/sidebar_creation_readiness_test.dart',
         ]
         for relative in files:
             path = 'frontend/appflowy_flutter/' + relative
@@ -284,7 +290,7 @@ jobs:
         repository: AppFlowy-IO/AppFlowy-Premium
         token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         ref: ${{ env.DESKTOP_SOURCE_SHA }}
-        fetch-depth: 3
+        fetch-depth: 4
     - name: Check out the exact CI runtime tools
       uses: actions/checkout@v4
       with:
@@ -533,6 +539,9 @@ jobs:
             'frontend/appflowy_flutter/integration_test/desktop/cloud/document/document_lock_page_test.dart',
             'frontend/appflowy_flutter/test/step/_remote_nested_database_board_helpers.dart',
             'frontend/appflowy_flutter/test/widget_test/database_view_switcher_test.dart',
+            'frontend/appflowy_flutter/test/step/_board_editability_test_helpers.dart',
+            'frontend/appflowy_flutter/test/step/the_user_opens_the_board_page.dart',
+            'frontend/appflowy_flutter/test/widget_test/sidebar_creation_readiness_test.dart',
         }
         allowed = overlay | {
             'frontend/.claude/skills/appflowy-bdd-test/references/helpers.md',
@@ -552,6 +561,9 @@ jobs:
             'test/widget_test/database_view_switcher_test.dart',
             'test/widget_test/open_page_in_tab_helper_test.dart',
             'integration_test/desktop/cloud/document/document_lock_page_test.dart',
+            'test/step/_board_editability_test_helpers.dart',
+            'test/step/the_user_opens_the_board_page.dart',
+            'test/widget_test/sidebar_creation_readiness_test.dart',
         ]
         for relative in files:
             path = 'frontend/appflowy_flutter/' + relative
