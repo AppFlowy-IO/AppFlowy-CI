@@ -216,6 +216,63 @@ fn relative_fixture() { assert_eq!(std::fs::read_to_string("relative-fixture").u
 
 
 class AcceptanceTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("cc"), "requires Rust and a C compiler")
+    def test_gateway_build_uses_its_own_workspace_profile_and_executes_the_bridge(self):
+        with tempfile.TemporaryDirectory(prefix="presentation-service-profile-") as directory:
+            service = Path(directory).resolve()
+            gateway = service / "appflowy-cloud-gateway"
+            (gateway / "src").mkdir(parents=True)
+            (service / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["appflowy-cloud-gateway"]\nresolver = "2"\n')
+            (gateway / "Cargo.toml").write_text(
+                '[package]\nname = "appflowy-cloud-gateway"\nversion = "0.1.0"\nedition = "2021"\n')
+            (gateway / "src/lib.rs").write_text('''mod api { mod ai_usage_tests { mod bridge {
+#[test]
+#[ignore]
+fn presentation_gateway_contract_bridge() {
+    std::fs::write("gateway-bridge-ran", "yes").unwrap();
+}
+}}}
+''')
+            environment = {**os.environ, "RUSTC_WRAPPER": "", "CARGO_NET_OFFLINE": "true",
+                           "CARGO_TARGET_DIR": str(service / "target")}
+            local_run(["cargo", "generate-lockfile", "--offline"], cwd=service,
+                      environment=environment, check=True, timeout=60)
+            profiles, gateway_binaries = {}, []
+
+            def run(args, **kwargs):
+                if args[0] == "cargo" or args[0] in [str(b.path) for b in gateway_binaries]:
+                    return local_run(args, **{**kwargs, "environment": environment})
+                if "--list" in args:
+                    names = (acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else
+                             [*acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE])
+                    return completed(args, "\n".join(name + ": test" for name in names))
+                fullstack = "test_presentation_acceptance.py" in " ".join(args)
+                if "test_presentation_gateway_contract.py" in " ".join(args):
+                    binary = gateway_binaries[0]
+                    result = local_run([str(binary.path), acceptance.GATEWAY_BRIDGE,
+                                        "--exact", "--ignored"], cwd=binary.cwd,
+                                       environment=environment, capture_output=True,
+                                       check=True, timeout=30)
+                    return completed(args, result.stdout +
+                                     "API02 actual Gateway router -> HostedPresentationUsage -> Cloud HTTP -> AppResponse: PASS")
+                return completed(args, f"test result: ok. {3 if fullstack else 1} passed; 0 failed; 0 ignored;")
+
+            def build(source, package, profile, builder, **kwargs):
+                profiles[package] = profile
+                if package == "appflowy-cloud-gateway":
+                    gateway_binaries.extend(runner.build_artifacts(source, package, profile,
+                                                                  builder, **kwargs))
+                    return gateway_binaries
+                return [runner.Binary(Path("/" + package), Path("/owner"))]
+
+            with patch.object(acceptance, "build_artifacts", side_effect=build), \
+                    patch.object(acceptance, "check_database"):
+                acceptance.run_acceptance(Path("/cloud"), service, "ci", run)
+            self.assertEqual(profiles, {"appflowy-cloud": "ci", "appflowy-cloud-ai": "ci",
+                                        "appflowy-cloud-gateway": "test"})
+            self.assertEqual((gateway / "gateway-bridge-ran").read_text(), "yes")
+
     def test_missing_service_revision_or_migrations_are_failing_prerequisites(self):
         for revision in (None, "main", "a" * 40):
             with self.subTest(revision=revision), self.assertRaises(RuntimeError):

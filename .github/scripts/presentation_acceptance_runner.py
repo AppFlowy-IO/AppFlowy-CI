@@ -65,7 +65,9 @@ def run_acceptance(source, service, profile, run):
         raise RuntimeError("Expected one presentation acceptance target")
     exact_ignored(root[0], ROOT_TESTS, run, environment, complete=True)
     cloud = build_artifacts(source, "appflowy-cloud-ai", profile, run, selection=("--lib",))
-    gateway = build_artifacts(service, "appflowy-cloud-gateway", profile, run,
+    # Service owns a separate workspace without Cloud's custom CI profile. Use Cargo's
+    # built-in test profile without injecting profiles into that reviewed checkout.
+    gateway = build_artifacts(service, "appflowy-cloud-gateway", "test", run,
                               manifest=service / "appflowy-cloud-gateway/Cargo.toml",
                               selection=("--lib",))
     if len(cloud) != 1 or len(gateway) != 1:

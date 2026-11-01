@@ -93,14 +93,25 @@ def suites(workspace: Path) -> list[Suite]:
     return selected
 
 
-def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
+def cargo_command(selected: list[Suite], targets: list[str]) -> list[str]:
+    # Mixed cdylib/rlib dependencies share unhashed artifacts. Keep package feature
+    # unification identical while building, listing, and executing individual targets.
+    command = ["cargo", "test"]
+    for package in dict.fromkeys(suite.package for suite in selected):
+        command += ["-p", package]
+    for target in targets:
+        command += ["--test", target]
+    return command
+
+
+def run_suite(suite: Suite, workspace: Path, output: Path, selected: list[Suite]) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     for name in ("result.json", "test.log", "inventory-all.log", "inventory-ignored.log"):
         (output / name).unlink(missing_ok=True)
     result = {"package": suite.package, "target": suite.target, "status": "failed",
               "exit_code": 1, "required_tests": list(suite.required)}
     try:
-        command = ["cargo", "test", "-p", suite.package, "--test", suite.target]
+        command = cargo_command(selected, [suite.target])
         environment = {**os.environ, "DISABLE_CI_TEST_LOG": "true",
                        "APPFLOWY_PDF_TEST_OUTPUT_DIR": str(output / "saved-exports")}
         (output / "saved-exports").mkdir(exist_ok=True)
@@ -140,6 +151,39 @@ def run_suite(suite: Suite, workspace: Path, output: Path) -> dict:
     return result
 
 
+def build(workspace: Path, output: Path) -> int:
+    """Compile the same source-owned targets before starting their execution budget."""
+    workspace, output = workspace.resolve(), output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    # A successful build must never be mistaken for an executed regression gate.
+    (output / "gate-result.json").unlink(missing_ok=True)
+    (output / "build.log").unlink(missing_ok=True)
+    result = {"kind": "rust_build", "status": "failed", "exit_code": 1, "suites": []}
+    try:
+        selected = suites(workspace)
+        result["desktop_sha"] = desktop_revision(workspace)
+        result["suites"] = [{"package": suite.package, "target": suite.target}
+                            for suite in selected]
+        if selected:
+            command = cargo_command(selected, [suite.target for suite in selected]) + ["--no-run"]
+            result["command"] = command
+            print("Building all PDF targets with shared package features before execution", flush=True)
+            with (output / "build.log").open("w") as log:
+                completed = subprocess.run(command, cwd=workspace,
+                                           stdout=log, stderr=subprocess.STDOUT, check=False)
+            result["exit_code"] = completed.returncode
+            if completed.returncode:
+                return completed.returncode
+        result.update(status="built" if selected else "legacy_skipped", exit_code=0)
+        return 0
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        result["error"] = str(error)
+        print(f"Desktop PDF build failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        (output / "build-result.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
 def run(workspace: Path, output: Path) -> int:
     workspace, output = workspace.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -152,7 +196,7 @@ def run(workspace: Path, output: Path) -> int:
                           reason="Desktop ref predates the PDF target")
             return 0
         result["desktop_sha"] = desktop_revision(workspace)
-        reports = [run_suite(suite, workspace, output / suite.label) for suite in selected]
+        reports = [run_suite(suite, workspace, output / suite.label, selected) for suite in selected]
         code = next((report["exit_code"] for report in reports if report["status"] != "passed"), 0)
         result.update(suites=reports, runnable_count=sum(report.get("runnable_count", 0) for report in reports),
                       status="passed" if code == 0 else "failed", exit_code=code)
@@ -169,8 +213,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--build-only", action="store_true",
+                        help="Compile all contracted targets without executing or passing the gate")
     args = parser.parse_args()
-    return run(args.workspace, args.output)
+    return (build if args.build_only else run)(args.workspace, args.output)
 
 
 if __name__ == "__main__":
