@@ -1,5 +1,5 @@
 name: PR 1546 failed-test validation
-run-name: 'PR 1546: unit shard 2, database_rows, document at a51a923d42'
+run-name: 'PR 1546: unit shard 2, database_rows, document at ae1f8ebbec'
 'on':
   workflow_dispatch: {}
 permissions:
@@ -15,9 +15,10 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   CARGO_INCREMENTAL: '0'
   PREPARED_RUN_ID: '41284363196'
-  DESKTOP_SOURCE_SHA: a51a923d421525d77ce527796796c625dd496383
+  DESKTOP_SOURCE_SHA: ae1f8ebbec4fc40b7cc63d395b87bd10027db5d0
+  PREPARED_DESKTOP_SHA: a51a923d421525d77ce527796796c625dd496383
 concurrency:
-  group: pr1546-failed-tests-a51a923d42
+  group: pr1546-failed-tests-ae1f8ebbec
   cancel-in-progress: false
 jobs:
   unit_test:
@@ -43,6 +44,7 @@ jobs:
         repository: AppFlowy-IO/AppFlowy-Premium
         token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         ref: ${{ env.DESKTOP_SOURCE_SHA }}
+        fetch-depth: 2
     - name: Check out the exact CI runtime tools
       uses: actions/checkout@v4
       with:
@@ -124,21 +126,50 @@ jobs:
         from pathlib import Path
         import subprocess
         expected = os.environ['DESKTOP_SOURCE_SHA']
+        prepared = os.environ['PREPARED_DESKTOP_SHA']
         actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
         if actual != expected:
-            raise SystemExit('Checkout differs from the source used by the prepared build')
-        files = ['integration_test/shared/common_operations.dart', 'test/shared/database_tab_bar_test_helpers.dart', 'test/step/_remote_nested_database_board_helpers.dart', 'test/step/the_user_inspects_each_created_row_template_page.dart', 'test/widget_test/dashboard_history_shortcuts_test.dart', 'test/widget_test/database_view_switcher_test.dart', 'test/widget_test/open_page_in_tab_helper_test.dart']
+            raise SystemExit('Checkout differs from the requested Desktop source')
+        subprocess.run(['git', 'merge-base', '--is-ancestor', prepared, 'HEAD'], check=True)
+        overlay = {
+            'frontend/appflowy_flutter/test/shared/database_tab_bar_test_helpers.dart',
+            'frontend/appflowy_flutter/integration_test/desktop/cloud/document/document_lock_page_test.dart',
+        }
+        allowed = overlay | {
+            'frontend/.claude/skills/appflowy-bdd-test/references/helpers.md',
+        }
+        changed = set(subprocess.check_output(
+            ['git', 'diff', '--name-only', prepared, 'HEAD'], text=True,
+        ).splitlines())
+        if changed - allowed:
+            raise SystemExit('Prepared native build inputs changed: ' + str(sorted(changed - allowed)))
+        files = [
+            'integration_test/shared/common_operations.dart',
+            'test/shared/database_tab_bar_test_helpers.dart',
+            'test/step/_remote_nested_database_board_helpers.dart',
+            'test/step/the_user_inspects_each_created_row_template_page.dart',
+            'test/widget_test/dashboard_history_shortcuts_test.dart',
+            'test/widget_test/database_view_switcher_test.dart',
+            'test/widget_test/open_page_in_tab_helper_test.dart',
+            'integration_test/desktop/cloud/document/document_lock_page_test.dart',
+        ]
+        for relative in files:
+            path = 'frontend/appflowy_flutter/' + relative
+            trusted = subprocess.check_output(['git', 'show', prepared + ':' + path])
+            if Path(path).read_bytes() != trusted:
+                raise SystemExit('Prepared artifact differs from its recorded source: ' + relative)
+        subprocess.run(['git', 'restore', '--source=HEAD', '--worktree', '--', *sorted(overlay)], check=True)
         for relative in files:
             path = 'frontend/appflowy_flutter/' + relative
             trusted = subprocess.check_output(['git', 'show', 'HEAD:' + path])
             if Path(path).read_bytes() != trusted:
-                raise SystemExit('Prepared artifact changed the tested source: ' + relative)
+                raise SystemExit('Test source differs from the requested commit: ' + relative)
         library = Path('frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so')
         with library.open('rb') as handle:
             header = handle.read(20)
         if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
             raise SystemExit('Expected the prepared AMD64 Linux FFI library')
-        print('Verified prepared artifact source', expected)
+        print('Verified unchanged native inputs from', prepared, 'with test source', expected)
         PYCODE
     - name: Run flutter pub get
       working-directory: frontend
@@ -250,6 +281,7 @@ jobs:
         repository: AppFlowy-IO/AppFlowy-Premium
         token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         ref: ${{ env.DESKTOP_SOURCE_SHA }}
+        fetch-depth: 2
     - name: Check out the exact CI runtime tools
       uses: actions/checkout@v4
       with:
@@ -488,21 +520,50 @@ jobs:
         from pathlib import Path
         import subprocess
         expected = os.environ['DESKTOP_SOURCE_SHA']
+        prepared = os.environ['PREPARED_DESKTOP_SHA']
         actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
         if actual != expected:
-            raise SystemExit('Checkout differs from the source used by the prepared build')
-        files = ['integration_test/shared/common_operations.dart', 'test/shared/database_tab_bar_test_helpers.dart', 'test/step/_remote_nested_database_board_helpers.dart', 'test/step/the_user_inspects_each_created_row_template_page.dart', 'test/widget_test/dashboard_history_shortcuts_test.dart', 'test/widget_test/database_view_switcher_test.dart', 'test/widget_test/open_page_in_tab_helper_test.dart']
+            raise SystemExit('Checkout differs from the requested Desktop source')
+        subprocess.run(['git', 'merge-base', '--is-ancestor', prepared, 'HEAD'], check=True)
+        overlay = {
+            'frontend/appflowy_flutter/test/shared/database_tab_bar_test_helpers.dart',
+            'frontend/appflowy_flutter/integration_test/desktop/cloud/document/document_lock_page_test.dart',
+        }
+        allowed = overlay | {
+            'frontend/.claude/skills/appflowy-bdd-test/references/helpers.md',
+        }
+        changed = set(subprocess.check_output(
+            ['git', 'diff', '--name-only', prepared, 'HEAD'], text=True,
+        ).splitlines())
+        if changed - allowed:
+            raise SystemExit('Prepared native build inputs changed: ' + str(sorted(changed - allowed)))
+        files = [
+            'integration_test/shared/common_operations.dart',
+            'test/shared/database_tab_bar_test_helpers.dart',
+            'test/step/_remote_nested_database_board_helpers.dart',
+            'test/step/the_user_inspects_each_created_row_template_page.dart',
+            'test/widget_test/dashboard_history_shortcuts_test.dart',
+            'test/widget_test/database_view_switcher_test.dart',
+            'test/widget_test/open_page_in_tab_helper_test.dart',
+            'integration_test/desktop/cloud/document/document_lock_page_test.dart',
+        ]
+        for relative in files:
+            path = 'frontend/appflowy_flutter/' + relative
+            trusted = subprocess.check_output(['git', 'show', prepared + ':' + path])
+            if Path(path).read_bytes() != trusted:
+                raise SystemExit('Prepared artifact differs from its recorded source: ' + relative)
+        subprocess.run(['git', 'restore', '--source=HEAD', '--worktree', '--', *sorted(overlay)], check=True)
         for relative in files:
             path = 'frontend/appflowy_flutter/' + relative
             trusted = subprocess.check_output(['git', 'show', 'HEAD:' + path])
             if Path(path).read_bytes() != trusted:
-                raise SystemExit('Prepared artifact changed the tested source: ' + relative)
+                raise SystemExit('Test source differs from the requested commit: ' + relative)
         library = Path('frontend/appflowy_flutter/linux/flutter/dart_ffi/libdart_ffi.so')
         with library.open('rb') as handle:
             header = handle.read(20)
         if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
             raise SystemExit('Expected the prepared AMD64 Linux FFI library')
-        print('Verified prepared artifact source', expected)
+        print('Verified unchanged native inputs from', prepared, 'with test source', expected)
         PYCODE
     - name: Inspect media_kit native plugin
       working-directory: frontend/appflowy_flutter
