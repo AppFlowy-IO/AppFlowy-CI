@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import time
+from urllib.parse import quote
 
 
 REPOSITORY = "AppFlowy-IO/AppFlowy-Cloud-Premium"
@@ -48,11 +49,22 @@ def find_run(request, title):
 
 def request_build(source_sha, request_id, request=api, wait=time.sleep,
                   now=time.monotonic, timeout=330 * 60, *, ci_tools_sha=None,
-                  test_features=None, test_rust_toolchain=None, pr_number=None):
+                  test_features=None, test_rust_toolchain=None, pr_number=None,
+                  image_workflow_ref="main"):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
         raise ValueError("Expected the AppFlowy-CI run ID and attempt")
+    if (
+        not isinstance(image_workflow_ref, str)
+        or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}", image_workflow_ref)
+        or re.fullmatch(r"[a-f0-9]{40}", image_workflow_ref)
+        or subprocess.run(
+            ["git", "check-ref-format", "refs/heads/" + image_workflow_ref],
+            capture_output=True, check=False,
+        ).returncode
+    ):
+        raise ValueError("Expected a Cloud image-builder branch or tag name")
     inputs = {"source_sha": source_sha, "request_id": request_id}
     if pr_number:
         if not re.fullmatch(r"[1-9][0-9]*", pr_number):
@@ -69,6 +81,16 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         inputs.update(ci_tools_sha=ci_tools_sha, test_features=test_features,
                       test_rust_toolchain=test_rust_toolchain)
         required_artifacts.add(f"cloud-test-binaries-{source_sha}")
+    # Main remains the trusted default for ordinary requests. A manual pre-merge
+    # override must use the tested Cloud commit for both tools and application.
+    workflow_sha = None
+    if image_workflow_ref != "main":
+        revision = request(
+            "GET", f"repos/{REPOSITORY}/commits/{quote(image_workflow_ref, safe='')}",
+        )
+        workflow_sha = revision.get("sha")
+        if workflow_sha != source_sha:
+            raise ValueError("The image-builder override must identify the tested Cloud commit")
     title = f"CI images {request_id} ({source_sha})"
     if pr_number:
         title += f" [PR #{pr_number}]"
@@ -80,7 +102,7 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
         if run is None:
             submitted = True
             request("POST", f"{API_ROOT}/workflows/{WORKFLOW}/dispatches", {
-                "ref": "main", "inputs": inputs,
+                "ref": image_workflow_ref, "inputs": inputs,
             })
         discovery_deadline = now() + 180
         while run is None and now() < discovery_deadline:
@@ -89,6 +111,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
                 wait(5)
         if run is None:
             raise TimeoutError("GitHub did not expose the dispatched image build within 3 minutes")
+        if workflow_sha is not None and run.get("head_sha") != workflow_sha:
+            raise RuntimeError("Dispatched image-builder revision differs from the tested Cloud commit")
 
         run_id = int(run["id"])
         url = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
@@ -97,6 +121,7 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
             description = "Images and compiled Cloud tests" if ci_tools_sha else "Images"
             pr_label = f" for PR #{pr_number}" if pr_number else ""
             print(f"{description}{pr_label} for {source_sha}: [self-hosted build]({url}).", file=summary)
+            print(f"Image-builder workflow: `{image_workflow_ref}` at `{run['head_sha']}`.", file=summary)
         last_status = None
         last_report = started
         while True:
@@ -120,6 +145,8 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
             raise RuntimeError(f"Private build is missing artifacts: {sorted(required_artifacts - available)}")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"run_id={run_id}", file=output)
+            print(f"image_workflow_ref={image_workflow_ref}", file=output)
+            print(f"image_workflow_sha={run['head_sha']}", file=output)
         return run_id
     finally:
         # Best-effort cancellation of this request only, including an ambiguous
@@ -147,6 +174,7 @@ def main():
         test_features=os.environ.get("CLOUD_TEST_FEATURES"),
         test_rust_toolchain=os.environ.get("RUST_TOOLCHAIN"),
         pr_number=os.environ.get("PR_NUMBER") or None,
+        image_workflow_ref=os.environ.get("IMAGE_WORKFLOW_REF") or "main",
     )
 
 
