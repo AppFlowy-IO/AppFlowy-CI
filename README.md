@@ -93,6 +93,19 @@ Cloud's CI image enables test features, and CI images use the `latest-amd64` art
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
 
+Cloud sources with `ci/gateway-fixture.json` also require `companion-gateway-image` from that same
+private build. Their source-owned verifier checks its Service revision, image tag and architecture,
+then loads the pinned Gateway and prevents a published-image refresh from replacing it. This
+artifact stays outside `docker-image-*`, whose exact Cloud revision contract also serves Desktop.
+Sources without the manifest retain the published Gateway refresh.
+
+Before the companion builder reaches Cloud main, manually validate both branches with
+`cloud_integration_ci.yaml --ref <ci-branch> -f pr_ref=<Cloud-SHA> -f pr_number=<Cloud-PR>
+-f image_workflow_ref=<Cloud-branch>`. The explicit builder branch or tag must resolve to that
+same Cloud SHA; the request rejects a moved branch and records the actual builder revision.
+Automatic requests keep the builder on main. Manual runs on a CI branch have separate concurrency
+from automatic runs for the same Cloud PR; image request IDs and cleanup correlation stay intact.
+
 Automatic cleanup covers only `cloud_integration_ci.yaml` and its private laptop builds.
 The integration run title records the Cloud PR and parent run attempt. Closing or merging that PR,
 or cancelling its parent webhook, cancels the integration run and its image/test build. Cancelling the

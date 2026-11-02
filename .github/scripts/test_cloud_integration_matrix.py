@@ -9,6 +9,8 @@ import unittest
 
 import yaml
 
+from test_pr_cleanup_workflows import event_context, render_expression
+
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/cloud_integration_ci.yaml"
@@ -657,6 +659,131 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         capture_output=True, text=True, check=False,
       )
       return result, calls.read_text() if calls.exists() else ""
+
+
+class GatewayFixtureWorkflowTests(unittest.TestCase):
+  @classmethod
+  def setUpClass(cls):
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    cls.steps = workflow["jobs"]["test"]["steps"]
+
+  def step(self, name):
+    return next(step for step in self.steps if step.get("name") == name)
+
+  def test_companion_uses_same_private_build_without_changing_cloud_image_set(self):
+    download = self.step("Download pinned Gateway fixture")
+    load = self.step("Load and verify pinned Gateway fixture")
+    condition = "hashFiles('ci/gateway-fixture.json') != ''"
+    self.assertEqual(download["if"], condition)
+    self.assertEqual(load["if"], condition)
+    self.assertEqual(download["with"], {
+      "name": "companion-gateway-image",
+      "path": "${{ runner.temp }}/gateway-fixture",
+      "repository": "AppFlowy-IO/AppFlowy-Cloud-Premium",
+      "run-id": "${{ needs.build_self_hosted.outputs.run_id }}",
+      "github-token": "${{ secrets.ADMIN_GITHUB_TOKEN }}",
+    })
+    self.assertEqual(self.step("Download Docker Images")["with"]["pattern"], "docker-image-*")
+    self.assertLess(self.steps.index(download), self.steps.index(load))
+    self.assertLess(self.steps.index(load), self.steps.index(self.step("Run Docker-Compose")))
+
+  def test_manual_builder_override_is_explicit_and_automatic_requests_keep_main(self):
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    # PyYAML treats the unquoted YAML1.1 key `on` as True.
+    triggers = workflow.get("on", workflow.get(True))
+    self.assertEqual(triggers["workflow_dispatch"]["inputs"]["image_workflow_ref"]["default"], "main")
+    request = next(step for step in workflow["jobs"]["build_self_hosted"]["steps"]
+                   if step.get("id") == "images")
+    self.assertEqual(request["env"]["IMAGE_WORKFLOW_REF"],
+                     "${{ github.event_name == 'workflow_dispatch' && inputs.image_workflow_ref || 'main' }}")
+    group = workflow["concurrency"]["group"]
+    self.assertIn("github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'", group)
+    self.assertIn("github.event.client_payload.pr_number || inputs.pr_number || github.run_id", group)
+    def render(*, manual=False, branch="main", source="a" * 40):
+      context = event_context(workflow, event="workflow_dispatch" if manual else "repository_dispatch",
+                              inputs={"pr_number": "1523", "pr_ref": source} if manual else None,
+                              payload=None if manual else {"event_type": "pr_sync", "pr_number": "1523"},
+                              ref="refs/heads/" + branch)
+      return render_expression(group, context).lower()
+    self.assertNotEqual(render(manual=True, branch="ci-import"), render())
+    self.assertNotEqual(render(manual=True, branch="ci-import"),
+                        render(manual=True, branch="ci-other"))
+    self.assertEqual(render(manual=True, branch="ci-import"),
+                     render(manual=True, branch="ci-import", source="b" * 40))
+
+  def run_gateway_steps(self, *, manifest, helper_exit=0, inherited_policy="always", load=False):
+    with tempfile.TemporaryDirectory(prefix="cloud-gateway-handoff-") as directory:
+      root = Path(directory)
+      calls = root / "calls"
+      environment = root / "environment"
+      if manifest:
+        (root / "ci").mkdir()
+        (root / "ci/gateway-fixture.json").write_text(
+          '{"schema_version":1,"service_sha":"' + "a" * 40 + '"}\n'
+        )
+      (root / "script/ci").mkdir(parents=True)
+      (root / "script/ci/gateway_fixture.py").write_text(textwrap.dedent('''
+        import json, os, sys
+        from pathlib import Path
+        with open(os.environ["CALL_LOG"], "a") as calls:
+          calls.write("helper:" + json.dumps(sys.argv[1:]) + "\\n")
+        sys.exit(int(os.environ["HELPER_EXIT"]))
+      '''))
+      if load:
+        command = self.step("Load and verify pinned Gateway fixture")["run"]
+      else:
+        command = self.step("Run Docker-Compose")["run"]
+        command = command.replace("${{ matrix.test_service }}", "appflowy_cloud_workspace_core")
+        command = command.replace("${{ matrix.fake_vision == true }}", "false")
+      mocks = r'''
+        sudo() { printf 'sudo:%s\n' "$*" >> "$CALL_LOG"; }
+        docker() {
+          printf 'docker:%s\n' "$*" >> "$CALL_LOG"
+          if [[ "$*" == "compose -f docker-compose-ci.yml config --services" ]]; then
+            printf 'appflowy_gateway\n'
+          fi
+        }
+      '''
+      result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", mocks + command], cwd=root,
+        env={**os.environ, "CALL_LOG": str(calls), "HELPER_EXIT": str(helper_exit),
+             "RUNNER_TEMP": str(root), "GITHUB_ENV": str(environment),
+             "AI_ON_OLLAMA": "false", "COMPOSE_PROFILES": "",
+             "APPFLOWY_CLOUD_GATEWAY_PULL_POLICY": inherited_policy},
+        capture_output=True, text=True, timeout=5,
+      )
+      return result, calls.read_text().splitlines() if calls.exists() else [], root
+
+  def test_load_delegates_artifact_verification_to_the_cloud_source(self):
+    result, calls, root = self.run_gateway_steps(manifest=True, load=True)
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertEqual(calls, [
+      'helper:["load", "--artifact-directory", "' + str(root / "gateway-fixture")
+      + '", "--github-env", "' + str(root / "environment") + '"]',
+    ])
+    result, _, _ = self.run_gateway_steps(manifest=True, load=True, helper_exit=23)
+    self.assertEqual(result.returncode, 23, "Archive verification failures must fail the lane")
+
+  def test_pinned_companion_is_checked_before_startup_without_pulling_over_it(self):
+    result, calls, _ = self.run_gateway_steps(manifest=True, inherited_policy="never")
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertIn('helper:["check-environment"]', calls)
+    self.assertFalse(any("pull appflowy_gateway" in call for call in calls))
+    startup = calls.index("docker:compose -f docker-compose-ci.yml up -d --pull=missing")
+    self.assertLess(calls.index('helper:["check-environment"]'), startup)
+
+  def test_failed_pinned_environment_stops_before_compose_startup(self):
+    result, calls, _ = self.run_gateway_steps(manifest=True, helper_exit=24)
+    self.assertEqual(result.returncode, 24, result.stdout + result.stderr)
+    self.assertFalse(any(call.startswith("docker:") for call in calls))
+
+  def test_legacy_source_still_refreshes_gateway_even_with_inherited_never_policy(self):
+    result, calls, _ = self.run_gateway_steps(manifest=False, inherited_policy="never")
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertNotIn('helper:["check-environment"]', calls)
+    pull = calls.index("docker:compose -f docker-compose-ci.yml pull appflowy_gateway")
+    startup = calls.index("docker:compose -f docker-compose-ci.yml up -d --pull=missing")
+    self.assertLess(pull, startup)
 
 
 if __name__ == "__main__":

@@ -22,9 +22,14 @@ on:
         description: Execution identifier (optional, forwarded to webhook)
         required: false
         type: string
+      image_workflow_ref:
+        description: Cloud image-builder branch or tag (non-main must match pr_ref's commit)
+        required: false
+        type: string
+        default: main
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && format('manual-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -114,6 +119,7 @@ jobs:
           SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
           CI_TOOLS_SHA: ${{ github.sha }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
+          IMAGE_WORKFLOW_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.image_workflow_ref || 'main' }}
         run: python3 .github/scripts/request_image_build.py
 
   # The matrices below select test modules and standalone targets through
@@ -734,6 +740,24 @@ jobs:
       - name: Remove downloaded image archives
         run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz appflowy_ai.tar.gz
 
+      # Keep companion images outside docker-image-*: Desktop consumers verify that
+      # every archive in that set belongs to the requested Cloud revision.
+      - name: Download pinned Gateway fixture
+        if: hashFiles('ci/gateway-fixture.json') != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: companion-gateway-image
+          path: ${{ runner.temp }}/gateway-fixture
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.build_self_hosted.outputs.run_id }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+
+      - name: Load and verify pinned Gateway fixture
+        if: hashFiles('ci/gateway-fixture.json') != ''
+        run: |
+          python3 script/ci/gateway_fixture.py load \
+            --artifact-directory "$RUNNER_TEMP/gateway-fixture" --github-env "$GITHUB_ENV"
+
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
 
@@ -897,9 +921,11 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          # Gateway is released by Cloud Service, like Billing. Refresh its published tag
-          # explicitly because --pull=missing below protects the exact Cloud image artifacts.
-          if docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
+          # The source-owned verifier fences the companion tag before Compose starts.
+          # Older Cloud sources retain their published Gateway refresh.
+          if [[ -f ci/gateway-fixture.json ]]; then
+            python3 script/ci/gateway_fixture.py check-environment
+          elif docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
             docker compose -f docker-compose-ci.yml pull appflowy_gateway
           fi
           echo "Starting services (using locally built images, pulling only missing ones)..."

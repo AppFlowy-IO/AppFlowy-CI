@@ -13,6 +13,7 @@ import request_image_build as build
 
 
 SHA = "a" * 40
+MAIN_WORKFLOW_SHA = "c" * 40
 REQUEST_ID = "1234-2"
 
 
@@ -23,6 +24,8 @@ class FakeGitHub:
         self.conclusion = "success"
         self.artifacts = [{"name": name, "expired": False} for name in build.ARTIFACTS]
         self.elapsed = 0
+        self.override_sha = SHA
+        self.dispatched_sha = None
 
     def request(self, method, path, payload=None):
         self.calls.append((method, path, payload))
@@ -32,6 +35,9 @@ class FakeGitHub:
             self.run = {
                 "id": 42, "status": "queued", "conclusion": None,
                 "display_title": f"CI images {REQUEST_ID} ({SHA}){suffix}",
+                "head_sha": self.dispatched_sha or (
+                    MAIN_WORKFLOW_SHA if (payload or {}).get("ref", "main") == "main" else self.override_sha
+                ),
             }
         elif method == "POST" and path.endswith("/cancel"):
             return None
@@ -44,6 +50,8 @@ class FakeGitHub:
             self.run["status"] = "completed" if self.conclusion else "in_progress"
             self.run["conclusion"] = self.conclusion
             return dict(self.run)
+        elif path.startswith(f"repos/{build.REPOSITORY}/commits/"):
+            return {"sha": self.override_sha}
         else:
             raise AssertionError(f"Unexpected API call: {method} {path}")
 
@@ -76,11 +84,64 @@ class RequestTests(unittest.TestCase):
 
     def test_dispatches_pinned_revision_and_ignores_other_requests(self):
         self.assertEqual(self.request(), 42)
-        self.assertEqual(self.output.read_text(), "run_id=42\n")
+        self.assertEqual(self.output.read_text(), (
+            "run_id=42\nimage_workflow_ref=main\n"
+            f"image_workflow_sha={MAIN_WORKFLOW_SHA}\n"
+        ))
         self.assertEqual(len(self.github.writes), 1)
         self.assertEqual(self.github.writes[0][2], {
             "ref": "main", "inputs": {"source_sha": SHA, "request_id": REQUEST_ID},
         })
+
+    def test_manual_builder_override_uses_same_source_commit_and_records_provenance(self):
+        self.assertEqual(self.request(image_workflow_ref="fix/workspace-import-publication"), 42)
+        self.assertEqual(self.github.writes[0][2], {
+            "ref": "fix/workspace-import-publication",
+            "inputs": {"source_sha": SHA, "request_id": REQUEST_ID},
+        })
+        self.assertIn(("GET", f"repos/{build.REPOSITORY}/commits/fix%2Fworkspace-import-publication", None),
+                      self.github.calls)
+        self.assertEqual(self.output.read_text(), (
+            "run_id=42\nimage_workflow_ref=fix/workspace-import-publication\n"
+            f"image_workflow_sha={SHA}\n"
+        ))
+        summary = Path(os.environ["GITHUB_STEP_SUMMARY"]).read_text()
+        self.assertIn(f"`fix/workspace-import-publication` at `{SHA}`", summary)
+        self.assertEqual(self.github.run["display_title"], f"CI images {REQUEST_ID} ({SHA})")
+
+    def test_builder_override_must_resolve_to_the_tested_cloud_commit_before_dispatch(self):
+        self.github.override_sha = "b" * 40
+        with self.assertRaisesRegex(ValueError, "tested Cloud commit"):
+            self.request(image_workflow_ref="fix/other-source")
+        self.assertFalse(self.github.writes)
+        self.assertFalse(self.output.exists())
+
+    def test_override_branch_movement_rejects_and_cancels_only_its_correlated_build(self):
+        self.github.dispatched_sha = "b" * 40
+        with self.assertRaisesRegex(RuntimeError, "revision differs"):
+            self.request(image_workflow_ref="fix/workspace-import-publication")
+        self.assertEqual(self.github.writes[-1][:2], ("POST", f"{build.API_ROOT}/runs/42/cancel"))
+        self.assertFalse(self.output.exists())
+
+    def test_invalid_builder_refs_cannot_read_or_dispatch(self):
+        for reference in ("", "../main", "fix//import", "fix/import.lock", "main\nother",
+                          "https://other.example/main", "-option", SHA):
+            with self.subTest(reference=reference), self.assertRaises(ValueError):
+                self.request(image_workflow_ref=reference)
+        self.assertFalse(self.github.calls)
+
+    @patch.object(build, "request_build")
+    def test_legacy_entrypoint_defaults_to_main_and_forwards_explicit_environment(self, request):
+        with patch.object(build.signal, "signal"), patch.dict(os.environ, {
+            "SOURCE_SHA": SHA, "GITHUB_RUN_ID": "1234", "GITHUB_RUN_ATTEMPT": "2",
+            "IMAGE_WORKFLOW_REF": "",
+        }, clear=True):
+            build.main()
+            self.assertEqual(request.call_args.kwargs["image_workflow_ref"], "main")
+            os.environ["IMAGE_WORKFLOW_REF"] = "fix/workspace-import-publication"
+            build.main()
+            self.assertEqual(request.call_args.kwargs["image_workflow_ref"],
+                             "fix/workspace-import-publication")
 
     def test_same_private_run_builds_images_and_pinned_test_binaries(self):
         tools = {"ci_tools_sha": "b" * 40, "test_features": "ai-test-enabled,sync-v2,ci-test",
