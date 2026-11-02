@@ -30,6 +30,9 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: true
   # Disable incremental compilation in CI (faster clean builds)
   CARGO_INCREMENTAL: "0"
+  # Native contracts share runner disk with the full Docker stack.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   setup:
@@ -168,6 +171,8 @@ jobs:
           for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
             docker load < "${service}.tar.gz"
             docker tag "appflowyinc/${service}_premium:latest" "appflowyinc/${service}_premium:${{ env.CLOUD_VERSION }}"
+            # The loaded image is sufficient; release its consumed download before compilation.
+            rm -- "${service}.tar.gz"
           done
 
       - name: Copy and rename deploy.env to .env

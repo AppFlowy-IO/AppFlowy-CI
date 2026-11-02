@@ -280,7 +280,14 @@ writer role, and compiler cache hits/misses. GitHub cache storage is shared with
 check repository Actions cache usage if snapshots are repeatedly evicted. A new cache group or
 dependency/toolchain change needs a successful writer run before later runs can reuse its snapshot.
 
-Run the workflow regression checks with Python 3, PyYAML, and OpenSSL installed:
+Commercial integration jobs also disable dev/test debug symbols. After loading and tagging each
+downloaded Docker image, they remove that image's compressed archive before compiling the native
+self-host presentation and commercial suites. The loaded images and running fixtures remain
+available; retaining both copies can exhaust hosted-runner disk before any contract executes.
+
+Run the workflow regression checks on Linux with Python 3.12 or newer, PyYAML, OpenSSL, Git,
+`jq`, a C compiler, and Rust with Cargo and `rustfmt`. The binary-archive fixtures execute native
+Linux test binaries; Ubuntu 24.04 matches the hosted CI runtime.
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts
@@ -312,7 +319,7 @@ The dashboard job validates Prometheus queries and both CI Compose cache configu
 
 Cloud refs with `script/cache_test_phases.json` must advertise schema version 1 and exactly the
 `cache` and `permission` phases. CI runs them on separate runners with separate Cargo caches and
-the existing 120-minute limit per phase. The source runner owns each phase's selections and package
+the 180-minute limit per phase. The source runner owns each phase's selections and package
 feature graphs; this avoids the combined lane's observed two-hour compilation timeout without
 unifying Cargo features. Both matrix results feed the required `cache-contracts` result, and one
 failure does not cancel its sibling. Full-run completion within the bound still needs CI evidence.
