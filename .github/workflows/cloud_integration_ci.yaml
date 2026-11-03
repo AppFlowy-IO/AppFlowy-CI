@@ -462,9 +462,10 @@ jobs:
               workspace::published_data_test
           # Database history can leave a large indexing backlog. Its index test
           # runs first in the separate search topic, before other indexing work.
+          # `automation` drives row edits through the database pipeline to the change feed.
           - test_service: "appflowy_cloud_database"
             topic: "Databases"
-            test_modules: "database"
+            test_modules: "database automation"
             test_skips: >-
               database::database_index_test
               database::database_history_test::search_restore
@@ -826,6 +827,9 @@ jobs:
           echo 'APPFLOWY_INVITE_MIN_WORKSPACE_AGE_SECS=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_HOUR=0' >> .env
           echo 'APPFLOWY_INVITE_RATE_LIMIT_PER_DAY=0' >> .env
+          # Cloud, Worker, MCP and the automation tests read this one value: the tests wait two
+          # intervals for a new watch to reach every process, 1 s instead of the default 10 s.
+          echo 'APPFLOWY_AUTOMATION_FEED_WATCHED_REFRESH_MS=500' >> .env
 
           if [[ "$AI_ON_OLLAMA" == true ]]; then
             # Ollama, which "Point the AI at Ollama" configures, is this lane's only AI provider.
