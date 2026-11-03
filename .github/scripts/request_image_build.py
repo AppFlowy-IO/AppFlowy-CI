@@ -50,7 +50,7 @@ def find_run(request, title):
 def request_build(source_sha, request_id, request=api, wait=time.sleep,
                   now=time.monotonic, timeout=330 * 60, *, ci_tools_sha=None,
                   test_features=None, test_rust_toolchain=None, pr_number=None,
-                  image_workflow_ref="main"):
+                  image_workflow_ref="main", build_gateway=False):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
@@ -71,6 +71,11 @@ def request_build(source_sha, request_id, request=api, wait=time.sleep,
             raise ValueError("Expected a positive Cloud pull request number")
         inputs["pr_number"] = pr_number
     required_artifacts = set(ARTIFACTS)
+    if type(build_gateway) is not bool:
+        raise ValueError("Expected a boolean Gateway source-build selection")
+    if build_gateway:
+        inputs["build_gateway"] = "true"
+        required_artifacts.add("companion-gateway-image")
     if ci_tools_sha:
         if not re.fullmatch(r"[a-f0-9]{40}", ci_tools_sha):
             raise ValueError("Expected an immutable AppFlowy-CI tools commit")
@@ -175,6 +180,7 @@ def main():
         test_rust_toolchain=os.environ.get("RUST_TOOLCHAIN"),
         pr_number=os.environ.get("PR_NUMBER") or None,
         image_workflow_ref=os.environ.get("IMAGE_WORKFLOW_REF") or "main",
+        build_gateway=os.environ.get("BUILD_GATEWAY_FROM_SOURCE", "false") == "true",
     )
 
 

@@ -98,15 +98,23 @@ Cloud's CI image enables test features, and CI images use the `latest-amd64` art
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
 
-Cloud sources with `ci/gateway-fixture.json` also require `companion-gateway-image` from that same
-private build. Their source-owned verifier checks its Service revision, image tag and architecture,
-then loads the pinned Gateway and prevents a published-image refresh from replacing it. This
-artifact stays outside `docker-image-*`, whose exact Cloud revision contract also serves Desktop.
-Sources without the manifest retain the published Gateway refresh.
+Ordinary hosted integration uses `appflowyinc/appflowy_cloud_gateway:latest-amd64` and refreshes
+it before Compose startup, even when the tested source contains `ci/gateway-fixture.json`.
+Gateway is omitted from the private builder's default matrix, leaving its runner/compiler capacity
+for Cloud services and shared test binaries.
+
+Manually set `build_gateway=true` for a coordinated source test. This forwards the opt-in to the
+private builder and requires `companion-gateway-image` from that same run. The source-owned
+verifier checks its immutable Service pin, tag and AMD64 architecture before loading it, and
+prevents a published refresh from replacing it. Missing or mismatched companions fail startup.
+The artifact remains outside `docker-image-*`, whose Cloud revision contract also serves Desktop.
+
+Merge this consumer before the builder change: published mode works with older builders, ignoring
+their extra Gateway artifact. Explicit source mode requires the updated private workflow.
 
 Before the companion builder reaches Cloud main, manually validate both branches with
 `cloud_integration_ci.yaml --ref <ci-branch> -f pr_ref=<Cloud-SHA> -f pr_number=<Cloud-PR>
--f image_workflow_ref=<Cloud-branch>`. The explicit builder branch or tag must resolve to that
+-f image_workflow_ref=<Cloud-branch> -f build_gateway=true`. The explicit builder branch or tag must resolve to that
 same Cloud SHA; the request rejects a moved branch and records the actual builder revision.
 Automatic requests keep the builder on main. Manual runs on a CI branch have separate concurrency
 from automatic runs for the same Cloud PR; image request IDs and cleanup correlation stay intact.

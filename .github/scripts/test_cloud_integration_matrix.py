@@ -673,7 +673,7 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
   def test_companion_uses_same_private_build_without_changing_cloud_image_set(self):
     download = self.step("Download pinned Gateway fixture")
     load = self.step("Load and verify pinned Gateway fixture")
-    condition = "hashFiles('ci/gateway-fixture.json') != ''"
+    condition = "env.BUILD_GATEWAY_FROM_SOURCE == 'true' && hashFiles('ci/gateway-fixture.json') != ''"
     self.assertEqual(download["if"], condition)
     self.assertEqual(load["if"], condition)
     self.assertEqual(download["with"], {
@@ -686,6 +686,21 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
     self.assertEqual(self.step("Download Docker Images")["with"]["pattern"], "docker-image-*")
     self.assertLess(self.steps.index(download), self.steps.index(load))
     self.assertLess(self.steps.index(load), self.steps.index(self.step("Run Docker-Compose")))
+
+  def test_published_image_is_selected_before_startup_and_source_build_is_opt_in(self):
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    self.assertIs(inputs["build_gateway"]["default"], False)
+    self.assertIn("inputs.build_gateway == true", workflow["env"]["BUILD_GATEWAY_FROM_SOURCE"])
+    published = self.step("Select published Gateway image")
+    self.assertEqual(published["if"], "env.BUILD_GATEWAY_FROM_SOURCE != 'true'")
+    self.assertLess(self.steps.index(published), self.steps.index(self.step("Run Docker-Compose")))
+    with tempfile.TemporaryDirectory() as directory:
+      output = Path(directory) / "env"
+      subprocess.run(["bash", "-e", "-o", "pipefail", "-c", published["run"]], check=True,
+                     env={"PATH": os.environ["PATH"], "GITHUB_ENV": str(output)})
+      self.assertEqual(output.read_text(), "APPFLOWY_CLOUD_GATEWAY_VERSION=latest-amd64\n"
+                       "APPFLOWY_CLOUD_GATEWAY_PULL_POLICY=always\n")
 
   def test_manual_builder_override_is_explicit_and_automatic_requests_keep_main(self):
     workflow = yaml.safe_load(WORKFLOW.read_text())
@@ -711,7 +726,7 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
     self.assertEqual(render(manual=True, branch="ci-import"),
                      render(manual=True, branch="ci-import", source="b" * 40))
 
-  def run_gateway_steps(self, *, manifest, helper_exit=0, inherited_policy="always", load=False):
+  def run_gateway_steps(self, *, manifest, helper_exit=0, inherited_policy="always", load=False, source_build=False):
     with tempfile.TemporaryDirectory(prefix="cloud-gateway-handoff-") as directory:
       root = Path(directory)
       calls = root / "calls"
@@ -749,7 +764,8 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
         env={**os.environ, "CALL_LOG": str(calls), "HELPER_EXIT": str(helper_exit),
              "RUNNER_TEMP": str(root), "GITHUB_ENV": str(environment),
              "AI_ON_OLLAMA": "false", "COMPOSE_PROFILES": "",
-             "APPFLOWY_CLOUD_GATEWAY_PULL_POLICY": inherited_policy},
+             "APPFLOWY_CLOUD_GATEWAY_PULL_POLICY": inherited_policy,
+             "BUILD_GATEWAY_FROM_SOURCE": str(source_build).lower()},
         capture_output=True, text=True, timeout=5,
       )
       return result, calls.read_text().splitlines() if calls.exists() else [], root
@@ -765,7 +781,7 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
     self.assertEqual(result.returncode, 23, "Archive verification failures must fail the lane")
 
   def test_pinned_companion_is_checked_before_startup_without_pulling_over_it(self):
-    result, calls, _ = self.run_gateway_steps(manifest=True, inherited_policy="never")
+    result, calls, _ = self.run_gateway_steps(manifest=True, inherited_policy="never", source_build=True)
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertIn('helper:["check-environment"]', calls)
     self.assertFalse(any("pull appflowy_gateway" in call for call in calls))
@@ -773,12 +789,12 @@ class GatewayFixtureWorkflowTests(unittest.TestCase):
     self.assertLess(calls.index('helper:["check-environment"]'), startup)
 
   def test_failed_pinned_environment_stops_before_compose_startup(self):
-    result, calls, _ = self.run_gateway_steps(manifest=True, helper_exit=24)
+    result, calls, _ = self.run_gateway_steps(manifest=True, helper_exit=24, source_build=True)
     self.assertEqual(result.returncode, 24, result.stdout + result.stderr)
     self.assertFalse(any(call.startswith("docker:") for call in calls))
 
-  def test_legacy_source_still_refreshes_gateway_even_with_inherited_never_policy(self):
-    result, calls, _ = self.run_gateway_steps(manifest=False, inherited_policy="never")
+  def test_published_default_refreshes_gateway_even_with_source_pin_and_never_policy(self):
+    result, calls, _ = self.run_gateway_steps(manifest=True, inherited_policy="never")
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertNotIn('helper:["check-environment"]', calls)
     pull = calls.index("docker:compose -f docker-compose-ci.yml pull appflowy_gateway")

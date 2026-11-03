@@ -93,6 +93,20 @@ class RequestTests(unittest.TestCase):
             "ref": "main", "inputs": {"source_sha": SHA, "request_id": REQUEST_ID},
         })
 
+    def test_explicit_gateway_build_is_forwarded_and_requires_companion(self):
+        self.github.artifacts.append({"name": "companion-gateway-image", "expired": False})
+        self.assertEqual(self.request(build_gateway=True), 42)
+        self.assertEqual(self.github.writes[0][2]["inputs"]["build_gateway"], "true")
+
+    def test_explicit_gateway_build_cannot_succeed_without_companion(self):
+        with self.assertRaisesRegex(RuntimeError, "companion-gateway-image"):
+            self.request(build_gateway=True)
+
+    def test_gateway_source_selection_must_be_boolean(self):
+        with self.assertRaises(ValueError):
+            self.request(build_gateway="false")
+        self.assertFalse(self.github.calls)
+
     def test_manual_builder_override_uses_same_source_commit_and_records_provenance(self):
         self.assertEqual(self.request(image_workflow_ref="fix/workspace-import-publication"), 42)
         self.assertEqual(self.github.writes[0][2], {
@@ -138,10 +152,13 @@ class RequestTests(unittest.TestCase):
         }, clear=True):
             build.main()
             self.assertEqual(request.call_args.kwargs["image_workflow_ref"], "main")
+            self.assertIs(request.call_args.kwargs["build_gateway"], False)
+            os.environ["BUILD_GATEWAY_FROM_SOURCE"] = "true"
             os.environ["IMAGE_WORKFLOW_REF"] = "fix/workspace-import-publication"
             build.main()
             self.assertEqual(request.call_args.kwargs["image_workflow_ref"],
                              "fix/workspace-import-publication")
+            self.assertIs(request.call_args.kwargs["build_gateway"], True)
 
     def test_same_private_run_builds_images_and_pinned_test_binaries(self):
         tools = {"ci_tools_sha": "b" * 40, "test_features": "ai-test-enabled,sync-v2,ci-test",

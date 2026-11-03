@@ -22,6 +22,11 @@ on:
         description: Execution identifier (optional, forwarded to webhook)
         required: false
         type: string
+      build_gateway:
+        description: Build the pinned Gateway from source (default reuses latest-amd64)
+        required: false
+        type: boolean
+        default: false
       image_workflow_ref:
         description: Cloud image-builder branch or tag (non-main must match pr_ref's commit)
         required: false
@@ -33,6 +38,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  BUILD_GATEWAY_FROM_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.build_gateway == true && 'true' || 'false' }}
   LOCALHOST_URL: http://localhost
   LOCALHOST_WS: ws://localhost/ws/v1
   LOCALHOST_WS_V2: ws://localhost/ws/v2
@@ -743,7 +749,7 @@ jobs:
       # Keep companion images outside docker-image-*: Desktop consumers verify that
       # every archive in that set belongs to the requested Cloud revision.
       - name: Download pinned Gateway fixture
-        if: hashFiles('ci/gateway-fixture.json') != ''
+        if: env.BUILD_GATEWAY_FROM_SOURCE == 'true' && hashFiles('ci/gateway-fixture.json') != ''
         uses: actions/download-artifact@v4
         with:
           name: companion-gateway-image
@@ -753,10 +759,16 @@ jobs:
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Load and verify pinned Gateway fixture
-        if: hashFiles('ci/gateway-fixture.json') != ''
+        if: env.BUILD_GATEWAY_FROM_SOURCE == 'true' && hashFiles('ci/gateway-fixture.json') != ''
         run: |
           python3 script/ci/gateway_fixture.py load \
             --artifact-directory "$RUNNER_TEMP/gateway-fixture" --github-env "$GITHUB_ENV"
+
+      - name: Select published Gateway image
+        if: env.BUILD_GATEWAY_FROM_SOURCE != 'true'
+        run: |
+          printf '%s\n' 'APPFLOWY_CLOUD_GATEWAY_VERSION=latest-amd64' \
+            'APPFLOWY_CLOUD_GATEWAY_PULL_POLICY=always' >> "$GITHUB_ENV"
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -921,9 +933,9 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          # The source-owned verifier fences the companion tag before Compose starts.
-          # Older Cloud sources retain their published Gateway refresh.
-          if [[ -f ci/gateway-fixture.json ]]; then
+          # Explicit source builds retain provenance checks. Ordinary runs refresh the
+          # published Gateway even when the tested source carries a Service pin.
+          if [[ "$BUILD_GATEWAY_FROM_SOURCE" == true ]]; then
             python3 script/ci/gateway_fixture.py check-environment
           elif docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
             docker compose -f docker-compose-ci.yml pull appflowy_gateway
