@@ -45,6 +45,12 @@ member_packages=(
   -p appflowy-mcp
   -p appflowy-mcp-core
 )
+# The automation change feed's crate (Cloud #1542). Older Cloud source refs do not have it, and
+# Cargo rejects a -p that matches no package.
+automation_feed_crate=libs/automation-feed/Cargo.toml
+if [[ -f "$automation_feed_crate" ]]; then
+  member_packages+=(-p automation-feed)
+fi
 
 require_tests() {
   local prefix="$1" minimum="$2" inventory="$3" selected ignored
@@ -57,7 +63,7 @@ require_tests() {
     "$inventory/ignored")
   echo "==> $prefix: $selected selected, $ignored ignored (minimum $minimum)"
   if [[ "$selected" -lt "$minimum" || "$ignored" -ne 0 ]]; then
-    echo "::error::Required SCIM/MCP regression coverage is missing or ignored: $prefix"
+    echo "::error::Required regression coverage is missing or ignored: $prefix"
     return 1
   fi
 }
@@ -85,6 +91,11 @@ if [[ "$mode" == prepare ]]; then
     fi
     if [[ -f "$mcp_contract" ]]; then
       require_tests 'workspace_token::tests::' 3 "$test_inventory"
+    fi
+    if [[ -f "$automation_feed_crate" ]]; then
+      # The feed's no-duplicate-event invariant and its pass/restore interleavings.
+      require_tests 'detector::tests::racing_detectors_emit_one_event' 1 "$test_inventory"
+      require_tests 'detector::race_tests::' 4 "$test_inventory"
     fi
   else
     echo "==> Older Cloud source: running package tests without managed-user count guards"
