@@ -37,9 +37,14 @@ on which tests happen to be discovered, so deleting a required follow-up test st
 The added contracts cover global-admin source identity fences, draft prompt execution without
 publication or billing, company-style paywalls, self-host bypass, and publication/cache metrics.
 
+The production `reuse.rs` call to `validate_generated_template_layouts` requires one more database
+contract, `template_reuse_skips_historical_results_without_layout_bindings`, for 78 Cloud-AI cases
+when both follow-ups apply. The optional `when_contains` source marker preserves older revisions
+whose `reuse.rs` already exists without this validation, while still rejecting a deleted test body.
+
 The exact ignored names are in
 [`presentation_test_inventory.json`](../.github/scripts/presentation_test_inventory.json).
-The 111 database cases cover:
+The database contracts cover:
 
 - Cloud presentation sessions, viewer/write authorization, Admin role/session rechecks,
   source stamps/mapping, prompt activation, assessment/generation reuse, structural/imported maps,

@@ -99,6 +99,14 @@
           "biz::presentation::tests::exports::paywalls::status_projects_authoritative_limits_and_self_host_bypasses_hosted_company_policy",
           "biz::presentation::tests::observability::publication_cache_reuse_and_invalid_output_have_distinct_metric_outcomes"
         ]
+      },
+      {
+        "when_file": "src/biz/presentation/reuse.rs",
+        "when_contains": "validate_generated_template_layouts(",
+        "remove_database": [],
+        "database": [
+          "biz::presentation::tests::acceptance::template_reuse_skips_historical_results_without_layout_bindings"
+        ]
       }
     ]
   },

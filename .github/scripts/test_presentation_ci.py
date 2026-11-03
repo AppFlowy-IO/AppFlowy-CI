@@ -56,6 +56,49 @@ class CoverageGuardsTest(unittest.TestCase):
                 runner.require_tests("followup", set(current["database"]) - {update["database"][0]},
                                      len(current["database"]), required=current["database"])
 
+    def test_template_reuse_inventory_requires_the_production_layout_validation_call(self):
+        package = "appflowy-cloud-ai"
+        original = json.loads(json.dumps(runner.POLICIES[package]))
+        name = ("biz::presentation::tests::acceptance::"
+                "template_reuse_skips_historical_results_without_layout_bindings")
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory)
+            binaries = [runner.Binary(owner / "libtest", owner)]
+            followup = owner / original["source_updates"][0]["when_file"]
+            followup.parent.mkdir(parents=True)
+            followup.write_text("// production read authority exists\n")
+            legacy = runner.policy_for_source(package, binaries)
+            self.assertEqual(len(legacy["database"]), 77)
+            self.assertNotIn(name, legacy["database"])
+
+            # This production file predates layout validation, so existence is insufficient.
+            source = owner / "src/biz/presentation/reuse.rs"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("// historical template jobs could be reused\n")
+            self.assertEqual(runner.policy_for_source(package, binaries), legacy)
+            source.write_text("validate_generated_template_layouts(&plan, &context.style)?;\n")
+            current = runner.policy_for_source(package, binaries)
+            self.assertEqual(current["database"], legacy["database"] + [name])
+            self.assertEqual(len(current["database"]), 78)
+            self.assertEqual(runner.POLICIES[package], original)
+            # Keep the production call while removing the body from libtest discovery.
+            with self.assertRaisesRegex(RuntimeError, name):
+                runner.require_tests("template reuse", set(current["database"]) - {name},
+                                     len(current["database"]), required=current["database"])
+
+    def test_content_markers_reject_package_binaries_from_inconsistent_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binaries = []
+            for index, content in enumerate(("// legacy reuse\n",
+                                             "validate_generated_template_layouts(&plan, &style)?;\n")):
+                owner = Path(directory) / str(index)
+                source = owner / "src/biz/presentation/reuse.rs"
+                source.parent.mkdir(parents=True)
+                source.write_text(content)
+                binaries.append(runner.Binary(owner / "libtest", owner))
+            with self.assertRaisesRegex(RuntimeError, "Inconsistent source inventory"):
+                runner.policy_for_source("appflowy-cloud-ai", binaries)
+
     def test_discovery_requires_counts_and_each_required_name(self):
         for selected, minimum, required in [(set(), 1, ()), ({"a"}, 2, ()), ({"a"}, 1, ("b",))]:
             with self.subTest(selected=selected), self.assertRaises(RuntimeError):
