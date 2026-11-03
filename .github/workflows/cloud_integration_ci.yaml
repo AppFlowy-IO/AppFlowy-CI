@@ -1183,8 +1183,10 @@ jobs:
               echo "==> Older Cloud source: no self-host directory status contract"
             fi
           elif [ "${{ matrix.test_service }}" = "appflowy_worker" ]; then
+            # Cargo expands this to the process and extracted Worker libraries. Quote the
+            # selector so the shell cannot expand it; older sources still match the process.
             RUST_LOG="info" DISABLE_CI_TEST_LOG="true" "${cargo_command[@]}" test --locked \
-              -p appflowy-worker -- --test-threads=1
+              -p 'appflowy-worker*' -- --test-threads=1
           elif [ "${{ matrix.test_service }}" = "appflowy_cloud_whitelist" ]; then
             # Whitelist tests run in isolation — they toggle GoTrue global state.
             # `${module}::` makes the filter a Rust path prefix rather than a
