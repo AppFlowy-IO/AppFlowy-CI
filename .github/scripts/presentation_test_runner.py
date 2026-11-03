@@ -125,14 +125,19 @@ def configure_media(environment, run):
 def policy_for_source(package, binaries):
     """Require the reviewed inventory for the source being tested, including older PRs.
 
-    Select on production files, never discovered tests: deleting a required test must
+    Select on production files and content, never discovered tests: deleting a required test must
     still fail discovery instead of silently selecting the older coverage contract.
     """
     original = POLICIES[package]
     policy = {key: list(value) if isinstance(value, list) else value
               for key, value in original.items()}
     for update in original.get("source_updates", []):
-        enabled = [(binary.cwd / update["when_file"]).is_file() for binary in binaries]
+        enabled = []
+        for binary in binaries:
+            path = binary.cwd / update["when_file"]
+            enabled.append(path.is_file() and (
+                "when_contains" not in update
+                or update["when_contains"] in path.read_text(encoding="utf-8")))
         if any(enabled) != all(enabled):
             raise RuntimeError("Inconsistent source inventory across package binaries")
         if enabled and all(enabled):
