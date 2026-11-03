@@ -87,6 +87,11 @@ available, the build remains queued or fails; it never silently moves compilatio
 runner. The integration test matrix and its package-only Rust lanes still run on GitHub-hosted
 runners after the private images and shared Cloud test binaries are ready.
 
+The Worker lane selects `-p 'appflowy-worker*'` through Cargo so extracted Worker libraries keep
+their unit tests in the service-backed lane. The quoted package pattern also supports older Cloud
+revisions with only the original process package. The test matrix and serial test execution stay
+the same; Cargo, rather than the shell, expands the package names.
+
 Release and integration builds have separate workflow queues and image caches. The laptop's
 current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
 Cloud's CI image enables test features, and CI images use the `latest-amd64` artifact tags.

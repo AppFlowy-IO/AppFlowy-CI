@@ -469,7 +469,7 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                     if lane.get("test_package_search"):
                         self.assertIn("-p\nappflowy-search\n", result.stdout)
                     else:
-                        expected = {"worker": "appflowy-worker", "members": "workspace-folder",
+                        expected = {"worker": "appflowy-worker*", "members": "workspace-folder",
                                     "ai": "appflowy-ai"}[lane["cache_group"]]
                         self.assertIn(f"-p\n{expected}\n", result.stdout)
                     self.assertIn("--test-threads=1", result.stdout)
