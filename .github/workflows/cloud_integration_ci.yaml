@@ -45,7 +45,7 @@ env:
   POSTGRES_PASSWORD: password
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
-  RUST_TOOLCHAIN: "1.98.0"
+  RUST_TOOLCHAIN: "1.98.1"
   CLOUD_TEST_FEATURES: ai-test-enabled,sync-v2,ci-test
   # Speed up crate downloads with sparse registry
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -260,7 +260,7 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: encoded-cache-parallel-ci-${{ matrix.phase }}
@@ -1422,7 +1422,7 @@ jobs:
           ref: ${{ github.sha }}
           path: ci-tools
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: presentation-${{ matrix.package }}-ci
@@ -1502,7 +1502,7 @@ jobs:
           ref: ${{ env.PRESENTATION_SERVICE_SHA }}
           path: presentation-service
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           key: presentation-acceptance-ci-${{ env.PRESENTATION_SERVICE_SHA }}

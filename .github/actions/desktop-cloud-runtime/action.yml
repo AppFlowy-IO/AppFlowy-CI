@@ -66,7 +66,7 @@ runs:
       if: steps.pins.outputs.client-sha != ''
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: '1.98.0'
+        toolchain: '1.98.1'
         components: rustfmt
     - name: Verify paired inputs, source checkouts and private build
       id: request
