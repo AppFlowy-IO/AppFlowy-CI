@@ -70,13 +70,13 @@ require_tests() {
 
 if [[ "$mode" == prepare ]]; then
   echo '==> Preparing workspace member test inventories and binaries'
-  # Guard new SCIM/MCP contracts only when their production modules
-  # exist, so this CI revision also supports older Cloud source refs.
+  # Guard the SCIM/MCP contracts and the automation feed only when their
+  # sources exist, so this CI revision also supports older Cloud source refs.
   # Use the same package selection for listing and execution to avoid
   # recompiling a different feature graph just to count tests.
   scim_contract=libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs
   mcp_contract=libs/appflowy-mcp-core/src/workspace_token.rs
-  if [[ -f "$scim_contract" || -f "$mcp_contract" ]]; then
+  if [[ -f "$scim_contract" || -f "$mcp_contract" || -f "$automation_feed_crate" ]]; then
     test_inventory=$(mktemp -d)
     trap 'rm -rf "$test_inventory"' EXIT
     cargo test --locked "${member_packages[@]}" --lib \
