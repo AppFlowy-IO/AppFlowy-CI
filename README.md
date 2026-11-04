@@ -135,7 +135,11 @@ reject plaintext HTTP, so changing the cloud URL back to HTTP breaks submission
 tests. Keep certificate verification enabled when reproducing this setup.
 
 The private run's fifth job cross-compiles the root Cloud tests once with `CLOUD_TEST_FEATURES`,
-alongside its four image jobs. It uses the caller's pinned CI tools commit and `RUST_TOOLCHAIN`.
+alongside its four image jobs. It uses the caller's pinned CI tools commit and the Rust version
+resolved from the same immutable Cloud checkout's `rust-toolchain.toml`. `RUST_TOOLCHAIN` remains
+the fallback for older Cloud sources without a pin. The selected version is forwarded to the
+private compiler image so its cross-compilation target is installed under the compiler that
+rustup will actually select after copying the Cloud source.
 ARM64 Rust/C/C++ compilers produce `x86_64-unknown-linux-gnu` binaries; only the Ubuntu 24.04 startup
 check uses QEMU to list tests without executing their bodies. The 12 root test lanes download the
 private run's binary archive and execute their existing Rust test harnesses and filters without

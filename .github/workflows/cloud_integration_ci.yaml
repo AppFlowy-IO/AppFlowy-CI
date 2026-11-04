@@ -66,6 +66,7 @@ jobs:
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       ref: ${{ steps.source.outputs.ref }}
+      rust_toolchain: ${{ steps.toolchain.outputs.rust_toolchain }}
       ai_available: ${{ steps.ai.outputs.enabled }}
     steps:
       - name: Checkout requested Cloud ref
@@ -85,6 +86,19 @@ jobs:
           # Do not allow a malformed ref to inject another job output.
           [[ -n "$SOURCE_REF" && "$SOURCE_REF" != *$'\n'* && "$SOURCE_REF" != *$'\r'* ]]
           printf 'ref=%s\n' "$SOURCE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source resolution tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+      - name: Resolve the source Rust toolchain
+        id: toolchain
+        run: |
+          python3 ci-tools/.github/scripts/source_rust_toolchain.py \
+            --source . --fallback "$RUST_TOOLCHAIN" --github-output "$GITHUB_OUTPUT"
 
       - name: Detect the merged AI service
         id: ai
@@ -117,6 +131,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+          RUST_TOOLCHAIN: ${{ needs.image_source.outputs.rust_toolchain }}
           CI_TOOLS_SHA: ${{ github.sha }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
           IMAGE_WORKFLOW_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.image_workflow_ref || 'main' }}
