@@ -18,6 +18,8 @@ SEARCH_INDEX = "database::database_index_test"
 SEARCH_RESTORE = "database::database_history_test::search_restore"
 SCIM_GROUP_POLICY = "biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit"
 SELF_HOST_STATUS_AUDIT = "biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails"
+FEED_ONE_EVENT = "detector::tests::racing_detectors_emit_one_event"
+GUARD_ERROR = "::error::Required regression coverage is missing or ignored"
 
 
 def render_run_tests(lane):
@@ -110,16 +112,19 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       "scim": "api::scim::tests::",
       "status": "biz::directory::status::tests::",
       "mcp": "workspace_token::tests::",
+      "feed_races": "detector::race_tests::",
     }
+    exact_names = {"group": SCIM_GROUP_POLICY, "feed_one_event": FEED_ONE_EVENT}
     counts = counts if counts is not None else {"scim": 51, "group": 1, "status": 11, "mcp": 3}
     def case_name(suite, index):
-      return SCIM_GROUP_POLICY if suite == "group" else f"{prefixes[suite]}case_{index}"
+      return exact_names.get(suite) or f"{prefixes[suite]}case_{index}"
 
     with tempfile.TemporaryDirectory() as directory:
       project = Path(directory)
       for contract, relative in {
         "scim": "libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs",
         "mcp": "libs/appflowy-mcp-core/src/workspace_token.rs",
+        "automation_feed": "libs/automation-feed/Cargo.toml",
       }.items():
         if contract in contracts:
           source = project / relative
@@ -258,7 +263,40 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           counts = {"scim": 51, "group": 1, "status": 11, "mcp": 3, suite: selected}
           result, commands = self.run_member_packages(counts=counts, ignored=ignored)
           self.assertNotEqual(result.returncode, 0)
-          self.assertIn("::error::Required SCIM/MCP regression coverage", result.stdout)
+          self.assertIn(GUARD_ERROR, result.stdout)
+          self.assertEqual(len(commands), 2, "Do not continue after a coverage guard fails")
+
+  def test_the_automation_feed_crate_runs_with_the_members_only_where_it_exists(self):
+    feed_counts = {"feed_one_event": 1, "feed_races": 7}
+    for contracts, counts in [
+      (("scim", "mcp", "automation_feed"),
+       {"scim": 51, "group": 1, "status": 11, "mcp": 3, **feed_counts}),
+      # Guarded even in a source that has neither managed-user contract.
+      (("automation_feed",), feed_counts),
+    ]:
+      with self.subTest(contracts=contracts):
+        result, commands = self.run_member_packages(contracts=contracts, counts=counts)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(commands), 4)
+        self.assertTrue(all("automation-feed" in command for command in commands))
+        self.assertIn(f"{FEED_ONE_EVENT}: 1 selected, 0 ignored", result.stdout)
+        self.assertIn("detector::race_tests::: 7 selected, 0 ignored", result.stdout)
+    # Older Cloud refs have no such package, and Cargo rejects a -p that matches none.
+    result, commands = self.run_member_packages()
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    self.assertFalse(any("automation-feed" in command for command in commands))
+
+  def test_automation_feed_guards_reject_missing_or_ignored_cases(self):
+    guards = {"feed_one_event": (FEED_ONE_EVENT, 1), "feed_races": ("detector::race_tests::", 4)}
+    for suite, (selector, minimum) in guards.items():
+      cases = dict.fromkeys([(0, ()), (minimum - 1, ()), (minimum, (suite,))])
+      for selected, ignored in cases:
+        with self.subTest(suite=suite, selected=selected, ignored=ignored):
+          counts = {"feed_one_event": 1, "feed_races": 4, suite: selected}
+          result, commands = self.run_member_packages(
+            contracts=("automation_feed",), counts=counts, ignored=ignored)
+          self.assertNotEqual(result.returncode, 0)
+          self.assertIn(f"{GUARD_ERROR}: {selector}", result.stdout)
           self.assertEqual(len(commands), 2, "Do not continue after a coverage guard fails")
 
   def test_self_host_status_guard_requires_the_real_audit_case_and_no_ignored_cases(self):
