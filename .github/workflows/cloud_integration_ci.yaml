@@ -756,24 +756,6 @@ jobs:
       - name: Remove downloaded image archives
         run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz appflowy_ai.tar.gz
 
-      # Keep companion images outside docker-image-*: Desktop consumers verify that
-      # every archive in that set belongs to the requested Cloud revision.
-      - name: Download pinned Gateway fixture
-        if: hashFiles('ci/gateway-fixture.json') != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: companion-gateway-image
-          path: ${{ runner.temp }}/gateway-fixture
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          run-id: ${{ needs.build_self_hosted.outputs.run_id }}
-          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-
-      - name: Load and verify pinned Gateway fixture
-        if: hashFiles('ci/gateway-fixture.json') != ''
-        run: |
-          python3 script/ci/gateway_fixture.py load \
-            --artifact-directory "$RUNNER_TEMP/gateway-fixture" --github-env "$GITHUB_ENV"
-
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
 
@@ -940,14 +922,13 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          # The source-owned verifier fences the companion tag before Compose starts.
-          # Older Cloud sources retain their published Gateway refresh.
-          if [[ -f ci/gateway-fixture.json ]]; then
-            python3 script/ci/gateway_fixture.py check-environment
-          elif docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
-            docker compose -f docker-compose-ci.yml pull appflowy_gateway
+          # Gateway is a published dependency selected by this Cloud source's Compose file.
+          # Older sources may retain a companion manifest; it no longer requires an archive.
+          if docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
+            APPFLOWY_CLOUD_GATEWAY_PULL_POLICY=always \
+              docker compose -f docker-compose-ci.yml pull appflowy_gateway
           fi
-          echo "Starting services (using locally built images, pulling only missing ones)..."
+          echo "Starting services (using source-built images and the published Gateway)..."
           docker compose -f docker-compose-ci.yml up -d --pull=missing
           docker ps -a
           docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
