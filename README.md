@@ -98,13 +98,14 @@ Cloud's CI image enables test features, and CI images use the `latest-amd64` art
 Versioned Docker Hub release images are a separate build with different settings, even for the same
 source commit. Artifact retention is one day.
 
-Cloud sources with `ci/gateway-fixture.json` also require `companion-gateway-image` from that same
-private build. Their source-owned verifier checks its Service revision, image tag and architecture,
-then loads the pinned Gateway and prevents a published-image refresh from replacing it. This
-artifact stays outside `docker-image-*`, whose exact Cloud revision contract also serves Desktop.
-Sources without the manifest retain the published Gateway refresh.
+Gateway uses the published image declared by the selected Cloud source's `docker-compose-ci.yml`
+(`latest-amd64` by default). Each integration lane explicitly pulls `appflowy_gateway` before
+starting the stack; Gateway applies its own migrations at startup. Existing sources may retain
+`ci/gateway-fixture.json`, but it no longer selects or requires a companion image archive. MCP and
+AI keep their existing source-image artifacts and fallback behavior. Merge this consumer update
+before removing the shared Gateway image build so older Source revisions remain usable.
 
-Before the companion builder reaches Cloud main, manually validate both branches with
+To manually validate a coordinated builder change, run
 `cloud_integration_ci.yaml --ref <ci-branch> -f pr_ref=<Cloud-SHA> -f pr_number=<Cloud-PR>
 -f image_workflow_ref=<Cloud-branch>`. The explicit builder branch or tag must resolve to that
 same Cloud SHA; the request rejects a moved branch and records the actual builder revision.
