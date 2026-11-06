@@ -290,6 +290,8 @@ jobs:
         run: python3 -B ci-tools/.github/scripts/commercial_presentation_runner.py --source "$GITHUB_WORKSPACE"
 
       - name: Run Tests
+        env:
+          APPFLOWY_MCP_TEST_BASE_URL: http://localhost:8002
         run: |
           set -e
           echo "Running tests for ${{ matrix.test_service }}"
