@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG RUST_TOOLCHAIN=1.98.0
+ARG RUST_TOOLCHAIN=1.98.1
 # Rust, proc macros and build scripts execute natively on the ARM64 laptop.
 FROM --platform=$BUILDPLATFORM rust:${RUST_TOOLCHAIN}-bookworm AS compiler
 RUN test "$(dpkg --print-architecture)" = arm64 \
