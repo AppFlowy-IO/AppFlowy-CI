@@ -356,24 +356,31 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
     def test_prerequisites_keep_full_logs_and_stop_at_the_first_failure(self):
         step = next(step for step in self.cloud["steps"]
                     if step.get("name") == "Install prerequisites")
-        stub = '''python3() {
-          shift
-          sudo apt-get "$@"
-        }
-        sudo() {
+        stub = '''sudo() {
           echo "setup-command: $*"
-          if [ "$*" = "apt-get update" ]; then
-            for ((i=0; i<150; i++)); do echo "package progress $i"; done
-            echo "package repository result"
-            return "$STUB_EXIT"
-          fi
         }
         '''
         for code in (0, 17):
             with self.subTest(exit_code=code), tempfile.TemporaryDirectory() as directory:
+                # Match the real external helper process. A shell-function stub
+                # changes Bash's EXIT-trap redirection while unwinding errexit.
+                commands = Path(directory) / "bin"
+                commands.mkdir()
+                helper = commands / "python3"
+                helper.write_text('''#!/usr/bin/env bash
+shift
+echo "setup-command: apt-get $*"
+if [ "$*" = update ]; then
+  for ((i=0; i<150; i++)); do echo "package progress $i"; done
+  echo "package repository result"
+  exit "$STUB_EXIT"
+fi
+''')
+                helper.chmod(0o755)
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", stub + step["run"]],
-                    env={**os.environ, "RUNNER_TEMP": directory, "STUB_EXIT": str(code)},
+                    env={**os.environ, "RUNNER_TEMP": directory, "STUB_EXIT": str(code),
+                         "PATH": str(commands) + os.pathsep + os.environ["PATH"]},
                     capture_output=True, text=True, timeout=5,
                 )
                 log = (Path(directory) / "flutter-prerequisites.log").read_text()
