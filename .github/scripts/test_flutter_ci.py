@@ -131,6 +131,41 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
         self.assertIn("prepare-linux", self.desktop["needs"])
         self.assertFalse(self.desktop["strategy"]["fail-fast"])
 
+    def test_only_media_runners_enable_background_frames_after_renumbering(self):
+        step = next(step for step in self.desktop["steps"]
+                    if step.get("name") == "Run Flutter integration tests")
+        invocation = step["run"][step["run"].index("TEST_FILE="):step["run"].index("TEST_EXIT=")]
+        invocation = invocation.replace("${{ matrix.test_number }}", "67")
+        for media in (False, True):
+            with self.subTest(media=media), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runner = root / "integration_test/desktop_runner_67.dart"
+                runner.parent.mkdir()
+                suite = "document_media" if media else "document_toolbar"
+                runner.write_text(f"import 'desktop/document/{suite}_test_runner.dart';\n")
+                binary = root / "bin/flutter"
+                binary.parent.mkdir()
+                binary.write_text(
+                    "#!/usr/bin/env python3\nimport json, os, sys\n"
+                    "with open(os.environ['TEST_ARGUMENT_OUTPUT'], 'w') as output:\n"
+                    "    json.dump(sys.argv[1:], output)\n"
+                )
+                binary.chmod(0o755)
+                output = root / "arguments.json"
+                script = invocation.replace("/tmp/test_output.txt", str(root / "test.log"))
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                    env={**os.environ, "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+                         "TEST_ARGUMENT_OUTPUT": str(output)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(output.read_text())
+                self.assertIn(str(runner.relative_to(root)), arguments)
+                self.assertEqual(
+                    "--dart-define=APPFLOWY_TEST_BACKGROUND_FRAMES=true" in arguments, media,
+                )
+
 
 class UnitRunnerWorkflowTest(unittest.TestCase):
     @classmethod

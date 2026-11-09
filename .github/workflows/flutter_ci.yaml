@@ -1263,9 +1263,19 @@ jobs:
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           sudo apt-get install network-manager
 
+          TEST_FILE=integration_test/desktop_runner_${{ matrix.test_number }}.dart
+          TEST_ARGS=()
+          # Media cases use WidgetTester while native players change window lifecycle.
+          # Keep their pumps live in Xvfb, with the binding's per-test timeout.
+          # Identify the suite by its import so runner renumbering stays safe.
+          if grep -Fq 'desktop/document/document_media_test_runner.dart' "$TEST_FILE"; then
+            TEST_ARGS+=(--dart-define=APPFLOWY_TEST_BACKGROUND_FRAMES=true)
+          fi
+
           set +e
           flutter test \
-            integration_test/desktop_runner_${{ matrix.test_number }}.dart \
+            "${TEST_ARGS[@]}" \
+            "$TEST_FILE" \
             -d Linux \
             --file-reporter=json:/tmp/desktop-test-events.jsonl \
             --coverage 2>&1 | tee /tmp/test_output.txt

@@ -74,6 +74,12 @@ archives, with no download and no process timeout that could interrupt dpkg.
 Package errors still fail immediately. The ten-minute overall prerequisite
 deadline remains in place, and the helper refuses local development environments.
 
+The headless desktop media runner opts into Desktop's existing
+`APPFLOWY_TEST_BACKGROUND_FRAMES` test binding. It keeps WidgetTester pumps live
+through native window lifecycle changes and supplies a five-minute per-test
+timeout. Other desktop runners keep their usual binding. The suite is selected
+by its media-runner import so changing shard numbers does not change this scope.
+
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
 run on GitHub runners; Backup restore qualification runs nightly in Cloud Premium (see **Backup**).
