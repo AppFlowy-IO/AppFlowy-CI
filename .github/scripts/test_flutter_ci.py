@@ -50,6 +50,8 @@ class FlutterPrerequisitesWorkflowTest(unittest.TestCase):
                 self.assertLess(steps.index(checkout), steps.index(configure))
                 self.assertLess(steps.index(configure), steps.index(install))
                 self.assertEqual(install["timeout-minutes"], 10)
+                self.assertIn(".desktop-ci-tools/.github/scripts/run_flutter_apt.py", install["run"])
+                self.assertNotIn("sudo apt-get ", install["run"])
 
 
 class DesktopRunnerWorkflowTest(unittest.TestCase):
@@ -354,7 +356,11 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
     def test_prerequisites_keep_full_logs_and_stop_at_the_first_failure(self):
         step = next(step for step in self.cloud["steps"]
                     if step.get("name") == "Install prerequisites")
-        stub = '''sudo() {
+        stub = '''python3() {
+          shift
+          sudo apt-get "$@"
+        }
+        sudo() {
           echo "setup-command: $*"
           if [ "$*" = "apt-get update" ]; then
             for ((i=0; i<150; i++)); do echo "package progress $i"; done

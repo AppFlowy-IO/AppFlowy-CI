@@ -66,6 +66,14 @@ Prerequisite installation has a separate 10-minute deadline. The test matrix,
 The configuration script refuses to run outside a GitHub Linux runner; its
 local tests use temporary files without root or network access.
 
+Run `42540394474` also stalled while the primary archive transferred a media
+package. Socket inactivity limits do not stop a response that trickles bytes.
+Prerequisite commands now download under a two-minute limit and resume once
+from APT's retained archives after a timeout. Installation then uses only those
+archives, with no download and no process timeout that could interrupt dpkg.
+Package errors still fail immediately. The ten-minute overall prerequisite
+deadline remains in place, and the helper refuses local development environments.
+
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
 run on GitHub runners; Backup restore qualification runs nightly in Cloud Premium (see **Backup**).
