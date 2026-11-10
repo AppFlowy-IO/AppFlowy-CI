@@ -59,6 +59,15 @@ checks target only the job-owned socket. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.
 
+For an Intel simulator stall, manually dispatch `workflow_checks.yaml` with
+`intel_runtime_probe=true` before selecting a different runner image. It compares
+fresh four-sample Metal rendering on the standard Intel macOS 15 and 26 images,
+checks every resolved pixel, and requires a fresh 90-second report and successful
+process exit. It also records simulator availability and exercises the existing
+job-owned Docker bootstrap on the candidate macOS 26 image. This control tests the
+runner environment; application validation still runs separately. See the
+[runner-image GPU report](https://github.com/actions/runner-images/issues/14836).
+
 The Intel lane uses the smaller iPhone SE (3rd generation) simulator display to
 reduce virtual graphics work. Its iPhone 16 Pro run recorded Metal command-buffer
 timeouts followed by revoked GPU access during grid scrolling. The original local
