@@ -89,6 +89,7 @@ def environment(root):
         "PATH": str(root / "tools/bin") + os.pathsep + os.environ["PATH"],
         "DOCKER_CONFIG": str(root / "docker"),
         "COLIMA_HOME": str(root / "colima"),
+        "LIMA_HOME": str(root / "colima/_lima"),
     }
 
 
@@ -138,18 +139,41 @@ def publish_environment(root):
     with Path(os.environ["GITHUB_PATH"]).open("a") as output:
         output.write(str(root / "tools/bin") + "\n")
     with Path(os.environ["GITHUB_ENV"]).open("a") as output:
-        for name in ("DOCKER_CONFIG", "COLIMA_HOME"):
+        for name in ("DOCKER_CONFIG", "COLIMA_HOME", "LIMA_HOME"):
             output.write(f"{name}={values[name]}\n")
 
 
 def start_runtime(root):
-    # Keep the upstream action's VZ backend, architecture and resource sizing.
+    # Colima ignores COLIMA_HOME unless the directory already exists. Otherwise
+    # a fresh job silently uses ~/.colima, including any inherited Lima profile.
+    (root / "colima").mkdir(parents=True, exist_ok=True)
+    # The simulator and macOS must remain responsive while the Cloud VM runs.
+    # The failed hosted start requested all 14 GiB; reserve host headroom.
     cpus = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)) // (1024 ** 3)
-    subprocess.run([
-        str(root / "tools/bin/colima"), "start", "--cpu", str(cpus), "--memory", str(memory),
-        "--arch", "x86_64", "--vm-type=vz", "--mount-type=virtiofs",
-    ], env=environment(root), check=True, timeout=600)
+    cpus = max(1, min(2, cpus - 1))
+    memory = max(2, min(8, memory - 6))
+    try:
+        subprocess.run([
+            str(root / "tools/bin/colima"), "start", "--cpu", str(cpus), "--memory", str(memory),
+            "--arch", "x86_64", "--vm-type=vz", "--mount-type=virtiofs",
+        ], env=environment(root), check=True, timeout=600)
+    except subprocess.SubprocessError:
+        # The SSH timeout alone cannot distinguish a guest boot failure from
+        # host pressure. Retain bounded boot evidence without reading config.
+        logs = root / "colima/_lima/colima"
+        for name in ("serial.log", "serial0.log", "ha.stderr.log"):
+            path = logs / name
+            try:
+                if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+                    continue
+                with path.open("rb") as source:
+                    source.seek(max(0, path.stat().st_size - 64 * 1024))
+                    print(f"Colima boot diagnostic ({name}):\n" + source.read(64 * 1024).decode("utf-8", errors="replace"),
+                          file=sys.stderr, flush=True)
+            except OSError:
+                pass
+        raise
     # Colima selects its Docker context in the job-owned DOCKER_CONFIG.
     # A working client alone must never count as a ready Cloud runtime.
     subprocess.run([str(root / "tools/bin/docker"), "info"], env=environment(root),

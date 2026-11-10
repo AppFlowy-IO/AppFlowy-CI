@@ -1,11 +1,13 @@
 """Exercise the job-owned macOS installer without installing host packages or VMs."""
 
+import contextlib
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -126,21 +128,57 @@ class MacosDockerTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     docker.require_intel_macos()
 
-    def test_runtime_preserves_vz_sizing_and_requires_a_working_daemon(self):
+    def test_runtime_reserves_host_capacity_and_requires_a_working_daemon(self):
         with patch.dict(os.environ, {"PATH": "/bin", "HOME": "/original"}, clear=True), patch.object(
             docker.subprocess, "check_output", side_effect=["4\n", str(16 * 1024 ** 3)],
         ), patch.object(docker.subprocess, "run") as run:
             docker.start_runtime(self.root)
         start, ready = run.call_args_list
         command = start.args[0]
-        self.assertEqual(command[command.index("--cpu") + 1], "4")
-        self.assertEqual(command[command.index("--memory") + 1], "16")
+        self.assertEqual(command[command.index("--cpu") + 1], "2")
+        self.assertEqual(command[command.index("--memory") + 1], "8")
         self.assertIn("--vm-type=vz", command)
         self.assertIn("--mount-type=virtiofs", command)
         self.assertEqual(start.kwargs["env"]["HOME"], "/original")
         self.assertEqual(start.kwargs["env"]["COLIMA_HOME"], str(self.root / "colima"))
+        self.assertEqual(start.kwargs["env"]["LIMA_HOME"], str(self.root / "colima/_lima"))
+        self.assertTrue((self.root / "colima").is_dir())
         self.assertEqual(ready.args[0], [str(self.root / "tools/bin/docker"), "info"])
         self.assertTrue(ready.kwargs["check"])
+
+    def test_fresh_runtime_uses_owned_profile_instead_of_inherited_lima_home(self):
+        tools = self.root / "tools/bin"
+        tools.mkdir(parents=True)
+        calls = self.area / "calls.jsonl"
+        sysctl = tools / "sysctl"
+        sysctl.write_text(f"#!{sys.executable}\nimport sys\n"
+                         "print(4 if sys.argv[-1] == 'hw.ncpu' else 14 * 1024 ** 3)\n")
+        sysctl.chmod(0o700)
+        for name in ("colima", "docker"):
+            executable = tools / name
+            executable.write_text(
+                f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+                "assert Path(os.environ['COLIMA_HOME']).is_dir()\n"
+                "with Path(os.environ['CALLS']).open('a') as output:\n"
+                " output.write(json.dumps({'argv': sys.argv, 'home': os.environ['HOME'], "
+                "'lima': os.environ['LIMA_HOME']}) + '\\n')\n"
+            )
+            executable.chmod(0o700)
+        original_home = self.area / "original-home"
+        original_home.mkdir()
+        sentinel = original_home / "existing-profile"
+        sentinel.write_text("preserve")
+        with patch.dict(os.environ, {
+            "PATH": str(tools), "HOME": str(original_home),
+            "LIMA_HOME": str(original_home / "existing-profile"), "CALLS": str(calls),
+        }):
+            docker.start_runtime(self.root)
+        start, ready = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertEqual(start["home"], str(original_home))
+        self.assertEqual(start["lima"], str(self.root / "colima/_lima"))
+        self.assertEqual(start["argv"][2:6], ["--cpu", "2", "--memory", "8"])
+        self.assertEqual(ready["argv"], [str(tools / "docker"), "info"])
+        self.assertEqual(sentinel.read_text(), "preserve")
 
     def test_publishes_only_job_owned_tool_paths_and_configuration(self):
         path_file, env_file = self.area / "path", self.area / "env"
@@ -149,7 +187,28 @@ class MacosDockerTest(unittest.TestCase):
         self.assertEqual(path_file.read_text(), str(self.root / "tools/bin") + "\n")
         self.assertEqual(env_file.read_text().splitlines(), [
             f"DOCKER_CONFIG={self.root / 'docker'}", f"COLIMA_HOME={self.root / 'colima'}",
+            f"LIMA_HOME={self.root / 'colima/_lima'}",
         ])
+
+    def test_failed_vm_start_keeps_original_failure_and_bounded_owned_boot_logs(self):
+        logs = self.root / "colima/_lima/colima"
+        logs.mkdir(parents=True)
+        (logs / "serial.log").write_text("x" * (70 * 1024) + "guest boot failure\n")
+        external = self.area / "unrelated"
+        external.write_text("unrelated configuration")
+        (logs / "ha.stderr.log").symlink_to(external)
+        failure = subprocess.CalledProcessError(7, ["colima", "start"])
+        output = io.StringIO()
+        with patch.object(docker.subprocess, "check_output", side_effect=["4", str(14 * 1024 ** 3)]), patch.object(
+            docker.subprocess, "run", side_effect=failure,
+        ) as run, contextlib.redirect_stderr(output):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                docker.start_runtime(self.root)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("guest boot failure", output.getvalue())
+        self.assertNotIn("unrelated configuration", output.getvalue())
+        self.assertLess(len(output.getvalue()), 66 * 1024)
 
     def test_workflow_uses_pinned_installer_only_for_existing_intel_cloud_lane(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ios_ci.yaml").read_text())
