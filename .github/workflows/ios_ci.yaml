@@ -130,17 +130,6 @@ jobs:
           cargo make --profile "$IOS_BUILD_PROFILE" appflowy-core-dev-ios
           cargo make --profile "$IOS_BUILD_PROFILE" code_generation
 
-      - name: Prepare Intel simulator architecture
-        if: matrix.test_number == 4
-        run: |
-          test "$(lipo -archs frontend/appflowy_flutter/packages/appflowy_backend/ios/libdart_ffi.a)" = x86_64
-          # Desktop's Debug.xcconfig excludes Intel simulators. Override only this
-          # job's simulator builds; keep the checkout and host tool settings intact.
-          cat > "$RUNNER_TEMP/mobile-intel-simulator.xcconfig" <<'XCCONFIG'
-          ARCHS[sdk=iphonesimulator*] = x86_64
-          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
-          XCCONFIG
-
       - name: List simulators
         run: |
           xcrun simctl list --json devices available
@@ -155,17 +144,37 @@ jobs:
           shutdown_after_job: false
           wait_for_boot: true
 
+      - name: Prepare Intel simulator architecture
+        if: matrix.test_number == 4
+        timeout-minutes: 3
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          ios=frontend/appflowy_flutter/ios
+          test "$(lipo -archs "$ios/../packages/appflowy_backend/ios/libdart_ffi.a")" = x86_64
+          debug_config="$ios/Flutter/Debug.xcconfig"
+          test -f "$debug_config"
+          # Xcode uses the project's Debug settings to find eligible devices.
+          # Set the Intel architecture in this job's checkout before that lookup.
+          cat >> "$debug_config" <<'XCCONFIG'
+
+          ARCHS[sdk=iphonesimulator*] = x86_64
+          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
+          XCCONFIG
+          xcrun xcodebuild -project "$ios/Runner.xcodeproj" -scheme Runner \
+            -configuration Debug -sdk iphonesimulator \
+            -destination "id=${SIMULATOR_UDID:?Missing job simulator UUID}" \
+            -showBuildSettings > /dev/null
+
       # Runner 4 builds through flutter test below, using the selected Intel
       # simulator. The generic pre-build can complete Xcode compilation while
       # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
         if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
-        run: |
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
-          fi
-          flutter build ios --simulator --debug
+        run: flutter build ios --simulator --debug
 
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
@@ -175,9 +184,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
-          fi
           test_args=(--file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json")
           if [[ "${{ matrix.test_number }}" == 4 ]]; then
             test_args+=(--verbose)
@@ -361,9 +367,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-cloud-results"
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
-          fi
           flutter test integration_test/mobile_row_page_cloud_runner.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
             --dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json" \

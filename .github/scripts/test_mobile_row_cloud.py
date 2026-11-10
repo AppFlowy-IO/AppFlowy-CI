@@ -328,7 +328,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             calls = root / "calls"
             flutter = root / "flutter"
             flutter.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$XCODE_XCCONFIG_FILE" "$@" > "$CALLS"\nexit 7\n')
+                '#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLS"\nexit 7\n')
             flutter.chmod(0o700)
             result = subprocess.run(
                 ["bash", "-c", command], cwd=root,
@@ -339,7 +339,6 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 7)
             self.assertEqual(calls.read_text().splitlines(), [
-                str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
                 "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
                 "--verbose",
@@ -492,81 +491,58 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(build.count('cargo make --profile "$IOS_BUILD_PROFILE"'), 2)
         self.assertIn('test "$(uname -m)" = x86_64', self.step("Verify Docker runner architecture")["run"])
 
-    def test_intel_simulator_override_requires_matching_ffi_and_preserves_desktop_config(self):
+    def test_intel_debug_config_requires_matching_ffi_and_resolves_the_selected_simulator(self):
         prepare = self.step("Prepare Intel simulator architecture")
         self.assertEqual(prepare["if"], "matrix.test_number == 4")
         self.assertLess(self.steps.index(self.step("Build AppFlowy")), self.steps.index(prepare))
         self.assertLess(self.steps.index(prepare), self.steps.index(self.step("Pre-build iOS app for simulator")))
-        for architecture in ("x86_64", "arm64", "x86_64 arm64"):
-            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertLess(self.steps.index(simulator), self.steps.index(prepare))
+        self.assertEqual(prepare["env"]["SIMULATOR_UDID"], "${{ steps.simulator-action.outputs.udid }}")
+        for architecture, xcode_exit in (("x86_64", 0), ("x86_64", 64), ("arm64", 0), ("x86_64 arm64", 0)):
+            with self.subTest(architecture=architecture, xcode_exit=xcode_exit), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                temporary = root / "job temporary files"
-                temporary.mkdir()
                 config = root / "frontend/appflowy_flutter/ios/Flutter/Debug.xcconfig"
                 config.parent.mkdir(parents=True)
                 original = "EXCLUDED_ARCHS[sdk=iphonesimulator*] = x86_64\n"
                 config.write_text(original)
+                release = config.with_name("Release.xcconfig")
+                release.write_text("#include \"Generated.xcconfig\"\n")
+                calls = root / "xcode-calls"
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c",
-                     'lipo() { printf "%s\\n" "$FFI_ARCHS"; }\n' + prepare["run"]],
-                    cwd=root, env={**os.environ, "RUNNER_TEMP": str(temporary), "FFI_ARCHS": architecture},
+                     'lipo() { printf "%s\\n" "$FFI_ARCHS"; }\n'
+                     'xcrun() { printf "%s\\n" "$@" > "$CALLS"; return "$XCODE_EXIT"; }\n'
+                     + prepare["run"]],
+                    cwd=root, env={**os.environ, "FFI_ARCHS": architecture,
+                                   "SIMULATOR_UDID": "owned-simulator-id",
+                                   "CALLS": str(calls), "XCODE_EXIT": str(xcode_exit)},
                     capture_output=True, text=True, timeout=5,
                 )
-                override = temporary / "mobile-intel-simulator.xcconfig"
-                self.assertEqual(config.read_text(), original)
+                self.assertEqual(release.read_text(), "#include \"Generated.xcconfig\"\n")
                 if architecture != "x86_64":
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse(override.exists())
+                    self.assertEqual(config.read_text(), original)
+                    self.assertFalse(calls.exists())
                     continue
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(override.read_text().splitlines(), [
+                self.assertEqual(result.returncode, xcode_exit, result.stderr)
+                self.assertEqual(config.read_text().splitlines(), [
+                    original.strip(), "",
                     "ARCHS[sdk=iphonesimulator*] = x86_64",
                     "EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64",
-                ], "The override must not affect macOS host tools or physical-device builds")
-                self.assertNotIn("GITHUB_ENV", prepare["run"])
+                ])
+                self.assertEqual(calls.read_text().splitlines(), [
+                    "xcodebuild", "-project", "frontend/appflowy_flutter/ios/Runner.xcodeproj",
+                    "-scheme", "Runner", "-configuration", "Debug", "-sdk", "iphonesimulator",
+                    "-destination", "id=owned-simulator-id", "-showBuildSettings",
+                ])
 
-    def test_only_flutter_simulator_commands_receive_the_intel_override(self):
-        commands = {
-            "Pre-build iOS app for simulator": ["build", "ios", "--simulator", "--debug"],
-            "Run Flutter integration tests (runner ${{ matrix.test_number }})":
-                ["test", "integration_test/mobile_runner_4.dart", "-d", "fixture-device"],
-            "Run Cloud row-page tests on iOS":
-                ["test", "integration_test/mobile_row_page_cloud_runner.dart", "-d", "fixture-device"],
-        }
+    def test_workflow_uses_project_settings_for_ios_destinations(self):
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.workflow.get("env", {}))
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.job["env"])
         for step in self.steps:
-            if step.get("name") not in commands:
-                self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("run", ""))
-                self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("env", {}))
-        for target in ("x86_64-apple-ios", "aarch64-apple-ios-sim"):
-            for name, arguments in commands.items():
-                with self.subTest(target=target, step=name), tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    flutter = root / "flutter"
-                    flutter.write_text(
-                        '#!/usr/bin/env python3\nimport json, os, sys\n'
-                        'from pathlib import Path\n'
-                        'Path(os.environ["CAPTURE"]).write_text(json.dumps({\n'
-                        ' "args": sys.argv[1:], "override": os.getenv("XCODE_XCCONFIG_FILE")}))\n'
-                    )
-                    flutter.chmod(0o755)
-                    script = self.step(name)["run"].replace("${{ matrix.test_number }}", "4").replace(
-                        "${{ steps.simulator-action.outputs.udid }}", "fixture-device")
-                    env = {key: value for key, value in os.environ.items() if key != "XCODE_XCCONFIG_FILE"}
-                    result = subprocess.run(
-                        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
-                        env={**env, "PATH": f"{root}:{env['PATH']}", "RUNNER_TEMP": directory,
-                             "CAPTURE": str(root / "capture.json"), "IOS_RUST_TARGET": target},
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    captured = json.loads((root / "capture.json").read_text())
-                    self.assertEqual(captured["args"][:len(arguments)], arguments)
-                    if target == "x86_64-apple-ios":
-                        self.assertEqual(captured["override"], str(root / "mobile-intel-simulator.xcconfig"))
-                    else:
-                        self.assertIsNone(captured["override"])
+            self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("run", ""))
+            self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("env", {}))
 
     def test_checkouts_cannot_clean_away_each_other(self):
         desktop = self.step("Checkout private repository")
