@@ -308,6 +308,7 @@ jobs:
           image-run-id: ${{ env.CLOUD_IMAGE_RUN_ID }}
           desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
           cloud-path: .mobile-cloud
+          compose-override: .mobile-ci-tools/.github/docker/mobile-row-cloud.yml
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Start job-owned Cloud services
@@ -321,14 +322,15 @@ jobs:
         # this within the unchanged 180-minute job and functional test budgets.
         timeout-minutes: 20
         run: |
+          compose=(docker compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml)
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
-            docker compose -f docker-compose-ci.yml pull
-            docker compose -f docker-compose-ci.yml up -d --no-build
+            "${compose[@]}" pull
+            "${compose[@]}" up -d --no-build
           elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
             echo "::error::Cloud runtime selection did not complete"
             exit 1
           fi
-          docker compose -f docker-compose-ci.yml images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
+          "${compose[@]}" images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
           git rev-parse HEAD > "$RUNNER_TEMP/mobile-row-cloud-compose-revision.txt"
 
       - name: Wait for Cloud readiness
@@ -380,7 +382,8 @@ jobs:
         run: |
           python3 .mobile-ci-tools/.github/scripts/macos_docker.py diagnose \
             --root "$RUNNER_TEMP/appflowy-macos-docker" \
-            --output "$RUNNER_TEMP/mobile-cloud-results/diagnostics"
+            --output "$RUNNER_TEMP/mobile-cloud-results/diagnostics" \
+            --compose-file .mobile-cloud/docker-compose-ci.yml
 
       - name: Upload Cloud row-page test results
         if: always() && matrix.test_number == 4

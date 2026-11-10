@@ -236,6 +236,7 @@ class MacosDockerTest(unittest.TestCase):
         network = self.root / "colima/_lima/_networks/user-v2"
         network.mkdir(parents=True)
         (network / "usernet.stderr.log").write_text("network evidence")
+        compose = self.area / "cloud/docker-compose-ci.yml"
         calls = []
 
         def run(command, **options):
@@ -256,9 +257,12 @@ class MacosDockerTest(unittest.TestCase):
                                     "DOCKER_HOST": "tcp://unrelated.invalid:2375",
                                     "DOCKER_CONTEXT": "unrelated"}), \
                 patch.object(docker.subprocess, "run", side_effect=run):
-            docker.collect_runtime_diagnostics(self.root, output)
+            docker.collect_runtime_diagnostics(self.root, output, compose)
             self.assertEqual(os.environ["DOCKER_CONTEXT"], "unrelated")
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
+        self.assertEqual(calls[0][3:], ["compose", "--env-file", str(compose.parent.resolve() / ".env"),
+                                        "-f", str(compose.resolve()), "logs", "--no-color", "--tail", "100", "postgres"])
+        self.assertEqual((output / "postgres.log").stat().st_size, 64 * 1024)
         self.assertIn([str((self.root / "tools/bin/limactl").resolve()), "shell", "colima", "df", "-h",
                        "/", "/var/lib/docker", "/var/lib/containerd"], calls)
         journal = next(command for command in calls if "journalctl" in command)

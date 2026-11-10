@@ -1,0 +1,5 @@
+services:
+  postgres:
+    healthcheck:
+      # Restore the snapshot before counting failed TCP readiness probes.
+      start_period: 120s

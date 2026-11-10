@@ -262,6 +262,11 @@ class MobileCloudWorkflowTest(unittest.TestCase):
 
     def test_exact_and_registry_pulls_share_the_bounded_parallel_limit(self):
         self.assertEqual(self.job["env"]["COMPOSE_PARALLEL_LIMIT"], "2")
+        override = ".github/docker/mobile-row-cloud.yml"
+        self.assertEqual(self.step("Start the verified exact Cloud runtime")["with"]["compose-override"],
+                         f".mobile-ci-tools/{override}")
+        config = yaml.safe_load((WORKFLOW.parents[2] / override).read_text())
+        self.assertEqual(config, {"services": {"postgres": {"healthcheck": {"start_period": "120s"}}}})
         for name in ("Start the verified exact Cloud runtime", "Start job-owned Cloud services"):
             self.assertNotIn("COMPOSE_PARALLEL_LIMIT", self.step(name).get("env", {}))
         startup = self.step("Start job-owned Cloud services")
@@ -291,9 +296,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             rows = [json.loads(line) for line in calls.read_text().splitlines()]
-            self.assertEqual(rows[0], {"args": ["compose", "-f", "docker-compose-ci.yml", "pull"],
-                                       "parallel": "2"})
-            self.assertEqual(rows[1]["args"], ["compose", "-f", "docker-compose-ci.yml", "up", "-d", "--no-build"])
+            compose = ["compose", "-f", "docker-compose-ci.yml", "-f", f"../.mobile-ci-tools/{override}"]
+            self.assertEqual(rows[0], {"args": compose + ["pull"], "parallel": "2"})
+            self.assertEqual(rows[1]["args"], compose + ["up", "-d", "--no-build"])
             self.assertTrue(all(row["parallel"] == "2" for row in rows))
 
     def test_cloud_failure_evidence_is_uploaded_before_owned_runtime_cleanup(self):
@@ -311,6 +316,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertIn(f"steps.{stage}.outcome == 'failure'", capture["if"])
         self.assertIn('macos_docker.py diagnose', capture["run"])
         self.assertIn('--output "$RUNNER_TEMP/mobile-cloud-results/diagnostics"', capture["run"])
+        self.assertIn('--compose-file .mobile-cloud/docker-compose-ci.yml', capture["run"])
 
     def test_runner_four_builds_for_the_booted_simulator_and_propagates_failure(self):
         simulator = next(step for step in self.steps
@@ -470,10 +476,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     continue
                 self.assertEqual(result.returncode, 0, result.stderr)
                 commands = calls.read_text().splitlines()
-                expected = ["compose -f docker-compose-ci.yml images --format json"]
+                compose = "compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml"
+                expected = [f"{compose} images --format json"]
                 if enabled == "false":
-                    expected = ["compose -f docker-compose-ci.yml pull",
-                                "compose -f docker-compose-ci.yml up -d --no-build", *expected]
+                    expected = [f"{compose} pull", f"{compose} up -d --no-build", *expected]
                 self.assertEqual(commands, expected)
 
     def test_intel_rust_target_profile_and_simulator_match(self):

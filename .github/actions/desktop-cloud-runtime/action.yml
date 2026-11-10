@@ -23,7 +23,7 @@ inputs:
     description: Compose service profile (desktop or web).
     default: desktop
   compose-override:
-    description: Checked-out Web Compose override; required by the web profile.
+    description: Checked-out Compose override. Required by the web profile.
     default: ''
   github-token:
     description: Existing token with read access to private Client source and Cloud Actions/artifacts.

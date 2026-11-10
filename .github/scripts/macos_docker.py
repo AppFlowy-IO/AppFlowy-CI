@@ -154,7 +154,7 @@ def owned_log_tail(root, path):
         return None
 
 
-def collect_runtime_diagnostics(root, destination):
+def collect_runtime_diagnostics(root, destination, compose_file=None):
     # A failed pull can leave Docker responsive while its network or disk work
     # stops. Keep evidence before the ephemeral VM and its logs are discarded.
     if not os.environ.get("RUNNER_TEMP"):
@@ -187,6 +187,12 @@ def collect_runtime_diagnostics(root, destination):
         "host-memory.log": ["vm_stat"],
         "host-storage.log": ["df", "-h", str(root)],
     }
+    if compose_file is not None:
+        compose_file = compose_file.resolve()
+        # The restore log explains why TCP readiness failed during startup.
+        postgres_logs = client + ["compose", "--env-file", str(compose_file.parent / ".env"),
+                                  "-f", str(compose_file), "logs", "--no-color", "--tail", "100", "postgres"]
+        commands = {"postgres.log": postgres_logs, **commands}
     results = []
     for name, command in commands.items():
         result = {"command": command, "log": name}
@@ -253,6 +259,7 @@ def main(argv=None):
     parser.add_argument("operation", choices=("install", "start", "diagnose"))
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--compose-file", type=Path, help="Cloud fixture for PostgreSQL failure logs")
     args = parser.parse_args(argv)
     if args.operation == "diagnose" and args.output is None:
         parser.error("diagnose requires --output")
@@ -270,7 +277,7 @@ def main(argv=None):
         elif args.operation == "start":
             start_runtime(root)
         else:
-            collect_runtime_diagnostics(root, args.output)
+            collect_runtime_diagnostics(root, args.output, args.compose_file)
     except (OSError, RuntimeError, ValueError, tarfile.TarError, subprocess.SubprocessError) as error:
         print(f"macOS Docker setup failed: {error}", file=sys.stderr)
         return 1

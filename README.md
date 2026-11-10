@@ -46,6 +46,9 @@ before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 Gi
 reserving host capacity for macOS and the simulator. Compose limits concurrent engine
 calls to two, including cold image pulls, for both runtime-selection paths. Registry
 image provisioning has a 20-minute cap after observed pulls outlasted 15 minutes.
+The mobile Cloud fixture gives PostgreSQL a two-minute startup grace for snapshot
+restore. Service startup still requires the restore marker and TCP readiness.
+Failed setup retains the PostgreSQL restore log alongside Docker diagnostics.
 The overall Intel job remains capped at 180 minutes, with the local and Cloud
 functional suites still capped at 60 and 20 minutes respectively. A failed
 Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest disk,
