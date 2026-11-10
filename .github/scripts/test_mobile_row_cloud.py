@@ -169,6 +169,55 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertIn(f"steps.{previous['id']}.outcome == 'success'", step["if"])
             previous = step
 
+    def test_exact_and_registry_pulls_share_the_bounded_parallel_limit(self):
+        self.assertEqual(self.job["env"]["COMPOSE_PARALLEL_LIMIT"], "2")
+        for name in ("Start the verified exact Cloud runtime", "Start job-owned Cloud services"):
+            self.assertNotIn("COMPOSE_PARALLEL_LIMIT", self.step(name).get("env", {}))
+        startup = self.step("Start job-owned Cloud services")
+        self.assertEqual(startup["timeout-minutes"], 15)
+        with tempfile.TemporaryDirectory(prefix="mobile-cloud-pull-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            executable = root / "docker"
+            executable.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps({'args':sys.argv[1:], 'parallel':os.environ.get('COMPOSE_PARALLEL_LIMIT')})+'\\n')\n"
+                "print('[]')\n")
+            executable.chmod(0o700)
+            executable = root / "git"
+            executable.write_text("#!/bin/sh\nprintf '%040d\\n' 1\n")
+            executable.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", startup["run"]], cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                     "COMPOSE_PARALLEL_LIMIT": self.job["env"]["COMPOSE_PARALLEL_LIMIT"],
+                     "EXACT_CLOUD_ENABLED": "false", "RUNNER_TEMP": directory, "CALLS": str(calls)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual(rows[0], {"args": ["compose", "-f", "docker-compose-ci.yml", "pull"],
+                                       "parallel": "2"})
+            self.assertEqual(rows[1]["args"], ["compose", "-f", "docker-compose-ci.yml", "up", "-d", "--no-build"])
+            self.assertTrue(all(row["parallel"] == "2" for row in rows))
+
+    def test_cloud_failure_evidence_is_uploaded_before_owned_runtime_cleanup(self):
+        capture = self.step("Capture mobile Cloud runtime failure")
+        upload = self.step("Upload Cloud row-page test results")
+        cleanup = self.step("Remove job-owned Cloud services and credentials")
+        self.assertLess(self.steps.index(capture), self.steps.index(upload))
+        self.assertLess(self.steps.index(upload), self.steps.index(cleanup))
+        self.assertEqual(capture["timeout-minutes"], 2)
+        self.assertIn("always()", capture["if"])
+        self.assertIn("!cancelled()", capture["if"])
+        self.assertIn("matrix.test_number == 4", capture["if"])
+        self.assertIn("steps.cloud-tools.outcome == 'success'", capture["if"])
+        for stage in ("cloud-docker", "exact-cloud", "cloud-start", "cloud-ready", "cloud-tests"):
+            self.assertIn(f"steps.{stage}.outcome == 'failure'", capture["if"])
+        self.assertIn('macos_docker.py diagnose', capture["run"])
+        self.assertIn('--output "$RUNNER_TEMP/mobile-cloud-results/diagnostics"', capture["run"])
+
     def test_runner_four_builds_for_the_booted_simulator_and_propagates_failure(self):
         simulator = next(step for step in self.steps
                          if step.get("id") == "simulator-action")

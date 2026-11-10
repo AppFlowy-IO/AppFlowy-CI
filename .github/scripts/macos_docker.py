@@ -143,6 +143,74 @@ def publish_environment(root):
             output.write(f"{name}={values[name]}\n")
 
 
+def owned_log_tail(root, path):
+    try:
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            return None
+        with path.open("rb") as source:
+            source.seek(max(0, path.stat().st_size - 64 * 1024))
+            return source.read(64 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def collect_runtime_diagnostics(root, destination):
+    # A failed pull can leave Docker responsive while its network or disk work
+    # stops. Keep evidence before the ephemeral VM and its logs are discarded.
+    if not os.environ.get("RUNNER_TEMP"):
+        raise ValueError("Runtime diagnostics require RUNNER_TEMP")
+    temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
+    root, destination = root.resolve(), destination.resolve()
+    for path in (root, destination):
+        if path == temporary or not path.is_relative_to(temporary):
+            raise ValueError("Runtime diagnostics require job-owned temporary paths")
+    inside(root, "colima/_lima")
+    socket = inside(root, "colima/default/docker.sock")
+    binary = inside(root, "tools/bin/docker")
+    lima = inside(root, "tools/bin/limactl")
+    destination.mkdir(parents=True, exist_ok=True)
+    values = environment(root)
+    values.pop("DOCKER_CONTEXT", None)
+    values["DOCKER_HOST"] = f"unix://{socket}"
+    client = [str(binary), "--host", values["DOCKER_HOST"]]
+    commands = {
+        "docker-info.log": client + ["info", "--format", '{"server":{{json .ServerVersion}},'
+                                     '"cpus":{{json .NCPU}},"memory":{{json .MemTotal}},'
+                                     '"driver":{{json .Driver}}}'],
+        "docker-images.log": client + ["image", "ls", "--digests"],
+        "docker-storage.log": client + ["system", "df"],
+        "guest-kernel.log": [str(lima), "shell", "colima", "sudo", "-n", "dmesg", "--level=err,warn"],
+        "host-memory.log": ["vm_stat"],
+        "host-storage.log": ["df", "-h", str(root)],
+    }
+    results = []
+    for name, command in commands.items():
+        result = {"command": command, "log": name}
+        with tempfile.TemporaryFile(dir=destination) as output:
+            try:
+                process = subprocess.run(command, env=values, stdout=output,
+                                         stderr=subprocess.STDOUT, timeout=10, check=False)
+                result["exit_code"] = process.returncode
+            except (OSError, subprocess.SubprocessError) as error:
+                result["error"] = type(error).__name__
+            output.seek(0, os.SEEK_END)
+            output.seek(max(0, output.tell() - 64 * 1024))
+            inside(destination, name).write_bytes(output.read(64 * 1024))
+        results.append(result)
+    logs = root / "colima/_lima"
+    retained = 0
+    for pattern in ("*/serial.log", "*/serial0.log", "*/ha.stderr.log", "_networks/*/*.stderr.log"):
+        for path in logs.glob(pattern):
+            if retained == 8:
+                break
+            tail = owned_log_tail(root, path)
+            if tail is not None:
+                name = "lima-" + str(path.relative_to(logs)).replace("/", "-")
+                inside(destination, name).write_bytes(tail.encode("utf-8")[-64 * 1024:])
+                retained += 1
+    inside(destination, "summary.json").write_text(json.dumps({"commands": results}, indent=2) + "\n")
+
+
 def start_runtime(root):
     # Colima ignores COLIMA_HOME unless the directory already exists. Otherwise
     # a fresh job silently uses ~/.colima, including any inherited Lima profile.
@@ -163,16 +231,9 @@ def start_runtime(root):
         # host pressure. Retain bounded boot evidence without reading config.
         logs = root / "colima/_lima/colima"
         for name in ("serial.log", "serial0.log", "ha.stderr.log"):
-            path = logs / name
-            try:
-                if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-                    continue
-                with path.open("rb") as source:
-                    source.seek(max(0, path.stat().st_size - 64 * 1024))
-                    print(f"Colima boot diagnostic ({name}):\n" + source.read(64 * 1024).decode("utf-8", errors="replace"),
-                          file=sys.stderr, flush=True)
-            except OSError:
-                pass
+            tail = owned_log_tail(root, logs / name)
+            if tail is not None:
+                print(f"Colima boot diagnostic ({name}):\n{tail}", file=sys.stderr, flush=True)
         raise
     # Colima selects its Docker context in the job-owned DOCKER_CONFIG.
     # A working client alone must never count as a ready Cloud runtime.
@@ -182,9 +243,12 @@ def start_runtime(root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("install", "start"))
+    parser.add_argument("operation", choices=("install", "start", "diagnose"))
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.operation == "diagnose" and args.output is None:
+        parser.error("diagnose requires --output")
     try:
         require_intel_macos()
         root = args.root.resolve()
@@ -196,8 +260,10 @@ def main(argv=None):
             install_tools(root, assets)
             verify_versions(root, assets)
             publish_environment(root)
-        else:
+        elif args.operation == "start":
             start_runtime(root)
+        else:
+            collect_runtime_diagnostics(root, args.output)
     except (OSError, RuntimeError, ValueError, tarfile.TarError, subprocess.SubprocessError) as error:
         print(f"macOS Docker setup failed: {error}", file=sys.stderr)
         return 1

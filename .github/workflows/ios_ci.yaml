@@ -61,6 +61,9 @@ jobs:
       IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
       IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
       COMPOSE_PROJECT_NAME: ios-row-${{ github.run_id }}-${{ github.run_attempt }}
+      # Cold, simultaneous image pulls stopped progressing on the two-CPU VM.
+      # Bound engine calls for both exact-image and registry fixture startup.
+      COMPOSE_PARALLEL_LIMIT: "2"
       APPFLOWY_CLOUD_VERSION: latest-amd64
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
@@ -336,6 +339,15 @@ jobs:
             --dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json" \
             --file-reporter "json:$RUNNER_TEMP/mobile-cloud-results/tests.json" \
             2>&1 | tee "$RUNNER_TEMP/mobile-cloud-results/flutter.log"
+
+      - name: Capture mobile Cloud runtime failure
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success' && (steps.cloud-docker.outcome == 'failure' || steps.exact-cloud.outcome == 'failure' || steps.cloud-start.outcome == 'failure' || steps.cloud-ready.outcome == 'failure' || steps.cloud-tests.outcome == 'failure')"
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python3 .mobile-ci-tools/.github/scripts/macos_docker.py diagnose \
+            --root "$RUNNER_TEMP/appflowy-macos-docker" \
+            --output "$RUNNER_TEMP/mobile-cloud-results/diagnostics"
 
       - name: Upload Cloud row-page test results
         if: always() && matrix.test_number == 4

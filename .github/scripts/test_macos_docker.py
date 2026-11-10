@@ -210,6 +210,93 @@ class MacosDockerTest(unittest.TestCase):
         self.assertNotIn("unrelated configuration", output.getvalue())
         self.assertLess(len(output.getvalue()), 66 * 1024)
 
+    def test_runtime_failure_evidence_is_bounded_and_uses_only_the_owned_daemon(self):
+        output = self.area / "evidence"
+        logs = self.root / "colima/_lima/colima"
+        logs.mkdir(parents=True)
+        (logs / "serial.log").write_text("discarded-prefix" + "x" * 70000 + "kernel-end")
+        outside = self.area / "unrelated.log"
+        outside.write_text("unrelated user log")
+        (logs / "serial0.log").symlink_to(outside)
+        network = self.root / "colima/_lima/_networks/user-v2"
+        network.mkdir(parents=True)
+        (network / "usernet.stderr.log").write_text("network evidence")
+        calls = []
+
+        def run(command, **options):
+            self.assertEqual(options["timeout"], 10)
+            self.assertFalse(options["check"])
+            self.assertNotIn("DOCKER_CONTEXT", options["env"])
+            self.assertEqual(options["env"]["DOCKER_HOST"],
+                             f"unix://{self.root.resolve()}/colima/default/docker.sock")
+            if command[0].endswith("/docker"):
+                self.assertEqual(command[1:3], ["--host", options["env"]["DOCKER_HOST"]])
+                self.assertNotIn("pull", command)
+                self.assertNotIn("prune", command)
+            options["stdout"].write(b"discarded-command-prefix" + b"x" * 70000 + b"command-end")
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.dict(os.environ, {"RUNNER_TEMP": str(self.area),
+                                    "DOCKER_HOST": "tcp://unrelated.invalid:2375",
+                                    "DOCKER_CONTEXT": "unrelated"}), \
+                patch.object(docker.subprocess, "run", side_effect=run):
+            docker.collect_runtime_diagnostics(self.root, output)
+            self.assertEqual(os.environ["DOCKER_CONTEXT"], "unrelated")
+        self.assertEqual(len(calls), 6)
+        self.assertEqual((output / "docker-info.log").stat().st_size, 64 * 1024)
+        self.assertTrue((output / "docker-info.log").read_bytes().endswith(b"command-end"))
+        kernel = (output / "lima-colima-serial.log").read_text()
+        self.assertNotIn("discarded-prefix", kernel)
+        self.assertTrue(kernel.endswith("kernel-end"))
+        self.assertEqual((output / "lima-_networks-user-v2-usernet.stderr.log").read_text(),
+                         "network evidence")
+        self.assertFalse((output / "lima-colima-serial0.log").exists())
+        self.assertEqual(outside.read_text(), "unrelated user log")
+        reports = json.loads((output / "summary.json").read_text())["commands"]
+        self.assertTrue(all(report["exit_code"] == 0 for report in reports))
+
+    def test_runtime_evidence_survives_daemon_timeout_and_missing_host_tools(self):
+        output = self.area / "evidence"
+        calls = []
+
+        def run(command, **options):
+            calls.append(command)
+            options["stdout"].write(b"partial diagnostic")
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(command, 10)
+            if len(calls) == 2:
+                raise FileNotFoundError("unavailable")
+            return subprocess.CompletedProcess(command, 7)
+
+        with patch.dict(os.environ, {"RUNNER_TEMP": str(self.area)}), \
+                patch.object(docker.subprocess, "run", side_effect=run):
+            docker.collect_runtime_diagnostics(self.root, output)
+        reports = json.loads((output / "summary.json").read_text())["commands"]
+        self.assertEqual(len(reports), 6)
+        self.assertEqual(reports[0]["error"], "TimeoutExpired")
+        self.assertEqual(reports[1]["error"], "FileNotFoundError")
+        self.assertEqual(reports[-1]["exit_code"], 7)
+        self.assertEqual((output / "docker-info.log").read_bytes(), b"partial diagnostic")
+
+    def test_runtime_evidence_rejects_paths_outside_job_and_escaped_lima_storage(self):
+        output = self.area / "evidence"
+        with patch.dict(os.environ, {"RUNNER_TEMP": str(self.area)}), \
+                patch.object(docker.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "job-owned"):
+                docker.collect_runtime_diagnostics(self.area.parent / "unrelated", output)
+            with self.assertRaisesRegex(ValueError, "job-owned"):
+                docker.collect_runtime_diagnostics(self.root, self.area.parent / "unrelated")
+            self.assertFalse(output.exists())
+            outside = self.area / "user-lima"
+            outside.mkdir()
+            (self.root / "colima").mkdir(parents=True)
+            (self.root / "colima/_lima").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "outside"):
+                docker.collect_runtime_diagnostics(self.root, output)
+            run.assert_not_called()
+        self.assertFalse(output.exists())
+
     def test_workflow_uses_pinned_installer_only_for_existing_intel_cloud_lane(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ios_ci.yaml").read_text())
         steps = workflow["jobs"]["integration-tests"]["steps"]
