@@ -44,7 +44,10 @@ macOS 26 deployment target. The installer checks every binary's deployment targe
 execution and retains the VZ runtime. The launcher creates the job-owned Colima home
 before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 GiB,
 reserving host capacity for macOS and the simulator. Compose limits concurrent engine
-calls to two, including cold image pulls, for both runtime-selection paths. A failed
+calls to two, including cold image pulls, for both runtime-selection paths. Registry
+image provisioning has a 20-minute cap after observed pulls outlasted 15 minutes.
+The overall Intel job remains capped at 180 minutes, with the local and Cloud
+functional suites still capped at 60 and 20 minutes respectively. A failed
 Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest disk,
 kernel and Docker/containerd journal entries, and owned Lima/network logs before cleanup.
 The selected Intel simulator is stopped during cold VM/image provisioning and booted

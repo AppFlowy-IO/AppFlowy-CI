@@ -312,7 +312,9 @@ jobs:
           AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
           EXACT_CLOUD_ENABLED: ${{ steps.exact-cloud.outputs.enabled }}
         working-directory: .mobile-cloud
-        timeout-minutes: 15
+        # Cold pulls were still extracting at the former 15-minute cap. Keep
+        # this within the unchanged 180-minute job and functional test budgets.
+        timeout-minutes: 20
         run: |
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
             docker compose -f docker-compose-ci.yml pull

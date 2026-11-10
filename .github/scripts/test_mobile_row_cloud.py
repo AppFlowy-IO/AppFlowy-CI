@@ -263,7 +263,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         for name in ("Start the verified exact Cloud runtime", "Start job-owned Cloud services"):
             self.assertNotIn("COMPOSE_PARALLEL_LIMIT", self.step(name).get("env", {}))
         startup = self.step("Start job-owned Cloud services")
-        self.assertEqual(startup["timeout-minutes"], 15)
+        self.assertEqual(startup["timeout-minutes"], 20)
+        self.assertEqual(self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")["timeout-minutes"], 60)
+        self.assertEqual(self.step("Run Cloud row-page tests on iOS")["timeout-minutes"], 20)
+        self.assertEqual(self.job["timeout-minutes"], "${{ matrix.test_number == 4 && 180 || 120 }}")
         with tempfile.TemporaryDirectory(prefix="mobile-cloud-pull-") as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
