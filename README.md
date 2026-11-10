@@ -49,8 +49,9 @@ Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest 
 kernel and Docker/containerd journal entries, and owned Lima/network logs before cleanup.
 The selected Intel simulator is stopped during cold VM/image provisioning and booted
 again only after Cloud readiness. The workflow controls its selected UUID, preserves
-simulator data, checks boot completion, and shuts that device down in the action's
-post-job cleanup. Docker retains Colima's generated image-store configuration; readiness
+simulator data, checks boot completion, and stops that device in final cleanup. Cleanup
+accepts an already stopped device after failed provisioning and propagates other
+shutdown errors. Docker retains Colima's generated image-store configuration; readiness
 checks target only the job-owned socket. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.

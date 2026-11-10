@@ -152,7 +152,8 @@ jobs:
           # while scrolling, then lost GPU access. Reduce virtual graphics work
           # while keeping the original local and Cloud suites and deadlines.
           model: ${{ matrix.test_number == 4 && 'iPhone SE (3rd generation)' || 'iPhone 17 Pro' }}
-          shutdown_after_job: ${{ matrix.test_number == 4 }}
+          # Runner 4 owns both provisioning shutdown and final cleanup.
+          shutdown_after_job: false
           wait_for_boot: true
 
       # Runner 4 builds through flutter test below, using the selected Intel
@@ -406,3 +407,31 @@ jobs:
         run: |
           docker compose -f docker-compose-ci.yml down --volumes --remove-orphans || true
           rm -f .env "$RUNNER_TEMP/mobile-row-cloud-defines.json"
+
+      - name: Stop selected simulator after tests
+        if: always() && matrix.test_number == 4 && steps.simulator-action.outputs.udid != ''
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+
+          udid = os.environ["SIMULATOR_UDID"]
+          if not udid:
+              raise SystemExit("Missing job simulator UUID")
+          result = subprocess.run(
+              ["xcrun", "simctl", "list", "devices", "--json"],
+              check=True, capture_output=True, text=True, timeout=30,
+          )
+          devices = [device for runtime in json.loads(result.stdout)["devices"].values()
+                     for device in runtime if device["udid"] == udid]
+          if len(devices) != 1:
+              raise SystemExit("Could not identify the job simulator")
+          if devices[0]["state"] != "Shutdown":
+              subprocess.run(["xcrun", "simctl", "shutdown", udid], check=True, timeout=60)
+          PYTHON

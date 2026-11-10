@@ -171,13 +171,57 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertIn(f"steps.{previous['id']}.outcome == 'success'", step["if"])
             previous = step
 
+    def test_final_simulator_cleanup_handles_failed_cloud_provisioning(self):
+        cleanup = self.step("Stop selected simulator after tests")
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertIs(simulator["with"]["shutdown_after_job"], False)
+        self.assertIn("always()", cleanup["if"])
+        self.assertIn("matrix.test_number == 4", cleanup["if"])
+        with tempfile.TemporaryDirectory(prefix="final-simulator-cleanup-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "if sys.argv[1:] == ['simctl', 'list', 'devices', '--json']:\n"
+                " print(json.dumps({'devices': {'runtime': [\n"
+                "  {'udid': 'other-device', 'state': 'Booted'},\n"
+                "  {'udid': 'owned-device', 'state': os.environ['DEVICE_STATE']}\n"
+                " ]}}))\n"
+                "if sys.argv[2] == 'shutdown' and os.environ['DEVICE_STATE'] == 'Shutdown': sys.exit(149)\n"
+                "sys.exit(7 if os.environ.get('FAIL_COMMAND') == sys.argv[2] else 0)\n")
+            xcrun.chmod(0o700)
+            values = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                      "SIMULATOR_UDID": "owned-device", "CALLS": str(calls)}
+            for state in ("Shutdown", "Booted"):
+                with self.subTest(state=state):
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-c", cleanup["run"]],
+                                            env={**values, "DEVICE_STATE": state},
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                    expected = [["simctl", "list", "devices", "--json"]]
+                    if state == "Booted":
+                        expected.append(["simctl", "shutdown", "owned-device"])
+                    self.assertEqual(commands, expected)
+            for override in ({"SIMULATOR_UDID": ""}, {"SIMULATOR_UDID": "missing-device"},
+                             {"FAIL_COMMAND": "list"}, {"FAIL_COMMAND": "shutdown"}):
+                with self.subTest(override=override):
+                    result = subprocess.run(["bash", "-c", cleanup["run"]],
+                                            env={**values, "DEVICE_STATE": "Booted", **override},
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertNotEqual(result.returncode, 0)
+
     def test_cloud_provisioning_and_boot_only_control_the_selected_simulator(self):
         stop = self.step("Stop selected simulator during Cloud provisioning")
         boot = self.step("Boot selected simulator for Cloud tests")
         self.assertEqual(stop["timeout-minutes"], 2)
         self.assertEqual(boot["timeout-minutes"], 8)
         simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
-        self.assertEqual(simulator["with"]["shutdown_after_job"], "${{ matrix.test_number == 4 }}")
+        self.assertIs(simulator["with"]["shutdown_after_job"], False)
         with tempfile.TemporaryDirectory(prefix="cloud-simulator-lifecycle-") as directory:
             root = Path(directory)
             calls = root / "calls.jsonl"
