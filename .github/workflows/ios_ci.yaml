@@ -152,7 +152,7 @@ jobs:
           # while scrolling, then lost GPU access. Reduce virtual graphics work
           # while keeping the original local and Cloud suites and deadlines.
           model: ${{ matrix.test_number == 4 && 'iPhone SE (3rd generation)' || 'iPhone 17 Pro' }}
-          shutdown_after_job: false
+          shutdown_after_job: ${{ matrix.test_number == 4 }}
           wait_for_boot: true
 
       # Runner 4 builds through flutter test below, using the selected Intel
@@ -263,8 +263,21 @@ jobs:
             --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
             --desktop "$GITHUB_WORKSPACE" --temporary "$RUNNER_TEMP"
 
-      - name: Setup Docker on macOS
+      # Keep the idle simulator out of cold VM/image provisioning. Boot the same
+      # device afterward so a failed local Metal context cannot reach Cloud tests.
+      - name: Stop selected simulator during Cloud provisioning
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
+        id: cloud-simulator-stop
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl shutdown "${SIMULATOR_UDID:?Missing job simulator UUID}"
+
+      - name: Setup Docker on macOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-simulator-stop.outcome == 'success'"
         id: cloud-docker
         timeout-minutes: 15
         uses: ./.mobile-ci-tools/.github/actions/macos-docker
@@ -325,8 +338,20 @@ jobs:
           echo "::error::The job-owned Cloud fixture did not become ready"
           exit 1
 
-      - name: Run Cloud row-page tests on iOS
+      - name: Boot selected simulator for Cloud tests
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-ready.outcome == 'success'"
+        id: cloud-simulator-boot
+        timeout-minutes: 8
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "${SIMULATOR_UDID:?Missing job simulator UUID}"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Run Cloud row-page tests on iOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-simulator-boot.outcome == 'success'"
         id: cloud-tests
         shell: bash
         working-directory: frontend/appflowy_flutter
@@ -344,7 +369,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/mobile-cloud-results/flutter.log"
 
       - name: Capture mobile Cloud runtime failure
-        if: "always() && !cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success' && (steps.cloud-docker.outcome == 'failure' || steps.exact-cloud.outcome == 'failure' || steps.cloud-start.outcome == 'failure' || steps.cloud-ready.outcome == 'failure' || steps.cloud-tests.outcome == 'failure')"
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success' && (steps.cloud-docker.outcome == 'failure' || steps.exact-cloud.outcome == 'failure' || steps.cloud-start.outcome == 'failure' || steps.cloud-ready.outcome == 'failure' || steps.cloud-tests.outcome == 'failure' || steps.cloud-simulator-boot.outcome == 'failure')"
         timeout-minutes: 2
         shell: bash
         run: |

@@ -215,35 +215,6 @@ def collect_runtime_diagnostics(root, destination):
     inside(destination, "summary.json").write_text(json.dumps({"commands": results}, indent=2) + "\n")
 
 
-def configure_image_store(root):
-    # Containerd's image store retains compressed layers as well as extracted
-    # snapshots. Cold pulls stalled during extraction on this small CI VM.
-    # Keep Colima's generated networking/runtime configuration, and change only
-    # this fresh VM's store before any images or containers exist.
-    values = environment(root)
-    values.pop("DOCKER_CONTEXT", None)
-    values["DOCKER_HOST"] = f"unix://{inside(root, 'colima/default/docker.sock')}"
-    guest = [str(inside(root, "tools/bin/limactl")), "shell", "colima", "sudo", "-n"]
-    config_path = "/etc/docker/daemon.json"
-    config = json.loads(subprocess.check_output(
-        guest + ["cat", config_path], env=values, text=True, timeout=30,
-    ))
-    if not isinstance(config, dict) or not isinstance(config.get("features", {}), dict):
-        raise ValueError("The owned VM's Docker configuration must contain objects")
-    config.setdefault("features", {})["containerd-snapshotter"] = False
-    subprocess.run(guest + ["tee", config_path], input=json.dumps(config) + "\n",
-                   env=values, text=True, capture_output=True, check=True, timeout=30)
-    subprocess.run(guest + ["systemctl", "restart", "docker"], env=values,
-                   check=True, timeout=60)
-    driver = subprocess.check_output(
-        [str(inside(root, "tools/bin/docker")), "--host", values["DOCKER_HOST"],
-         "info", "--format", "{{.Driver}}"], env=values, text=True, timeout=30,
-    ).strip()
-    if driver != "overlay2":
-        raise RuntimeError(f"The owned Docker VM must use overlay2; reported {driver!r}")
-    print(f"Docker image storage driver: {driver}", flush=True)
-
-
 def start_runtime(root):
     # Colima ignores COLIMA_HOME unless the directory already exists. Otherwise
     # a fresh job silently uses ~/.colima, including any inherited Lima profile.
@@ -269,7 +240,12 @@ def start_runtime(root):
                 print(f"Colima boot diagnostic ({name}):\n{tail}", file=sys.stderr, flush=True)
         raise
     # A working client alone must never count as a ready Cloud runtime.
-    configure_image_store(root)
+    values = environment(root)
+    values.pop("DOCKER_CONTEXT", None)
+    values["DOCKER_HOST"] = f"unix://{inside(root, 'colima/default/docker.sock')}"
+    subprocess.run([
+        str(inside(root, "tools/bin/docker")), "--host", values["DOCKER_HOST"], "info",
+    ], env=values, check=True, timeout=30)
 
 
 def main(argv=None):

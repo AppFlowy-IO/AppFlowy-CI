@@ -131,10 +131,9 @@ class MacosDockerTest(unittest.TestCase):
     def test_runtime_reserves_host_capacity_and_requires_a_working_daemon(self):
         with patch.dict(os.environ, {"PATH": "/bin", "HOME": "/original"}, clear=True), patch.object(
             docker.subprocess, "check_output", side_effect=["4\n", str(16 * 1024 ** 3)],
-        ), patch.object(docker.subprocess, "run") as run, \
-                patch.object(docker, "configure_image_store") as configure:
+        ), patch.object(docker.subprocess, "run") as run:
             docker.start_runtime(self.root)
-        start, = run.call_args_list
+        start, ready = run.call_args_list
         command = start.args[0]
         self.assertEqual(command[command.index("--cpu") + 1], "2")
         self.assertEqual(command[command.index("--memory") + 1], "8")
@@ -144,7 +143,9 @@ class MacosDockerTest(unittest.TestCase):
         self.assertEqual(start.kwargs["env"]["COLIMA_HOME"], str(self.root / "colima"))
         self.assertEqual(start.kwargs["env"]["LIMA_HOME"], str(self.root / "colima/_lima"))
         self.assertTrue((self.root / "colima").is_dir())
-        configure.assert_called_once_with(self.root)
+        self.assertEqual(ready.args[0][-1], "info")
+        self.assertTrue(ready.kwargs["check"])
+        self.assertEqual(ready.kwargs["timeout"], 30)
 
     def test_fresh_runtime_uses_owned_profile_instead_of_inherited_lima_home(self):
         tools = self.root / "tools/bin"
@@ -154,11 +155,7 @@ class MacosDockerTest(unittest.TestCase):
         sysctl.write_text(f"#!{sys.executable}\nimport sys\n"
                          "print(4 if sys.argv[-1] == 'hw.ncpu' else 14 * 1024 ** 3)\n")
         sysctl.chmod(0o700)
-        config = self.area / "daemon.json"
-        original_config = {"features": {"buildkit": True, "containerd-snapshotter": True},
-                           "exec-opts": ["native.cgroupdriver=cgroupfs"], "mtu": 1500}
-        config.write_text(json.dumps(original_config))
-        for name in ("colima", "docker", "limactl"):
+        for name in ("colima", "docker"):
             executable = tools / name
             executable.write_text(
                 f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
@@ -167,11 +164,6 @@ class MacosDockerTest(unittest.TestCase):
                 " output.write(json.dumps({'argv': sys.argv, 'home': os.environ['HOME'], "
                 "'lima': os.environ['LIMA_HOME'], 'context': os.environ.get('DOCKER_CONTEXT'), "
                 "'host': os.environ.get('DOCKER_HOST')}) + '\\n')\n"
-                "if sys.argv[0].endswith('/limactl'):\n"
-                " config = Path(os.environ['DAEMON_CONFIG'])\n"
-                " if 'cat' in sys.argv: print(config.read_text())\n"
-                " elif 'tee' in sys.argv: config.write_text(sys.stdin.read())\n"
-                "if sys.argv[0].endswith('/docker'): print('overlay2')\n"
             )
             executable.chmod(0o700)
         original_home = self.area / "original-home"
@@ -181,55 +173,27 @@ class MacosDockerTest(unittest.TestCase):
         with patch.dict(os.environ, {
             "PATH": str(tools), "HOME": str(original_home),
             "LIMA_HOME": str(original_home / "existing-profile"), "CALLS": str(calls),
-            "DAEMON_CONFIG": str(config), "DOCKER_CONTEXT": "unrelated",
+            "DOCKER_CONTEXT": "unrelated",
             "DOCKER_HOST": "tcp://unrelated.invalid:2375",
         }):
             docker.start_runtime(self.root)
-        start, read, write, restart, ready = [json.loads(line) for line in calls.read_text().splitlines()]
+        start, ready = [json.loads(line) for line in calls.read_text().splitlines()]
         self.assertEqual(start["home"], str(original_home))
         self.assertEqual(start["lima"], str(self.root / "colima/_lima"))
         self.assertEqual(start["argv"][2:6], ["--cpu", "2", "--memory", "8"])
-        self.assertEqual(read["argv"][-2:], ["cat", "/etc/docker/daemon.json"])
-        self.assertEqual(write["argv"][-2:], ["tee", "/etc/docker/daemon.json"])
-        self.assertEqual(restart["argv"][-3:], ["systemctl", "restart", "docker"])
         socket = f"unix://{self.root.resolve()}/colima/default/docker.sock"
-        self.assertEqual(ready["argv"], [str((tools / "docker").resolve()), "--host", socket,
-                                         "info", "--format", "{{.Driver}}"])
-        for call in (read, write, restart, ready):
-            self.assertEqual(call["host"], socket)
-            self.assertIsNone(call["context"])
-        expected_config = {**original_config, "features": {"buildkit": True,
-                                                          "containerd-snapshotter": False}}
-        self.assertEqual(json.loads(config.read_text()), expected_config)
+        self.assertEqual(ready["argv"], [str((tools / "docker").resolve()), "--host", socket, "info"])
+        self.assertEqual(ready["host"], socket)
+        self.assertIsNone(ready["context"])
         self.assertEqual(sentinel.read_text(), "preserve")
 
-    def test_image_store_rejects_invalid_config_without_writing_or_restarting(self):
-        for config in ("broken-json", "[]", '{"features": []}'):
-            with self.subTest(config=config), patch.object(
-                docker.subprocess, "check_output", return_value=config,
-            ), patch.object(docker.subprocess, "run") as run:
-                with self.assertRaises(ValueError):
-                    docker.configure_image_store(self.root)
-                run.assert_not_called()
-
-    def test_image_store_requires_bounded_successful_restart_and_verified_driver(self):
-        with patch.object(docker.subprocess, "check_output", side_effect=["{}", "overlayfs\n"]), \
-                patch.object(docker.subprocess, "run") as run:
-            with self.assertRaisesRegex(RuntimeError, "must use overlay2"):
-                docker.configure_image_store(self.root)
-        write, restart = run.call_args_list
-        self.assertEqual(json.loads(write.kwargs["input"]),
-                         {"features": {"containerd-snapshotter": False}})
-        self.assertTrue(write.kwargs["check"])
-        self.assertEqual(write.kwargs["timeout"], 30)
-        self.assertTrue(restart.kwargs["check"])
-        self.assertEqual(restart.kwargs["timeout"], 60)
-        failure = subprocess.TimeoutExpired(["systemctl", "restart", "docker"], 60)
-        with patch.object(docker.subprocess, "check_output", return_value="{}") as read, \
+    def test_runtime_rejects_an_unavailable_owned_daemon(self):
+        failure = subprocess.CalledProcessError(7, ["docker", "info"])
+        with patch.object(docker.subprocess, "check_output", side_effect=["4", str(14 * 1024 ** 3)]), \
                 patch.object(docker.subprocess, "run", side_effect=[None, failure]):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                docker.configure_image_store(self.root)
-        self.assertEqual(read.call_count, 1)
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                docker.start_runtime(self.root)
+        self.assertIs(caught.exception, failure)
 
     def test_publishes_only_job_owned_tool_paths_and_configuration(self):
         path_file, env_file = self.area / "path", self.area / "env"

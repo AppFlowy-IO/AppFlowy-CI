@@ -160,14 +160,59 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         previous = tools
         for name in (
             "Checkout Cloud fixture", "Prepare private Cloud and simulator configuration",
-            "Setup Docker on macOS", "Log in to Docker Hub", "Start the verified exact Cloud runtime",
+            "Stop selected simulator during Cloud provisioning", "Setup Docker on macOS",
+            "Log in to Docker Hub", "Start the verified exact Cloud runtime",
             "Start job-owned Cloud services",
-            "Wait for Cloud readiness", "Run Cloud row-page tests on iOS",
+            "Wait for Cloud readiness", "Boot selected simulator for Cloud tests",
+            "Run Cloud row-page tests on iOS",
         ):
             step = self.step(name)
             self.assertIn("!cancelled()", step["if"])
             self.assertIn(f"steps.{previous['id']}.outcome == 'success'", step["if"])
             previous = step
+
+    def test_cloud_provisioning_and_boot_only_control_the_selected_simulator(self):
+        stop = self.step("Stop selected simulator during Cloud provisioning")
+        boot = self.step("Boot selected simulator for Cloud tests")
+        self.assertEqual(stop["timeout-minutes"], 2)
+        self.assertEqual(boot["timeout-minutes"], 8)
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertEqual(simulator["with"]["shutdown_after_job"], "${{ matrix.test_number == 4 }}")
+        with tempfile.TemporaryDirectory(prefix="cloud-simulator-lifecycle-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "sys.exit(7 if os.environ.get('FAIL_COMMAND') == sys.argv[2] else 0)\n")
+            xcrun.chmod(0o700)
+            values = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                      "SIMULATOR_UDID": "owned-device", "CALLS": str(calls)}
+            for step in (stop, boot):
+                result = subprocess.run(["bash", "-c", step["run"]], env=values,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            commands = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual(commands, [["simctl", "shutdown", "owned-device"],
+                                        ["simctl", "boot", "owned-device"],
+                                        ["simctl", "bootstatus", "owned-device", "-b"]])
+            for step, command in ((stop, "shutdown"), (boot, "boot"), (boot, "bootstatus")):
+                calls.write_text("")
+                result = subprocess.run(["bash", "-c", step["run"]],
+                                        env={**values, "FAIL_COMMAND": command},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 7)
+                commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual(commands[-1][1], command)
+            for step in (stop, boot):
+                calls.write_text("")
+                result = subprocess.run(["bash", "-c", step["run"]],
+                                        env={**values, "SIMULATOR_UDID": ""},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls.read_text(), "")
 
     def test_exact_and_registry_pulls_share_the_bounded_parallel_limit(self):
         self.assertEqual(self.job["env"]["COMPOSE_PARALLEL_LIMIT"], "2")

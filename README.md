@@ -47,11 +47,11 @@ reserving host capacity for macOS and the simulator. Compose limits concurrent e
 calls to two, including cold image pulls, for both runtime-selection paths. A failed
 Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest disk,
 kernel and Docker/containerd journal entries, and owned Lima/network logs before cleanup.
-Before loading any images, the launcher selects and verifies the classic `overlay2`
-image store inside the disposable VM, preserving the rest of Colima's daemon configuration.
-The containerd store stalled during cold image extraction; it also retains compressed
-layers alongside extracted snapshots. Exact-source fixtures use single-platform Docker
-image archives, which remain compatible with the classic store. Failed Intel local
+The selected Intel simulator is stopped during cold VM/image provisioning and booted
+again only after Cloud readiness. The workflow controls its selected UUID, preserves
+simulator data, checks boot completion, and shuts that device down in the action's
+post-job cleanup. Docker retains Colima's generated image-store configuration; readiness
+checks target only the job-owned socket. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.
 
