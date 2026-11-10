@@ -64,14 +64,18 @@ For an Intel simulator stall, manually dispatch `workflow_checks.yaml` with
 fresh four-sample Metal rendering on the standard Intel macOS 15 and 26 images,
 checks every resolved pixel, and requires a fresh 90-second report and successful
 process exit. It also records simulator availability and exercises the existing
-job-owned Docker bootstrap on the candidate macOS 26 image. This control tests the
+job-owned Docker bootstrap on the macOS 26 image. This control tests the
 runner environment; application validation still runs separately. See the
 [runner-image GPU report](https://github.com/actions/runner-images/issues/14836).
 
-The Intel lane uses the smaller iPhone SE (3rd generation) simulator display to
-reduce virtual graphics work. Its iPhone 16 Pro run recorded Metal command-buffer
-timeouts followed by revoked GPU access during grid scrolling. The original local
-and Cloud suites run with their existing deadlines; the other lanes use iPhone 17 Pro.
+The Intel lane uses `macos-26-intel` and iPhone 17 Pro, available in its iOS 26
+runtimes. The preceding macOS 15 Intel application run stalled and then lost
+communication with the hosted runner, leaving Cloud tests unexecuted. Before
+selecting the new image, the [environment comparison](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/42909518855)
+verified correct fresh Metal readbacks on both images, an available iPhone 17 Pro
+on macOS 26, and its job-owned Docker daemon running an actual container. The
+earlier application stall's cause remains unclassified. The original four-job
+matrix, local and Cloud suites, and functional deadlines are retained.
 
 Cloud prerequisite and application-artifact downloads finish before the disposable
 Cloud stack starts. After the tests, failure logs are collected and the stack is

@@ -134,7 +134,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(inputs["test_runner"]["default"], "all")
         self.assertEqual(inputs["test_runner"]["type"], "choice")
         self.assertEqual(self.job["runs-on"],
-                         "${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}")
+                         "${{ matrix.test_number == 4 && 'macos-26-intel' || 'macos-latest' }}")
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertEqual(simulator["with"]["model"], "iPhone 17 Pro")
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
         cloud = self.step("Run Cloud row-page tests on iOS")
         setup = self.step("Setup Docker on macOS")

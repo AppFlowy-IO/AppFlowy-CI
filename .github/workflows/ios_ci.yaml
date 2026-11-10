@@ -56,7 +56,7 @@ jobs:
 
     # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
     # runner 4 runs its local suite first, then the focused Cloud row-page suite.
-    runs-on: ${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}
+    runs-on: ${{ matrix.test_number == 4 && 'macos-26-intel' || 'macos-latest' }}
     env:
       IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
       IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
@@ -148,10 +148,9 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          # The larger Intel virtual display timed out Metal command buffers
-          # while scrolling, then lost GPU access. Reduce virtual graphics work
-          # while keeping the original local and Cloud suites and deadlines.
-          model: ${{ matrix.test_number == 4 && 'iPhone SE (3rd generation)' || 'iPhone 17 Pro' }}
+          # The macOS 26 image provides iOS 26 runtimes and this model on
+          # both architectures; the old Intel SE model is unavailable there.
+          model: 'iPhone 17 Pro'
           # Runner 4 owns both provisioning shutdown and final cleanup.
           shutdown_after_job: false
           wait_for_boot: true
