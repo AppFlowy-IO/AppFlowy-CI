@@ -32,6 +32,19 @@ Desktop can optionally test direct shared-crate server pins against an exact
 private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
 for input provenance, legacy behavior and CI-branch validation before receiver activation.
 
+The webhook receiver waits up to two hours for dispatched workflows. If that monitoring
+deadline expires, its comment distinguishes pending runs from failed jobs and unavailable
+results. Only explicit success from every requested workflow permits automatic approval;
+missing run links, API errors, and incomplete results do not pass.
+
+The Intel iOS Cloud lane installs checksum-pinned Docker, Compose, Buildx, Colima and
+Lima binaries under its job's temporary directory. This avoids Homebrew's Intel source
+builds. Lima 1.2.3 supports the macOS 15 runner; newer upstream Intel releases have a
+macOS 26 deployment target. The installer checks every binary's deployment target before
+execution and retains the existing VZ runtime and resource sizing. Failed Intel local
+tests retain a simulator screenshot, bounded app error logs, a native sample when available,
+and recent app crash reports alongside the existing test output.
+
 Desktop PDF exports have three focused commit statuses: `PDF export regression (Rust)`,
 `PDF export regression (UI)` and `PDF export regression (Cloud UI)`. The source-owned
 `frontend/rust-lib/integration-test/pdf_export_contract.json` names the required native
@@ -311,7 +324,7 @@ available; retaining both copies can exhaust hosted-runner disk before any contr
 
 Run the workflow regression checks on Linux with Python 3.12 or newer, PyYAML, OpenSSL, Git,
 `jq`, a C compiler, and Rust with Cargo and `rustfmt`. The binary-archive fixtures execute native
-Linux test binaries; Ubuntu 24.04 matches the hosted CI runtime.
+Linux test binaries; use an AMD64 Linux environment for the complete suite.
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts

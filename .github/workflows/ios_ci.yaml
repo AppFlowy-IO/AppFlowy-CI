@@ -172,10 +172,34 @@ jobs:
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
           fi
+          test_args=(--file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json")
+          if [[ "${{ matrix.test_number }}" == 4 ]]; then
+            test_args+=(--verbose)
+          fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
-            --file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json" \
+            "${test_args[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mobile-local-results/flutter.log"
+
+      - name: Checkout native failure diagnostics
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.local-mobile-tests.outcome == 'failure'"
+        id: failure-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mobile-failure-tools
+
+      - name: Capture Intel simulator failure
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.local-mobile-tests.outcome == 'failure' && steps.failure-tools.outcome == 'success'"
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          python3 .mobile-failure-tools/.github/scripts/collect_ios_failure.py \
+            --device "$SIMULATOR_UDID" \
+            --output "$RUNNER_TEMP/mobile-local-results/diagnostics"
 
       - name: Upload local mobile test results
         if: always()
@@ -236,7 +260,8 @@ jobs:
       - name: Setup Docker on macOS
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/macos-docker
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"

@@ -199,7 +199,20 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
                 "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
+                "--verbose",
             ])
+
+    def test_intel_failure_diagnostics_run_before_result_upload(self):
+        capture = self.step("Capture Intel simulator failure")
+        checkout = self.step("Checkout native failure diagnostics")
+        upload = self.step("Upload local mobile test results")
+        self.assertLess(self.steps.index(checkout), self.steps.index(capture))
+        self.assertLess(self.steps.index(capture), self.steps.index(upload))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertIn("always()", capture["if"])
+        self.assertIn("matrix.test_number == 4", capture["if"])
+        self.assertIn("steps.local-mobile-tests.outcome == 'failure'", capture["if"])
+        self.assertEqual(capture["timeout-minutes"], 2)
 
     def test_report_capture_retains_stdout_stderr_and_the_flutter_failure(self):
         for name, report_directory in (

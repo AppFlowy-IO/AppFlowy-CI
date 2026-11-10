@@ -1,0 +1,169 @@
+"""Exercise the job-owned macOS installer without installing host packages or VMs."""
+
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import yaml
+
+import macos_docker as docker
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class MacosDockerTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.area = Path(self.directory.name)
+        self.root = self.area / "job"
+
+    def asset(self, name, payload, destination, *, archive=False, member=None):
+        path = self.area / name
+        if archive:
+            with tarfile.open(path, "w:gz") as bundle:
+                for filename, content in payload.items():
+                    info = tarfile.TarInfo(filename)
+                    info.size = len(content)
+                    info.mode = 0o755
+                    bundle.addfile(info, io.BytesIO(content))
+        else:
+            path.write_bytes(payload)
+        asset = {"name": name, "version": "1.2.3", "url": "https://example.invalid/" + name,
+                 "sha256": docker.checksum(path), "format": "tar" if archive else "file",
+                 "destination": destination}
+        if member:
+            asset["member"] = member
+        return asset
+
+    def fetch(self, asset, directory):
+        return self.area / asset["name"]
+
+    def test_installs_lima_tree_docker_archive_and_plugins_in_owned_prefix(self):
+        assets = [self.asset("lima", {"bin/limactl": b"lima", "libexec/lima/guestagent": b"agent"},
+                             "tools", archive=True),
+                  self.asset("docker", {"docker/docker": b"docker"}, "tools/bin/docker",
+                             archive=True, member="docker/docker"),
+                  self.asset("compose", b"compose", "docker/cli-plugins/docker-compose")]
+        docker.install_tools(self.root, assets, self.fetch)
+        self.assertEqual((self.root / "tools/bin/docker").read_bytes(), b"docker")
+        self.assertEqual((self.root / "tools/libexec/lima/guestagent").read_bytes(), b"agent")
+        plugin = self.root / "docker/cli-plugins/docker-compose"
+        self.assertEqual(plugin.read_bytes(), b"compose")
+        self.assertEqual(plugin.stat().st_mode & 0o777, 0o755)
+
+    def test_checksum_mismatch_prevents_installation(self):
+        asset = self.asset("colima", b"valid", "tools/bin/colima")
+        (self.area / "colima").write_bytes(b"corrupt")
+        with self.assertRaisesRegex(RuntimeError, "SHA256 mismatch"):
+            docker.install_tools(self.root, [asset], self.fetch)
+        self.assertFalse((self.root / "tools/bin/colima").exists())
+
+    def test_rejects_archive_and_destination_paths_outside_owned_prefix(self):
+        asset = self.asset("lima", {"../../escaped": b"untrusted"}, "tools", archive=True)
+        with self.assertRaises(tarfile.FilterError):
+            docker.install_tools(self.root, [asset], self.fetch)
+        self.assertFalse((self.area / "escaped").exists())
+        asset = self.asset("colima", b"binary", "../escaped")
+        with self.assertRaises(ValueError):
+            docker.install_tools(self.root, [asset], self.fetch)
+        self.assertFalse((self.area / "escaped").exists())
+
+    def test_download_is_bounded_verified_and_reuses_only_valid_cache(self):
+        asset = self.asset("docker", b"verified bytes", "tools/bin/docker")
+        def curl(command, **kwargs):
+            Path(command[command.index("--output") + 1]).write_bytes(b"verified bytes")
+            self.assertEqual(kwargs["timeout"], 330)
+            self.assertIn("--max-time", command)
+            self.assertNotIn("--insecure", command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(docker.subprocess, "run", side_effect=curl) as run:
+            path = docker.download(asset, self.root / "downloads")
+            docker.download(asset, self.root / "downloads")
+            self.assertEqual(run.call_count, 1)
+            path.write_bytes(b"corrupt cache")
+            docker.download(asset, self.root / "downloads")
+            self.assertEqual(run.call_count, 2)
+
+    def test_wrong_download_bytes_are_removed(self):
+        asset = self.asset("docker", b"valid", "tools/bin/docker")
+        def curl(command, **kwargs):
+            Path(command[command.index("--output") + 1]).write_bytes(b"wrong")
+        with patch.object(docker.subprocess, "run", side_effect=curl):
+            with self.assertRaises(RuntimeError):
+                docker.download(asset, self.root / "downloads")
+        self.assertFalse((self.root / "downloads/docker").exists())
+
+    def test_new_lima_deployment_target_fails_on_macos_15(self):
+        # Observed in the official 2.3.0, 2.2.1 and 2.2.0 Intel artifacts.
+        metadata = "cmd LC_BUILD_VERSION\nplatform MACOS\nminos 26.0\nsdk 26.5\nntools 1\ntool LD\nversion 1267.0\n"
+        with patch.object(docker.subprocess, "check_output", return_value=metadata):
+            with self.assertRaisesRegex(RuntimeError, "requires macOS 26.0; runner is macOS 15.7"):
+                docker.verify_macos_version(Path("limactl"), "15.7")
+
+    def test_compatible_modern_and_legacy_deployment_targets(self):
+        for metadata in ("minos 15.0.0\nversion 1167.5\n", "cmd LC_VERSION_MIN_MACOSX\nversion 12.0\nsdk 12.0\n"):
+            with self.subTest(metadata=metadata):
+                with patch.object(docker.subprocess, "check_output", return_value=metadata):
+                    docker.verify_macos_version(Path("docker"), "15.0")
+        with patch.object(docker.subprocess, "check_output", return_value="not Mach-O metadata"):
+            with self.assertRaises(RuntimeError):
+                docker.verify_macos_version(Path("docker"), "15.7")
+
+    def test_only_intel_macos_can_start_the_runtime(self):
+        for system, machine in [("Linux", "x86_64"), ("Darwin", "arm64")]:
+            with patch.object(docker.platform, "system", return_value=system), patch.object(
+                docker.platform, "machine", return_value=machine,
+            ):
+                with self.assertRaises(RuntimeError):
+                    docker.require_intel_macos()
+
+    def test_runtime_preserves_vz_sizing_and_requires_a_working_daemon(self):
+        with patch.dict(os.environ, {"PATH": "/bin", "HOME": "/original"}, clear=True), patch.object(
+            docker.subprocess, "check_output", side_effect=["4\n", str(16 * 1024 ** 3)],
+        ), patch.object(docker.subprocess, "run") as run:
+            docker.start_runtime(self.root)
+        start, ready = run.call_args_list
+        command = start.args[0]
+        self.assertEqual(command[command.index("--cpu") + 1], "4")
+        self.assertEqual(command[command.index("--memory") + 1], "16")
+        self.assertIn("--vm-type=vz", command)
+        self.assertIn("--mount-type=virtiofs", command)
+        self.assertEqual(start.kwargs["env"]["HOME"], "/original")
+        self.assertEqual(start.kwargs["env"]["COLIMA_HOME"], str(self.root / "colima"))
+        self.assertEqual(ready.args[0], [str(self.root / "tools/bin/docker"), "info"])
+        self.assertTrue(ready.kwargs["check"])
+
+    def test_publishes_only_job_owned_tool_paths_and_configuration(self):
+        path_file, env_file = self.area / "path", self.area / "env"
+        with patch.dict(os.environ, {"GITHUB_PATH": str(path_file), "GITHUB_ENV": str(env_file)}):
+            docker.publish_environment(self.root)
+        self.assertEqual(path_file.read_text(), str(self.root / "tools/bin") + "\n")
+        self.assertEqual(env_file.read_text().splitlines(), [
+            f"DOCKER_CONFIG={self.root / 'docker'}", f"COLIMA_HOME={self.root / 'colima'}",
+        ])
+
+    def test_workflow_uses_pinned_installer_only_for_existing_intel_cloud_lane(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ios_ci.yaml").read_text())
+        steps = workflow["jobs"]["integration-tests"]["steps"]
+        setup = next(step for step in steps if step.get("name") == "Setup Docker on macOS")
+        self.assertEqual(setup["uses"], "./.mobile-ci-tools/.github/actions/macos-docker")
+        self.assertIn("matrix.test_number == 4", setup["if"])
+        self.assertEqual(setup["timeout-minutes"], 15)
+        action = yaml.safe_load((ROOT / ".github/actions/macos-docker/action.yml").read_text())
+        commands = [step.get("run", "") for step in action["runs"]["steps"]]
+        self.assertTrue(any("macos_docker.py\" install" in command for command in commands))
+        self.assertTrue(any("macos_docker.py\" start" in command for command in commands))
+        self.assertFalse(any("brew install" in command for command in commands))
+
+
+if __name__ == "__main__":
+    unittest.main()

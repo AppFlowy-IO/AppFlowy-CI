@@ -1,0 +1,14 @@
+name: Intel macOS Docker runtime
+description: Install checksum-pinned binaries and start a job-owned Colima VZ runtime.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install pinned Docker tools
+      shell: bash
+      run: python3 "${{ github.action_path }}/../../scripts/macos_docker.py" install --root "$RUNNER_TEMP/appflowy-macos-docker"
+    - name: Start Docker runtime
+      shell: bash
+      run: python3 "${{ github.action_path }}/../../scripts/macos_docker.py" start --root "$RUNNER_TEMP/appflowy-macos-docker"
