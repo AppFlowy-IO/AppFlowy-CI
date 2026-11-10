@@ -43,7 +43,10 @@ builds. Lima 1.2.3 supports the macOS 15 runner; newer upstream Intel releases h
 macOS 26 deployment target. The installer checks every binary's deployment target before
 execution and retains the VZ runtime. The launcher creates the job-owned Colima home
 before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 GiB,
-reserving host capacity for macOS and the simulator. Failed Intel local
+reserving host capacity for macOS and the simulator. Compose limits concurrent engine
+calls to two, including cold image pulls, for both runtime-selection paths. A failed
+Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest kernel
+and owned Lima/network logs before cleanup. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.
 
@@ -52,6 +55,13 @@ Cloud stack starts. After the tests, failure logs are collected and the stack is
 removed before artifact uploads and GitHub status publication. TLS verification
 remains enabled. Flutter's bundled Dart SDK supplies `dart`; these jobs do not
 register a separate Dart APT repository.
+
+The warm-dashboard wall-clock performance suite uses `flutter drive --profile`
+with Desktop's existing integration driver. It reuses the same debug Rust FFI
+artifact, so native load counters and simulated delays remain active. The
+12-widget fixture, three-second first-data deadline, cache assertions and test
+budgets stay intact. CI also requires a fresh profile timing report with native
+counter evidence; other Cloud suites retain debug execution and coverage.
 
 Manual Flutter workflow dispatches can set `cloud_suites` to a JSON array such as
 `["database","dashboard_loading_warm","pdf_export"]`. This runs preparation and

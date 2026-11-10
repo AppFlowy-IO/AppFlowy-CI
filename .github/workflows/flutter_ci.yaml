@@ -1050,18 +1050,42 @@ jobs:
             export APPFLOWY_PDF_TEST_OUTPUT_DIR="$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports"
             mkdir -p "$APPFLOWY_PDF_TEST_OUTPUT_DIR"
           fi
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            # Debug framework checks dominate this wall-clock benchmark. Keep
+            # the debug Rust library (and its counters) but profile the Dart UI.
+            # Refuse stale evidence from an earlier invocation.
+            mkdir "$RUNNER_TEMP/dashboard-warm-profile"
+          fi
 
           set +e
-          flutter test \
-            --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
-            --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
-            integration_test/desktop/cloud/cloud_runner.dart \
-            -d Linux \
-            --file-reporter=json:/tmp/cloud-test-events.jsonl \
-            --coverage 2>&1 | tee /tmp/test_output.txt
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            flutter drive --profile \
+              --driver=integration_test/desktop/perf/dashboard_perf_driver.dart \
+              --target=integration_test/desktop/cloud/cloud_runner.dart \
+              --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+              --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
+              --dart-define=DASHBOARD_LOADING_REPORT_DIR="$RUNNER_TEMP/dashboard-warm-profile" \
+              -d Linux 2>&1 | tee /tmp/test_output.txt
+          else
+            flutter test \
+              --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+              --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
+              integration_test/desktop/cloud/cloud_runner.dart \
+              -d Linux \
+              --file-reporter=json:/tmp/cloud-test-events.jsonl \
+              --coverage 2>&1 | tee /tmp/test_output.txt
+          fi
           # bash runs with pipefail, so tee cannot hide a failing Flutter exit.
           TEST_EXIT=$?
           set -eo pipefail
+
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            if [ "$TEST_EXIT" -eq 0 ]; then
+              python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/verify_dashboard_warm_profile.py" \
+                --reports "$RUNNER_TEMP/dashboard-warm-profile"
+            fi
+            exit "$TEST_EXIT"
+          fi
 
           if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
             cp /tmp/test_output.txt "$RUNNER_TEMP/pdf-cloud-ui-regression/test.log"
@@ -1153,6 +1177,7 @@ jobs:
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
             ${{ runner.temp }}/flutter-prerequisites.log
+            ${{ runner.temp }}/dashboard-warm-profile/
           if-no-files-found: warn
           retention-days: 7
 
