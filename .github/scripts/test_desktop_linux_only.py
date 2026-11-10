@@ -52,7 +52,8 @@ class DesktopLinuxOnlyTest(unittest.TestCase):
         job = self.jobs["pdf_export_ui"]
         self.assertEqual(job["needs"], ["prepare-linux"])
         self.assertEqual(job["runs-on"], "ubuntu-latest")
-        self.assertEqual(job["if"], "always() && !cancelled()")
+        self.assertEqual(job["if"], "always() && !cancelled() && "
+                         "(github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '')")
         steps = job["steps"]
         install = next(step for step in steps if step.get("name") == "Install prerequisites")
         self.assertEqual(install["timeout-minutes"], 10)

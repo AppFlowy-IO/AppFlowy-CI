@@ -41,9 +41,24 @@ The Intel iOS Cloud lane installs checksum-pinned Docker, Compose, Buildx, Colim
 Lima binaries under its job's temporary directory. This avoids Homebrew's Intel source
 builds. Lima 1.2.3 supports the macOS 15 runner; newer upstream Intel releases have a
 macOS 26 deployment target. The installer checks every binary's deployment target before
-execution and retains the existing VZ runtime and resource sizing. Failed Intel local
+execution and retains the VZ runtime. The launcher creates the job-owned Colima home
+before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 GiB,
+reserving host capacity for macOS and the simulator. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.
+
+Cloud prerequisite and application-artifact downloads finish before the disposable
+Cloud stack starts. After the tests, failure logs are collected and the stack is
+removed before artifact uploads and GitHub status publication. TLS verification
+remains enabled. Flutter's bundled Dart SDK supplies `dart`; these jobs do not
+register a separate Dart APT repository.
+
+Manual Flutter workflow dispatches can set `cloud_suites` to a JSON array such as
+`["database","dashboard_loading_warm","pdf_export"]`. This runs preparation and
+only those source-owned Cloud suites, with a `cloud-only` label and a separate
+concurrency group. Empty input and automatic dispatches run full CI. Empty,
+duplicate and unknown selections fail during preparation. A focused replay is
+partial validation; the available suite inventory and default matrix stay intact.
 
 Desktop PDF exports have three focused commit statuses: `PDF export regression (Rust)`,
 `PDF export regression (UI)` and `PDF export regression (Cloud UI)`. The source-owned

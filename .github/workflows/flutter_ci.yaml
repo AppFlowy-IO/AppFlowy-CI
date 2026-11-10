@@ -3,7 +3,7 @@ run-name: >-
   [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
   pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
-  ${{ github.workflow }}
+  ${{ github.workflow }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && format(' [cloud-only={0}]', inputs.cloud_suites) || '' }}
 
 on:
   repository_dispatch:
@@ -19,6 +19,10 @@ on:
         required: false
         type: string
         default: "main"
+      cloud_suites:
+        description: 'Optional JSON array of source-owned Cloud suites for a focused manual replay; empty runs full CI'
+        required: false
+        type: string
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -47,13 +51,14 @@ env:
 concurrency:
   # A manual CI-branch validation must coexist with automatic main runs for the
   # same private PR. Retries within that CI branch still replace older attempts.
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && '-cloud-only' || '' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   prepare-linux:
     outputs:
       cloud_test_suites: ${{ steps.cloud-test-suites.outputs.suites }}
+      selected_cloud_test_suites: ${{ steps.cloud-test-suites.outputs.selected_suites }}
       desktop_test_runners: ${{ steps.desktop-test-runners.outputs.runners }}
     strategy:
       fail-fast: true
@@ -123,6 +128,8 @@ jobs:
       - name: Select cloud test suites from the tested revision
         id: cloud-test-suites
         shell: bash
+        env:
+          REQUESTED_CLOUD_SUITES: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites || '' }}
         run: |
           manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
           if [ -f "$manifest" ]; then
@@ -136,8 +143,20 @@ jobs:
             # Older AppFlowy branches do not understand the split suite names.
             suites='["core_workspace","sidebar","database","document"]'
           fi
+          selected=$suites
+          if [ -n "$REQUESTED_CLOUD_SUITES" ]; then
+            selected=$(jq -cne --argjson available "$suites" --argjson requested "$REQUESTED_CLOUD_SUITES" '
+              if ($requested | type == "array" and length > 0
+                  and all(.[]; type == "string")
+                  and (unique | length) == length)
+                and all($requested[]; . as $suite | $available | index($suite) != null)
+              then $requested else error("Requested Cloud suites must be a nonempty unique subset of the tested source") end
+            ')
+          fi
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "selected_suites=$selected" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
+          echo "Selected Cloud integration suites: $selected"
 
       - uses: actions/setup-python@v5
         with:
@@ -213,8 +232,6 @@ jobs:
         run: |
           case $RUNNER_OS in
             Linux)
-              sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-              sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
               python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
               python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
               python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
@@ -332,7 +349,7 @@ jobs:
     name: PDF export regression (Linux)
     needs: [prepare-linux]
     # A failed preparation must produce a failing private status, not a missing success.
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -403,8 +420,6 @@ jobs:
         timeout-minutes: 10
         working-directory: frontend
         run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev xvfb xauth
@@ -493,6 +508,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
   unit_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
@@ -565,8 +581,6 @@ jobs:
         working-directory: frontend
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
             python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
             python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
             python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
@@ -688,7 +702,7 @@ jobs:
     needs: [prepare-linux]
     # Legacy heads need an explicit NA status. A current contract without its
     # matrix suite must fail instead of silently losing the required check.
-    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '') && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -728,7 +742,7 @@ jobs:
       max-parallel: 4
       matrix:
         os: [ubuntu-latest]
-        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.cloud_test_suites) }}
+        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.selected_cloud_test_suites) }}
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -847,6 +861,67 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+      - name: Install flutter
+        id: flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
+
+      # Setup failures must not upload stale output from an earlier attempt.
+      - name: Initialize Cloud test output
+        shell: bash
+        run: |
+          rm -f /tmp/test_output.txt /tmp/cloud-test-events.jsonl
+
+      - name: Install prerequisites
+        id: flutter-prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
+        working-directory: frontend
+        shell: bash
+        run: |
+          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
+          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
+          echo "Installing Flutter Linux prerequisites..."
+          {
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
+            # Install GStreamer for audioplayers_linux
+            # Install libunwind-dev first to resolve dependency issues
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+          } > "$setup_log" 2>&1
+          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
+
+      - name: Enable Flutter Desktop
+        run: |
+          flutter config --enable-linux-desktop
+        shell: bash
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.run_id }}-${{ matrix.os }}
+
+      - name: Uncompressed appflowy_flutter
+        run: |
+          tar -xf appflowy_flutter.tar.gz
+
+      - name: Inspect media_kit native plugin
+        working-directory: frontend/appflowy_flutter
+        run: |
+          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
+          pkg-config --modversion mpv || true
+          pkg-config --modversion epoxy || true
+
       - name: Clean Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -957,62 +1032,6 @@ jobs:
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
 
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        shell: bash
-        run: |
-          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
-          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
-          echo "Installing Flutter Linux prerequisites..."
-          {
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
-            # Install GStreamer for audioplayers_linux
-            # Install libunwind-dev first to resolve dependency issues
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
-            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-          } > "$setup_log" 2>&1
-          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
-
-      - name: Enable Flutter Desktop
-        run: |
-          flutter config --enable-linux-desktop
-        shell: bash
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-
-      - name: Uncompressed appflowy_flutter
-        run: |
-          tar -xf appflowy_flutter.tar.gz
-
-      - name: Inspect media_kit native plugin
-        working-directory: frontend/appflowy_flutter
-        run: |
-          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
-          pkg-config --modversion mpv || true
-          pkg-config --modversion epoxy || true
-
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         id: cloud-test-run
         # Leave time inside the 60-minute job limit to upload partial results.
@@ -1073,6 +1092,48 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Show bounded prerequisite failure diagnostics
+        if: always() && steps.flutter-prerequisites.outcome == 'failure'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "flutter-prerequisites.log"
+          if path.is_file():
+              with path.open("rb") as source:
+                  source.seek(max(0, path.stat().st_size - 65536))
+                  print("\n".join(source.read(65536).decode("utf-8", errors="replace").splitlines()[-100:]))
+          else:
+              print("Prerequisite log was not created")
+          PY
+
+      - name: Collect Docker logs
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        run: |
+          docker ps -a > docker-ps-output.txt
+          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
+          docker logs --tail 200 appflowy-cloud-premium-pg_snapshot_unpack-1 > pg_snapshot_unpack_logs.txt 2>&1 || true
+
+      # External artifact and status requests must outlive the disposable
+      # fixture's HTTPS listener and private Docker routes. Preserve logs first.
+      - name: Remove job-owned Cloud services before reporting
+        if: always()
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          if [ -f AppFlowy-Cloud-Premium/docker-compose-ci.yml ]; then
+            docker compose -f AppFlowy-Cloud-Premium/docker-compose-ci.yml \
+              down --remove-orphans --timeout 10
+          fi
+
       - name: Upload exact Cloud runtime manifest
         if: always()
         uses: actions/upload-artifact@v4
@@ -1095,17 +1156,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Collect Docker logs
-        if: failure() || cancelled()
-        timeout-minutes: 2
-        run: |
-          docker ps -a > docker-ps-output.txt
-          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
-
       - name: Upload Docker logs
         if: failure() || cancelled()
         timeout-minutes: 3
@@ -1119,6 +1169,7 @@ jobs:
             minio_logs.txt
             gotrue_logs.txt
             nginx_logs.txt
+            pg_snapshot_unpack_logs.txt
           retention-days: 1
 
       - name: Upload PDF cloud UI regression evidence
@@ -1143,6 +1194,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
 
   integration_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''
     needs: [prepare-linux]
     strategy:
       fail-fast: false
@@ -1202,8 +1254,6 @@ jobs:
         timeout-minutes: 10
         working-directory: frontend
         run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
           python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev

@@ -585,7 +585,8 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertNotIn("prepare-windows", jobs)
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["needs"], ["prepare-linux"])
-        self.assertEqual(job["if"], "always() && !cancelled()")
+        self.assertEqual(job["if"], "always() && !cancelled() && "
+                         "(github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '')")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
@@ -624,11 +625,14 @@ class PdfWorkflowTest(unittest.TestCase):
                 condition = jobs[name]["if"]
                 # Python AST attribute names cannot contain GitHub job-ID hyphens.
                 condition = condition.replace("needs.prepare-linux", "needs.prepare_linux")
-                for cancelled, should_run in ((False, True), (True, False)):
-                    context = {"cancelled": cancelled, "needs": {
-                        "prepare_linux": {"result": "cancelled" if cancelled else "failure", "outputs": {}},
-                    }}
-                    self.assertEqual(evaluate_expression(condition, context), should_run)
+                for event, selected in (("repository_dispatch", ""), ("repository_dispatch", '["database"]'), ("workflow_dispatch", ""),
+                                        ("workflow_dispatch", '["database"]')):
+                    for cancelled in (False, True):
+                        context = {"cancelled": cancelled, "needs": {
+                            "prepare_linux": {"result": "cancelled" if cancelled else "failure", "outputs": {}},
+                        }, "github": {"event_name": event}, "inputs": {"cloud_suites": selected}}
+                        self.assertEqual(evaluate_expression(condition, context),
+                                         not cancelled and (event != "workflow_dispatch" or not selected))
 
     def test_both_gates_publish_pending_and_always_final_results(self):
         for name, job_name in (("rust_ci.yaml", "test"), ("flutter_ci.yaml", "pdf_export_ui")):
