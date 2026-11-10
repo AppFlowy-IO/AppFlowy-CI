@@ -45,10 +45,20 @@ execution and retains the VZ runtime. The launcher creates the job-owned Colima 
 before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 GiB,
 reserving host capacity for macOS and the simulator. Compose limits concurrent engine
 calls to two, including cold image pulls, for both runtime-selection paths. A failed
-Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest kernel
-and owned Lima/network logs before cleanup. Failed Intel local
+Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest disk,
+kernel and Docker/containerd journal entries, and owned Lima/network logs before cleanup.
+Before loading any images, the launcher selects and verifies the classic `overlay2`
+image store inside the disposable VM, preserving the rest of Colima's daemon configuration.
+The containerd store stalled during cold image extraction; it also retains compressed
+layers alongside extracted snapshots. Exact-source fixtures use single-platform Docker
+image archives, which remain compatible with the classic store. Failed Intel local
 tests retain a simulator screenshot, bounded app error logs, a native sample when available,
 and recent app crash reports alongside the existing test output.
+
+The Intel lane uses the smaller iPhone SE (3rd generation) simulator display to
+reduce virtual graphics work. Its iPhone 16 Pro run recorded Metal command-buffer
+timeouts followed by revoked GPU access during grid scrolling. The original local
+and Cloud suites run with their existing deadlines; the other lanes use iPhone 17 Pro.
 
 Cloud prerequisite and application-artifact downloads finish before the disposable
 Cloud stack starts. After the tests, failure logs are collected and the stack is

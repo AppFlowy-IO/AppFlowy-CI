@@ -148,7 +148,10 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: ${{ matrix.test_number == 4 && 'iPhone 16 Pro' || 'iPhone 17 Pro' }}
+          # The larger Intel virtual display timed out Metal command buffers
+          # while scrolling, then lost GPU access. Reduce virtual graphics work
+          # while keeping the original local and Cloud suites and deadlines.
+          model: ${{ matrix.test_number == 4 && 'iPhone SE (3rd generation)' || 'iPhone 17 Pro' }}
           shutdown_after_job: false
           wait_for_boot: true
 
