@@ -36,7 +36,7 @@ class IosDiagnosticsTest(unittest.TestCase):
             calls = []
             def run(command, **kwargs):
                 calls.append(command)
-                self.assertLessEqual(kwargs["timeout"], 20)
+                self.assertEqual(kwargs["timeout"], 40 if command[0] == "sample" else 20)
                 if command[0] == "ps":
                     kwargs["stdout"].write("111 /unrelated/Runner.app/Runner\n"
                                            f"222 /CoreSimulator/{DEVICE}/AppFlowy.app/AppFlowy\n")

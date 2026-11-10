@@ -40,8 +40,10 @@ def collect(device, destination, reports=None):
             continue
         pid, executable = fields
         if device in executable and executable.endswith((".app/AppFlowy", ".app/Runner")):
+            # Intel debug symbols took longer than 10 s to process after the
+            # sample was captured. Leave time to finish within the 2 min step.
             commands.append(capture(["sample", pid, "1", "-file", str(destination / "native-sample.txt")],
-                                    destination / "sample.log", timeout=10))
+                                    destination / "sample.log", timeout=40))
             break
     reports = reports or Path.home() / "Library/Logs/DiagnosticReports"
     recent = sorted((path for path in reports.glob("*")
