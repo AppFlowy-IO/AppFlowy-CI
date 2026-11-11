@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -21,6 +22,44 @@ def capture(command, path, timeout=20):
             return {"command": command, "error": str(error)}
 
 
+def capture_pending_launch(device, processes, destination):
+    """Capture the selected simulator's pending app-launch process."""
+    launch_pids = set()
+    for line in processes.read_text().splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) == 2 and fields[0].isdigit() and Path(fields[1]).name == "simctl":
+            launch_pids.add(fields[0])
+    if not launch_pids:
+        return []
+
+    command = ["ps", "-axo", "pid=,args="]
+    try:
+        # Process arguments can contain CI credentials. Retain lookup metadata.
+        result = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return [{"command": command, "error": str(error)}]
+    commands = [{"command": command, "exit_code": result.returncode}]
+    if result.returncode:
+        return commands
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) != 2 or fields[0] not in launch_pids:
+            continue
+        try:
+            arguments = shlex.split(fields[1])
+        except ValueError:
+            continue
+        if len(arguments) < 4:
+            continue
+        if (Path(arguments[0]).name == "simctl"
+                and arguments[1:4] == ["launch", device, "com.appflowy.appflowy.flutter"]):
+            commands.append(capture([
+                "sample", fields[0], "1", "-file", str(destination / "launch-sample.txt"),
+            ], destination / "sample.log", timeout=40))
+            break
+    return commands
+
+
 def collect(device, destination, reports=None):
     if not re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", device):
         raise ValueError("Expected a simulator UUID")
@@ -34,6 +73,7 @@ def collect(device, destination, reports=None):
     ], destination / "simulator-errors.log"))
     processes = destination / "processes.log"
     commands.append(capture(["ps", "-axo", "pid=,comm="], processes))
+    sampled_app = False
     for line in processes.read_text().splitlines():
         fields = line.strip().split(maxsplit=1)
         if len(fields) != 2 or not fields[0].isdigit():
@@ -44,7 +84,10 @@ def collect(device, destination, reports=None):
             # sample was captured. Leave time to finish within the 2 min step.
             commands.append(capture(["sample", pid, "1", "-file", str(destination / "native-sample.txt")],
                                     destination / "sample.log", timeout=40))
+            sampled_app = True
             break
+    if not sampled_app:
+        commands.extend(capture_pending_launch(device, processes, destination))
     reports = reports or Path.home() / "Library/Logs/DiagnosticReports"
     recent = sorted((path for path in reports.glob("*")
                      if path.is_file() and not path.is_symlink() and path.name.startswith(("AppFlowy", "Runner"))

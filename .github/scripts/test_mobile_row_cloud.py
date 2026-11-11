@@ -373,6 +373,43 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
             ])
 
+    def test_intel_simulator_restarts_after_prebuild_before_local_tests(self):
+        restart = self.step("Restart selected Intel simulator after prebuild")
+        prebuild = self.step("Pre-build Intel mobile test app")
+        local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertEqual(restart["if"], "matrix.test_number == 4")
+        self.assertEqual(restart["timeout-minutes"], 8)
+        self.assertTrue(restart["continue-on-error"])
+        self.assertEqual(restart["env"]["SIMULATOR_UDID"], "${{ steps.simulator-action.outputs.udid }}")
+        self.assertLess(self.steps.index(prebuild), self.steps.index(restart))
+        self.assertLess(self.steps.index(restart), self.steps.index(local))
+        expected = [["simctl", "shutdown", "owned-simulator"],
+                    ["simctl", "boot", "owned-simulator"],
+                    ["simctl", "bootstatus", "owned-simulator", "-b"]]
+        with tempfile.TemporaryDirectory(prefix="intel-simulator-restart-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                '#!/usr/bin/env python3\nimport json, os, sys\n'
+                'with open(os.environ["CALLS"], "a") as output:\n'
+                '    output.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                'sys.exit(7 if sys.argv[2] == os.environ["FAIL_AT"] else 0)\n')
+            xcrun.chmod(0o700)
+            for failure, count in (("", 3), ("shutdown", 1), ("boot", 2), ("bootstatus", 3)):
+                with self.subTest(failure=failure):
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", "-c", restart["run"]], cwd=root,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "SIMULATOR_UDID": "owned-simulator", "CALLS": str(calls),
+                             "FAIL_AT": failure},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, 7 if failure else 0, result.stderr)
+                    self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()],
+                                     expected[:count])
+
     def test_intel_failure_diagnostics_run_before_result_upload(self):
         capture = self.step("Capture Intel simulator failure")
         checkout = self.step("Checkout native failure diagnostics")
