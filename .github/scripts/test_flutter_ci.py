@@ -70,7 +70,7 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
             if step.get("id") == "desktop-test-runners"
         )
 
-    def select_runners(self, files=(), directories=()):
+    def select_runners(self, files=(), directories=(), requested=None, cloud_suites=""):
         with tempfile.TemporaryDirectory(prefix="desktop-ci-matrix-") as directory:
             root = Path(directory)
             tests = root / "frontend/appflowy_flutter/integration_test"
@@ -85,7 +85,9 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", self.selection["run"]],
                 cwd=root,
-                env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                env={**os.environ, "GITHUB_OUTPUT": str(output),
+                     "REQUESTED_DESKTOP_RUNNERS": json.dumps(requested) if requested is not None else "",
+                     "REQUESTED_CLOUD_SUITES": cloud_suites},
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -123,6 +125,134 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
         self.assertEqual(output, "")
         self.assertIn("No desktop integration test runners found", result.stderr)
 
+    def test_focused_desktop_replay_selects_only_existing_requested_runners(self):
+        result, output = self.select_runners(
+            ["desktop_runner_1.dart", "desktop_runner_26.dart"], requested=[26],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(output.removeprefix("runners=")), [26])
+
+    def test_focused_desktop_replay_rejects_invalid_or_duplicate_numbers(self):
+        for requested in ([], {}, "26", [True], [0], [27], [26, 26], ["$(touch selection-executed)"]):
+            with self.subTest(requested=requested):
+                result, output = self.select_runners(["desktop_runner_26.dart"], requested=requested)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+
+    def test_focused_desktop_and_cloud_scopes_cannot_be_combined(self):
+        result, output = self.select_runners(
+            ["desktop_runner_26.dart"], requested=[26], cloud_suites='["database_rows"]',
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+
+    def test_focused_desktop_scope_is_manual_and_preserves_full_automatic_ci(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        self.assertEqual(self.selection["env"]["REQUESTED_DESKTOP_RUNNERS"],
+                         "${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners || '' }}")
+        self.assertIn("inputs.desktop_runners != '' && '-desktop-only'", workflow["concurrency"]["group"])
+        for name in ("unit_test", "pdf_export_ui", "pdf_cloud_ui_availability"):
+            self.assertIn("inputs.desktop_runners == ''", workflow["jobs"][name]["if"])
+        self.assertEqual(workflow["jobs"]["cloud_integration_test"]["if"],
+                         "github.event_name != 'workflow_dispatch' || inputs.desktop_runners == ''")
+
+    def test_focused_native_diagnostics_keep_the_original_test_command_and_limits(self):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        for name, event_file in (("integration_test", "desktop-test-events.jsonl"),
+                                 ("cloud_integration_test", "cloud-test-events.jsonl")):
+            with self.subTest(job=name):
+                job = jobs[name]
+                self.assertIn("github.event_name == 'workflow_dispatch'", job["env"]["NATIVE_HANG_DIAGNOSTICS"])
+                debugger = next(step for step in job["steps"] if step.get("name") == "Install native debugger for focused replay")
+                self.assertTrue(debugger["continue-on-error"])
+                self.assertEqual(debugger["if"], "env.NATIVE_HANG_DIAGNOSTICS == 'true'")
+                self.assertEqual(debugger["timeout-minutes"], 3)
+                invocation = next(step for step in job["steps"] if step.get("name", "").startswith("Run Flutter integration tests"))
+                self.assertEqual(invocation["timeout-minutes"], 45)
+                self.assertIn("native_hang_diagnostics.py", invocation["run"])
+                self.assertIn("--coverage", invocation["run"])
+                self.assertIn(event_file, invocation["run"])
+                self.assertIn('kill -TERM "$NATIVE_WATCH_PID"', invocation["run"])
+                self.assertIn('wait "$NATIVE_WATCH_PID"', invocation["run"])
+                upload = next(step for step in job["steps"] if step.get("name", "").lower() in
+                              ("upload desktop test output", "upload cloud test output"))
+                self.assertEqual(upload["if"], "always()")
+                self.assertIn("native-hang-diagnostics/", upload["with"]["path"])
+
+    def test_native_monitor_cleanup_keeps_the_failing_flutter_exit_status(self):
+        step = next(step for step in self.desktop["steps"]
+                    if step.get("name") == "Run Flutter integration tests")
+        with tempfile.TemporaryDirectory(prefix="native-monitor-workflow-") as directory:
+            root = Path(directory)
+            project = root / "frontend/appflowy_flutter"
+            runner = project / "integration_test/desktop_runner_26.dart"
+            runner.parent.mkdir(parents=True)
+            runner.write_text("import 'desktop/document/document_media_test_runner.dart';\n")
+            helper = root / ".desktop-ci-tools/.github/scripts/native_hang_diagnostics.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_text(
+                "import os, signal\nfrom pathlib import Path\n"
+                "def stop(*args):\n"
+                "    Path(os.environ['MONITOR_STOPPED']).write_text('stopped')\n"
+                "    raise SystemExit(0)\n"
+                "signal.signal(signal.SIGTERM, stop)\n"
+                "Path(os.environ['MONITOR_READY']).write_text('ready')\n"
+                "while True:\n    signal.pause()\n"
+            )
+            binary = root / "bin"
+            binary.mkdir()
+            flutter = binary / "flutter"
+            flutter.write_text(
+                "#!/usr/bin/env python3\nimport os, sys, time\nfrom pathlib import Path\n"
+                "if sys.argv[1] != 'test':\n    raise SystemExit(0)\n"
+                "deadline = time.monotonic() + 2\n"
+                "while not Path(os.environ['MONITOR_READY']).exists():\n"
+                "    if time.monotonic() >= deadline:\n        raise SystemExit(88)\n"
+                "    time.sleep(0.01)\n"
+                "raise SystemExit(17)\n"
+            )
+            flutter.chmod(0o755)
+            for name in ("sudo", "dart"):
+                stub = binary / name
+                stub.write_text("#!/bin/sh\nexit 0\n")
+                stub.chmod(0o755)
+            script = step["run"].replace("${{ matrix.test_number }}", "26")
+            script = script.replace("/tmp/test_output.txt", str(root / "test-output.txt"))
+            script = script.replace("/tmp/desktop-test-events.jsonl", str(root / "events.jsonl"))
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                     "NATIVE_HANG_DIAGNOSTICS": "true", "GITHUB_WORKSPACE": str(root),
+                     "RUNNER_TEMP": str(root), "MONITOR_READY": str(root / "ready"),
+                     "MONITOR_STOPPED": str(root / "stopped")},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 17, result.stderr)
+            self.assertEqual((root / "stopped").read_text(), "stopped")
+
+    def test_completed_native_monitor_is_waited_without_signalling_its_old_pid(self):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        for name in ("integration_test", "cloud_integration_test"):
+            with self.subTest(job=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                step = next(step for step in jobs[name]["steps"]
+                            if step.get("name", "").startswith("Run Flutter integration tests"))
+                invocation = step["run"]
+                cleanup = invocation[invocation.index("cleanup_test() {"):invocation.index("trap cleanup_test EXIT")]
+                script = (
+                    'dart() { return 0; }\n'
+                    'kill() { printf "called\\n" > "$KILL_LOG"; }\n'
+                    '(exit 0) &\nNATIVE_WATCH_PID=$!\nwait "$NATIVE_WATCH_PID"\n'
+                    + cleanup + '\ncleanup_test\n'
+                )
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    env={**os.environ, "KILL_LOG": str(root / "kill.log")},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse((root / "kill.log").exists())
+
     def test_matrix_consumes_preparation_output(self):
         self.assertEqual(
             self.prepare["outputs"]["desktop_test_runners"],
@@ -157,10 +287,11 @@ class DesktopRunnerWorkflowTest(unittest.TestCase):
                 binary.chmod(0o755)
                 output = root / "arguments.json"
                 script = invocation.replace("/tmp/test_output.txt", str(root / "test.log"))
+                script = script.replace("/tmp/desktop-test-events.jsonl", str(root / "events.jsonl"))
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
                     env={**os.environ, "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
-                         "TEST_ARGUMENT_OUTPUT": str(output)},
+                         "TEST_ARGUMENT_OUTPUT": str(output), "NATIVE_HANG_DIAGNOSTICS": "false"},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -377,9 +508,12 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         workflow = yaml.safe_load(WORKFLOW.read_text())
         self.assertEqual(self.selection["env"]["REQUESTED_CLOUD_SUITES"],
                          "${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites || '' }}")
-        for name in ("unit_test", "integration_test", "pdf_export_ui", "pdf_cloud_ui_availability"):
-            self.assertIn("github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''",
+        for name in ("unit_test", "pdf_export_ui", "pdf_cloud_ui_availability"):
+            self.assertIn("github.event_name != 'workflow_dispatch' || "
+                          "(inputs.cloud_suites == '' && inputs.desktop_runners == '')",
                           self.jobs[name]["if"])
+        self.assertEqual(self.jobs["integration_test"]["if"],
+                         "github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''")
         self.assertIn("inputs.cloud_suites != '' && '-cloud-only'", workflow["concurrency"]["group"])
 
     def test_invalid_manifest_fails_instead_of_omitting_tests(self):

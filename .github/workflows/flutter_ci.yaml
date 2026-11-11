@@ -3,7 +3,7 @@ run-name: >-
   [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
   pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
-  ${{ github.workflow }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && format(' [cloud-only={0}]', inputs.cloud_suites) || '' }}
+  ${{ github.workflow }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && format(' [cloud-only={0}]', inputs.cloud_suites) || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' && format(' [desktop-only={0}]', inputs.desktop_runners) || '' }}
 
 on:
   repository_dispatch:
@@ -21,6 +21,10 @@ on:
         default: "main"
       cloud_suites:
         description: 'Optional JSON array of source-owned Cloud suites for a focused manual replay; empty runs full CI'
+        required: false
+        type: string
+      desktop_runners:
+        description: 'Optional JSON array of source-owned desktop runner numbers for a focused manual replay'
         required: false
         type: string
       cloud_source_sha:
@@ -51,7 +55,7 @@ env:
 concurrency:
   # A manual CI-branch validation must coexist with automatic main runs for the
   # same private PR. Retries within that CI branch still replace older attempts.
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && '-cloud-only' || '' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && '-cloud-only' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' && '-desktop-only' || '' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -104,6 +108,9 @@ jobs:
       - name: Select desktop test runners from the tested revision
         id: desktop-test-runners
         shell: bash
+        env:
+          REQUESTED_DESKTOP_RUNNERS: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners || '' }}
+          REQUESTED_CLOUD_SUITES: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites || '' }}
         run: |
           python3 - <<'PY'
           import json
@@ -120,6 +127,16 @@ jobs:
           })
           if not runners:
               raise SystemExit("No desktop integration test runners found")
+          requested = os.environ.get("REQUESTED_DESKTOP_RUNNERS", "")
+          if requested:
+              if os.environ.get("REQUESTED_CLOUD_SUITES"):
+                  raise SystemExit("Select one focused test scope")
+              requested = json.loads(requested)
+              if not (isinstance(requested, list) and requested
+                      and all(type(number) is int and number in runners for number in requested)
+                      and len(set(requested)) == len(requested)):
+                  raise SystemExit("Requested desktop runners must be a nonempty unique subset of the tested source")
+              runners = requested
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"runners={json.dumps(runners)}\n")
           print(f"Desktop integration test runners: {runners}")
@@ -349,7 +366,7 @@ jobs:
     name: PDF export regression (Linux)
     needs: [prepare-linux]
     # A failed preparation must produce a failing private status, not a missing success.
-    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '')
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == ''))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -508,7 +525,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
   unit_test:
-    if: github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''
+    if: github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == '')
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
@@ -702,7 +719,7 @@ jobs:
     needs: [prepare-linux]
     # Legacy heads need an explicit NA status. A current contract without its
     # matrix suite must fail instead of silently losing the required check.
-    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '') && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == '')) && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -735,6 +752,7 @@ jobs:
             --gate-outcome skipped
 
   cloud_integration_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.desktop_runners == ''
     name: Cloud integration test (${{ matrix.cloud_test_suite }})
     needs: [prepare-linux]
     strategy:
@@ -750,6 +768,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
+      NATIVE_HANG_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && matrix.cloud_test_suite == 'database_rows' }}
       MINIO_DATA_DIR: /tmp/minio-data
       APPFLOWY_CLOUD_URL: https://localhost
       # Only this job's disposable Compose database; never infer a developer database.
@@ -902,6 +921,13 @@ jobs:
           } > "$setup_log" 2>&1
           echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
 
+      - name: Install native debugger for focused replay
+        if: env.NATIVE_HANG_DIAGNOSTICS == 'true'
+        continue-on-error: true
+        timeout-minutes: 3
+        working-directory: frontend
+        run: python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y gdb
+
       - name: Enable Flutter Desktop
         run: |
           flutter config --enable-linux-desktop
@@ -1041,11 +1067,28 @@ jobs:
           cd frontend/appflowy_flutter
           flutter pub get
           dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
+          NATIVE_WATCH_PID=
+          cleanup_test() {
+            if [ -n "$NATIVE_WATCH_PID" ]; then
+              if jobs -pr | grep -Fxq "$NATIVE_WATCH_PID"; then
+                kill -TERM "$NATIVE_WATCH_PID" 2>/dev/null || true
+              fi
+              wait "$NATIVE_WATCH_PID" || true
+            fi
+            dart run pdfrx:remove_wasm_modules --revert
+          }
+          trap cleanup_test EXIT
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           docker ps -a
           rm -f /tmp/cloud-test-events.jsonl
+          if [ "${NATIVE_HANG_DIAGNOSTICS:-false}" = true ]; then
+            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/native_hang_diagnostics.py" \
+              --events /tmp/cloud-test-events.jsonl \
+              --app-root "$GITHUB_WORKSPACE/frontend/appflowy_flutter/build/linux" \
+              --output "$RUNNER_TEMP/native-hang-diagnostics" &
+            NATIVE_WATCH_PID=$!
+          fi
           if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
             export APPFLOWY_PDF_TEST_OUTPUT_DIR="$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports"
             mkdir -p "$APPFLOWY_PDF_TEST_OUTPUT_DIR"
@@ -1178,6 +1221,7 @@ jobs:
             /tmp/cloud-test-events.jsonl
             ${{ runner.temp }}/flutter-prerequisites.log
             ${{ runner.temp }}/dashboard-warm-profile/
+            ${{ runner.temp }}/native-hang-diagnostics/
           if-no-files-found: warn
           retention-days: 7
 
@@ -1231,6 +1275,8 @@ jobs:
             target: "x86_64-unknown-linux-gnu"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      NATIVE_HANG_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' }}
     steps:
       - name: Checkout private repository
         uses: actions/checkout@v4
@@ -1325,6 +1371,13 @@ jobs:
           ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
         shell: bash
 
+      - name: Install native debugger for focused replay
+        if: env.NATIVE_HANG_DIAGNOSTICS == 'true'
+        continue-on-error: true
+        timeout-minutes: 3
+        working-directory: frontend
+        run: python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y gdb
+
       - name: Run Flutter integration tests
         # Leave time inside the 60-minute job limit to upload partial results.
         timeout-minutes: 45
@@ -1333,7 +1386,17 @@ jobs:
           cd frontend/appflowy_flutter
           flutter pub get
           dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
+          NATIVE_WATCH_PID=
+          cleanup_test() {
+            if [ -n "$NATIVE_WATCH_PID" ]; then
+              if jobs -pr | grep -Fxq "$NATIVE_WATCH_PID"; then
+                kill -TERM "$NATIVE_WATCH_PID" 2>/dev/null || true
+              fi
+              wait "$NATIVE_WATCH_PID" || true
+            fi
+            dart run pdfrx:remove_wasm_modules --revert
+          }
+          trap cleanup_test EXIT
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           sudo apt-get install network-manager
@@ -1345,6 +1408,14 @@ jobs:
           # Identify the suite by its import so runner renumbering stays safe.
           if grep -Fq 'desktop/document/document_media_test_runner.dart' "$TEST_FILE"; then
             TEST_ARGS+=(--dart-define=APPFLOWY_TEST_BACKGROUND_FRAMES=true)
+          fi
+          rm -f /tmp/desktop-test-events.jsonl
+          if [ "${NATIVE_HANG_DIAGNOSTICS:-false}" = true ]; then
+            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/native_hang_diagnostics.py" \
+              --events /tmp/desktop-test-events.jsonl \
+              --app-root "$GITHUB_WORKSPACE/frontend/appflowy_flutter/build/linux" \
+              --output "$RUNNER_TEMP/native-hang-diagnostics" &
+            NATIVE_WATCH_PID=$!
           fi
 
           set +e
@@ -1391,5 +1462,6 @@ jobs:
           path: |
             /tmp/test_output.txt
             /tmp/desktop-test-events.jsonl
+            ${{ runner.temp }}/native-hang-diagnostics/
           if-no-files-found: warn
           retention-days: 7

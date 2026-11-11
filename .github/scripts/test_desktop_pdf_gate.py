@@ -586,7 +586,8 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["needs"], ["prepare-linux"])
         self.assertEqual(job["if"], "always() && !cancelled() && "
-                         "(github.event_name != 'workflow_dispatch' || inputs.cloud_suites == '')")
+                         "(github.event_name != 'workflow_dispatch' || "
+                         "(inputs.cloud_suites == '' && inputs.desktop_runners == ''))")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
