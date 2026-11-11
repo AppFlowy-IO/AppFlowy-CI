@@ -497,16 +497,15 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(build.count('cargo make --profile "$IOS_BUILD_PROFILE"'), 2)
         self.assertIn('test "$(uname -m)" = x86_64', self.step("Verify Docker runner architecture")["run"])
 
-    def test_intel_debug_config_requires_matching_ffi_and_resolves_the_selected_simulator(self):
+    def test_intel_debug_config_requires_matching_ffi_and_applies_before_boot(self):
         prepare = self.step("Prepare Intel simulator architecture")
         self.assertEqual(prepare["if"], "matrix.test_number == 4")
         self.assertLess(self.steps.index(self.step("Build AppFlowy")), self.steps.index(prepare))
         self.assertLess(self.steps.index(prepare), self.steps.index(self.step("Pre-build iOS app for simulator")))
         simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
-        self.assertLess(self.steps.index(simulator), self.steps.index(prepare))
-        self.assertEqual(prepare["env"]["SIMULATOR_UDID"], "${{ steps.simulator-action.outputs.udid }}")
-        for architecture, xcode_exit in (("x86_64", 0), ("x86_64", 64), ("arm64", 0), ("x86_64 arm64", 0)):
-            with self.subTest(architecture=architecture, xcode_exit=xcode_exit), tempfile.TemporaryDirectory() as directory:
+        self.assertLess(self.steps.index(prepare), self.steps.index(simulator))
+        for architecture in ("x86_64", "arm64", "x86_64 arm64"):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 config = root / "frontend/appflowy_flutter/ios/Flutter/Debug.xcconfig"
                 config.parent.mkdir(parents=True)
@@ -514,33 +513,23 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 config.write_text(original)
                 release = config.with_name("Release.xcconfig")
                 release.write_text("#include \"Generated.xcconfig\"\n")
-                calls = root / "xcode-calls"
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c",
                      'lipo() { printf "%s\\n" "$FFI_ARCHS"; }\n'
-                     'xcrun() { printf "%s\\n" "$@" > "$CALLS"; return "$XCODE_EXIT"; }\n'
                      + prepare["run"]],
-                    cwd=root, env={**os.environ, "FFI_ARCHS": architecture,
-                                   "SIMULATOR_UDID": "owned-simulator-id",
-                                   "CALLS": str(calls), "XCODE_EXIT": str(xcode_exit)},
+                    cwd=root, env={**os.environ, "FFI_ARCHS": architecture},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(release.read_text(), "#include \"Generated.xcconfig\"\n")
                 if architecture != "x86_64":
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(config.read_text(), original)
-                    self.assertFalse(calls.exists())
                     continue
-                self.assertEqual(result.returncode, xcode_exit, result.stderr)
+                self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(config.read_text().splitlines(), [
                     original.strip(), "",
                     "ARCHS[sdk=iphonesimulator*] = x86_64",
                     "EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64",
-                ])
-                self.assertEqual(calls.read_text().splitlines(), [
-                    "xcodebuild", "-project", "frontend/appflowy_flutter/ios/Runner.xcodeproj",
-                    "-scheme", "Runner", "-configuration", "Debug", "-sdk", "iphonesimulator",
-                    "-destination", "id=owned-simulator-id", "-showBuildSettings",
                 ])
 
     def test_workflow_uses_project_settings_for_ios_destinations(self):

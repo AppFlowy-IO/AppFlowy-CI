@@ -83,7 +83,7 @@ matrix, local and Cloud suites, and functional deadlines are retained.
 The Intel job sets the simulator architecture in `Flutter/Debug.xcconfig` in its
 checkout. The previous environment override left the booted device ineligible
 for the Runner scheme on Xcode 26.6. The job checks the native library architecture
-and asks Xcode to resolve the selected simulator before Flutter builds the app.
+before booting the simulator. Flutter's test build resolves the selected device.
 
 Cloud prerequisite and application-artifact downloads finish before the disposable
 Cloud stack starts. After the tests, failure logs are collected and the stack is

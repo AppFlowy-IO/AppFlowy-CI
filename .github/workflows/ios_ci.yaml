@@ -130,6 +130,22 @@ jobs:
           cargo make --profile "$IOS_BUILD_PROFILE" appflowy-core-dev-ios
           cargo make --profile "$IOS_BUILD_PROFILE" code_generation
 
+      - name: Prepare Intel simulator architecture
+        if: matrix.test_number == 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ios=frontend/appflowy_flutter/ios
+          test "$(lipo -archs "$ios/../packages/appflowy_backend/ios/libdart_ffi.a")" = x86_64
+          debug_config="$ios/Flutter/Debug.xcconfig"
+          test -f "$debug_config"
+          # Xcode uses the project's Debug settings to find eligible devices.
+          cat >> "$debug_config" <<'XCCONFIG'
+
+          ARCHS[sdk=iphonesimulator*] = x86_64
+          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
+          XCCONFIG
+
       - name: List simulators
         run: |
           xcrun simctl list --json devices available
@@ -143,30 +159,6 @@ jobs:
           # Runner 4 owns both provisioning shutdown and final cleanup.
           shutdown_after_job: false
           wait_for_boot: true
-
-      - name: Prepare Intel simulator architecture
-        if: matrix.test_number == 4
-        timeout-minutes: 3
-        shell: bash
-        env:
-          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
-        run: |
-          set -euo pipefail
-          ios=frontend/appflowy_flutter/ios
-          test "$(lipo -archs "$ios/../packages/appflowy_backend/ios/libdart_ffi.a")" = x86_64
-          debug_config="$ios/Flutter/Debug.xcconfig"
-          test -f "$debug_config"
-          # Xcode uses the project's Debug settings to find eligible devices.
-          # Set the Intel architecture in this job's checkout before that lookup.
-          cat >> "$debug_config" <<'XCCONFIG'
-
-          ARCHS[sdk=iphonesimulator*] = x86_64
-          EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
-          XCCONFIG
-          xcrun xcodebuild -project "$ios/Runner.xcodeproj" -scheme Runner \
-            -configuration Debug -sdk iphonesimulator \
-            -destination "id=${SIMULATOR_UDID:?Missing job simulator UUID}" \
-            -showBuildSettings > /dev/null
 
       # Runner 4 builds through flutter test below, using the selected Intel
       # simulator. The generic pre-build can complete Xcode compilation while
