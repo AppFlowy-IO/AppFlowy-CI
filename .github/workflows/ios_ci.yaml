@@ -64,6 +64,7 @@ jobs:
       # Cold, simultaneous image pulls stopped progressing on the two-CPU VM.
       # Bound engine calls for both exact-image and registry fixture startup.
       COMPOSE_PARALLEL_LIMIT: "2"
+      MOBILE_CLOUD_SERVICES: "appflowy_cloud appflowy_worker appflowy_search appflowy_gateway nginx"
       APPFLOWY_CLOUD_VERSION: latest-amd64
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
@@ -308,6 +309,7 @@ jobs:
           image-run-id: ${{ env.CLOUD_IMAGE_RUN_ID }}
           desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
           cloud-path: .mobile-cloud
+          runtime-profile: mobile
           compose-override: .mobile-ci-tools/.github/docker/mobile-row-cloud.yml
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
@@ -324,8 +326,9 @@ jobs:
         run: |
           compose=(docker compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml)
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
-            "${compose[@]}" pull
-            "${compose[@]}" up -d --no-build
+            read -r -a services <<< "$MOBILE_CLOUD_SERVICES"
+            "${compose[@]}" pull --include-deps "${services[@]}"
+            "${compose[@]}" up -d --no-build "${services[@]}"
           elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
             echo "::error::Cloud runtime selection did not complete"
             exit 1

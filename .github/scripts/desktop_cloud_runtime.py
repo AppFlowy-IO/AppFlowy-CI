@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 REPOSITORY = "AppFlowy-IO/AppFlowy-Cloud-Premium"
 WORKFLOW = ".github/workflows/build_ci_images_self_hosted.yml"
 SERVICES = ("appflowy_cloud", "appflowy_worker", "appflowy_search", "appflowy_mcp")
+MOBILE_SERVICES = ("appflowy_cloud", "appflowy_worker", "appflowy_search", "appflowy_gateway", "nginx")
 KNOWN_IMAGES = (*SERVICES, "appflowy_ai")
 GENERATED_PROTOBUF = {
     f"libs/appflowy-proto/src/pb/{name}.rs"
@@ -163,10 +164,10 @@ def verify_build(build, source_sha):
 
 
 def runtime_services(profile, image_roles):
-    if profile not in ("desktop", "web"):
+    if profile not in ("desktop", "mobile", "web"):
         raise ValueError("Unknown exact Cloud runtime profile")
     services = {name: name for name in SERVICES if profile == "desktop" or name != "appflowy_mcp"}
-    if profile == "web" or "appflowy_ai" in image_roles:
+    if profile == "web" or (profile == "desktop" and "appflowy_ai" in image_roles):
         services["ai"] = "appflowy_ai"
     return services
 
@@ -189,7 +190,7 @@ def verified_artifacts(response, profile):
     if (len(names) != len(set(names)) or not required.issubset(names) or not set(names).issubset(known)
             or any(item["expired"] for item in images)):
         raise ValueError("Private image build must retain exactly one complete, unexpired image set")
-    return images
+    return [item for item in images if profile != "mobile" or item["name"] in required]
 
 
 def select_prebuilt(desktop, source_sha="", image_run_id="", cloud_version="", *,
@@ -361,18 +362,32 @@ def verify_image(config, source_sha):
         raise ValueError("Image platform or source revision does not match the request")
 
 
-def dependency_services(config, profiles=(), protected=None):
+def dependency_services(config, profiles=(), protected=None, *, roots=()):
     protected = protected if protected is not None else {name: name for name in SERVICES}
     services = config["services"]
     if not set(protected).issubset(services):
         raise ValueError("Compose source does not contain the required Cloud services")
+    selected = set(services)
+    if roots:
+        selected = set()
+        pending = list(roots)
+        while pending:
+            name = pending.pop()
+            if name in selected:
+                continue
+            if name not in services:
+                raise ValueError(f"Missing Cloud runtime service: {name}")
+            selected.add(name)
+            pending.extend(services[name].get("depends_on", {}))
+    if not set(protected).issubset(selected):
+        raise ValueError("Selected runtime omits a verified Cloud service")
     for service, image in protected.items():
         if services[service].get("image") != image_tag(image):
             raise ValueError(f"Compose image differs from the verified artifact for {service}")
     active = set(profiles)
-    return sorted(name for name, value in services.items()
-                  if name not in protected and (not value.get("profiles") or "*" in active
-                                              or active.intersection(value["profiles"])))
+    return sorted(name for name in selected
+                  if name not in protected and (not services[name].get("profiles") or "*" in active
+                                                or active.intersection(services[name]["profiles"])))
 
 
 def require_timeline_image(timeline, image):
@@ -438,7 +453,9 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
     if compose_override is not None:
         compose += ["-f", str(compose_override.resolve())]
     config = json.loads(run(compose + ["config", "--format", "json"], cwd=cloud, env=env))
-    dependencies = dependency_services(config, env.get("COMPOSE_PROFILES", "").split(","), protected_images)
+    roots = MOBILE_SERVICES if profile == "mobile" else ()
+    dependencies = dependency_services(config, env.get("COMPOSE_PROFILES", "").split(","),
+                                      protected_images, roots=roots)
     for service, expected_ids in archive_ids.items():
         run(["docker", "load", "--input", str(archives / f"{service}.tar.gz")], cwd=cloud, capture=False)
         loaded = json.loads(run(["docker", "image", "inspect", image_tag(service)]))[0]
@@ -466,7 +483,7 @@ def start_runtime(cloud, archives, manifest, timeline=False, run=command, *, tim
                  archive_image_ids={role: sorted(ids) for role, ids in archive_ids.items()},
                  timeline_image=timeline_image if timeline else None)
     write_manifest(manifest, state)
-    run(compose + ["up", "-d", "--no-build", "--pull", "never"], cwd=cloud, env=env, capture=False)
+    run(compose + ["up", "-d", "--no-build", "--pull", "never", *roots], cwd=cloud, env=env, capture=False)
     # Verify the images actually attached to the containers, not only local tags.
     runtime_images = {service: images[role] for service, role in protected_images.items()}
     for service, expected_id in runtime_images.items():
@@ -496,7 +513,7 @@ def main():
     select.add_argument("--image-run-id", default="")
     select.add_argument("--cloud-version", default="")
     select.add_argument("--ci-ref", default="")
-    select.add_argument("--profile", choices=("desktop", "web"), default="web")
+    select.add_argument("--profile", choices=("desktop", "mobile", "web"), default="web")
     pins = sub.add_parser("pins")
     pins.add_argument("--cloud-source-sha", default="")
     pins.add_argument("--image-run-id", default="")
@@ -510,7 +527,7 @@ def main():
     request.add_argument("--cloud", type=Path, required=True)
     request.add_argument("--client", type=Path)
     request.add_argument("--ci-ref", default="")
-    request.add_argument("--profile", choices=("desktop", "web"), default="desktop")
+    request.add_argument("--profile", choices=("desktop", "mobile", "web"), default="desktop")
     request.add_argument("--manifest", type=Path, required=True)
     start = sub.add_parser("start")
     start.add_argument("--cloud", type=Path, required=True)

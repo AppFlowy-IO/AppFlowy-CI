@@ -20,7 +20,7 @@ inputs:
     description: Immutable AppFlowy-CI tools revision for callers in another repository.
     default: ''
   runtime-profile:
-    description: Compose service profile (desktop or web).
+    description: Compose service profile (desktop, mobile or web).
     default: desktop
   compose-override:
     description: Checked-out Compose override. Required by the web profile.

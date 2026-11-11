@@ -14,6 +14,7 @@ from unittest.mock import patch
 import yaml
 
 import mobile_row_cloud
+import desktop_cloud_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -267,6 +268,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                          f".mobile-ci-tools/{override}")
         config = yaml.safe_load((WORKFLOW.parents[2] / override).read_text())
         self.assertEqual(config, {"services": {"postgres": {"healthcheck": {"start_period": "120s"}}}})
+        self.assertEqual(self.step("Start the verified exact Cloud runtime")["with"]["runtime-profile"],
+                         "mobile")
+        services = self.job["env"]["MOBILE_CLOUD_SERVICES"].split()
+        self.assertEqual(tuple(services), desktop_cloud_runtime.MOBILE_SERVICES)
         for name in ("Start the verified exact Cloud runtime", "Start job-owned Cloud services"):
             self.assertNotIn("COMPOSE_PARALLEL_LIMIT", self.step(name).get("env", {}))
         startup = self.step("Start job-owned Cloud services")
@@ -291,14 +296,15 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 ["bash", "-euo", "pipefail", "-c", startup["run"]], cwd=root,
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                      "COMPOSE_PARALLEL_LIMIT": self.job["env"]["COMPOSE_PARALLEL_LIMIT"],
+                     "MOBILE_CLOUD_SERVICES": self.job["env"]["MOBILE_CLOUD_SERVICES"],
                      "EXACT_CLOUD_ENABLED": "false", "RUNNER_TEMP": directory, "CALLS": str(calls)},
                 capture_output=True, text=True, timeout=5,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             rows = [json.loads(line) for line in calls.read_text().splitlines()]
             compose = ["compose", "-f", "docker-compose-ci.yml", "-f", f"../.mobile-ci-tools/{override}"]
-            self.assertEqual(rows[0], {"args": compose + ["pull"], "parallel": "2"})
-            self.assertEqual(rows[1]["args"], compose + ["up", "-d", "--no-build"])
+            self.assertEqual(rows[0], {"args": compose + ["pull", "--include-deps", *services], "parallel": "2"})
+            self.assertEqual(rows[1]["args"], compose + ["up", "-d", "--no-build", *services])
             self.assertTrue(all(row["parallel"] == "2" for row in rows))
 
     def test_cloud_failure_evidence_is_uploaded_before_owned_runtime_cleanup(self):
@@ -484,6 +490,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", prefix + script], cwd=root,
                     env={**os.environ, "EXACT_CLOUD_ENABLED": enabled,
+                         "MOBILE_CLOUD_SERVICES": self.job["env"]["MOBILE_CLOUD_SERVICES"],
                          "RUNNER_TEMP": directory, "CALLS": str(calls)},
                     capture_output=True, text=True, timeout=5,
                 )
@@ -496,7 +503,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 compose = "compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml"
                 expected = [f"{compose} images --format json"]
                 if enabled == "false":
-                    expected = [f"{compose} pull", f"{compose} up -d --no-build", *expected]
+                    services = self.job["env"]["MOBILE_CLOUD_SERVICES"]
+                    expected = [f"{compose} pull --include-deps {services}",
+                                f"{compose} up -d --no-build {services}", *expected]
                 self.assertEqual(commands, expected)
 
     def test_intel_rust_target_profile_and_simulator_match(self):
