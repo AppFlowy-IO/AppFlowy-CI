@@ -160,13 +160,21 @@ jobs:
           shutdown_after_job: false
           wait_for_boot: true
 
-      # Runner 4 builds through flutter test below, using the selected Intel
-      # simulator. The generic pre-build can complete Xcode compilation while
-      # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
         if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
         run: flutter build ios --simulator --debug
+
+      # The cold Intel build consumed the local suite's deadline before its
+      # first case. Warm the actual test target for the selected destination.
+      - name: Pre-build Intel mobile test app
+        if: matrix.test_number == 4
+        timeout-minutes: 60
+        working-directory: frontend/appflowy_flutter
+        run: |
+          flutter build ios --simulator --debug \
+            --target integration_test/mobile_runner_4.dart \
+            -d '${{ steps.simulator-action.outputs.udid }}'
 
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests

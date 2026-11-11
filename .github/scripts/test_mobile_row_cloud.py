@@ -324,7 +324,12 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertTrue(simulator["with"].get("wait_for_boot", False))
         prebuild = self.step("Pre-build iOS app for simulator")
         self.assertEqual(prebuild.get("if"), "matrix.test_number != 4")
+        intel = self.step("Pre-build Intel mobile test app")
+        self.assertEqual(intel["if"], "matrix.test_number == 4")
+        self.assertEqual(intel["timeout-minutes"], 60)
+        self.assertLess(self.steps.index(simulator), self.steps.index(intel))
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertLess(self.steps.index(intel), self.steps.index(local))
         self.assertNotIn("if", local)
         self.assertNotIn("--no-build", local["run"])
         command = local["run"].replace("${{ matrix.test_number }}", "4").replace(
@@ -348,6 +353,18 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
                 "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
                 "--verbose",
+            ])
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", intel["run"].replace(
+                    "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")],
+                cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "CALLS": str(calls)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual(calls.read_text().splitlines(), [
+                "build", "ios", "--simulator", "--debug", "--target",
+                "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
             ])
 
     def test_intel_failure_diagnostics_run_before_result_upload(self):
