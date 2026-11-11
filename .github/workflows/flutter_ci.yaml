@@ -1371,6 +1371,24 @@ jobs:
           ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
         shell: bash
 
+      - name: Build fixed libmpv for media integration tests
+        timeout-minutes: 10
+        working-directory: frontend/appflowy_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_FILE="integration_test/desktop_runner_${{ matrix.test_number }}.dart"
+          if ! grep -Fq 'desktop/document/document_media_test_runner.dart' "$TEST_FILE"; then
+            exit 0
+          fi
+          python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/run_flutter_apt.py" install -y meson
+          MEDIA_RUNTIME="$RUNNER_TEMP/linux-media-runtime"
+          python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/prepare_linux_mpv.py" \
+            --directory "$MEDIA_RUNTIME"
+          # Regenerate cached pkg-config results so the app bundles this build.
+          rm -f build/linux/x64/debug/CMakeCache.txt
+          echo "PKG_CONFIG_PATH=$MEDIA_RUNTIME/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+
       - name: Install native debugger for focused replay
         if: env.NATIVE_HANG_DIAGNOSTICS == 'true'
         continue-on-error: true
@@ -1453,6 +1471,27 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Verify bundled media runtime
+        if: always()
+        timeout-minutes: 1
+        working-directory: frontend/appflowy_flutter
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          manifest = Path(os.environ["RUNNER_TEMP"]) / "linux-media-runtime/manifest.json"
+          if manifest.exists():
+              result = json.loads(manifest.read_text())
+              library = Path("build/linux/x64/debug/bundle/lib/libmpv.so.2")
+              digest = hashlib.sha256(library.read_bytes()).hexdigest()
+              assert digest == result["library_sha256"], "The app bundled a different libmpv"
+              assert library.samefile(library.with_name("libmpv.so")), "The libmpv aliases differ"
+              result.update(bundled_library=str(library), bundled_library_sha256=digest)
+              manifest.write_text(json.dumps(result, indent=2) + "\n")
+              print(json.dumps(result))
+          PY
+
       - name: Upload desktop test output
         if: always()
         timeout-minutes: 3
@@ -1463,5 +1502,7 @@ jobs:
             /tmp/test_output.txt
             /tmp/desktop-test-events.jsonl
             ${{ runner.temp }}/native-hang-diagnostics/
+            ${{ runner.temp }}/linux-media-runtime/build.log
+            ${{ runner.temp }}/linux-media-runtime/manifest.json
           if-no-files-found: warn
           retention-days: 7
