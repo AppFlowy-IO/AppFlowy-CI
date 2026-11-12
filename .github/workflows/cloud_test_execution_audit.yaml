@@ -1,0 +1,68 @@
+name: Cloud test execution audit
+run-name: >-
+  [ci-v2 source=AppFlowy-IO/AppFlowy-Cloud-Premium
+  pr=${{ (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
+  parent=none] Cloud test execution audit
+
+on:
+  repository_dispatch:
+    types: [cloud-test-execution-audit]
+  workflow_run:
+    workflows: [AppFlowy-Cloud Integration Tests, AppFlowy-Cloud Commercial Integrations]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+
+# Related workflow completions can arrive together. Serialize status publication so an older
+# pending observation cannot overwrite the completed audit for the same private source.
+concurrency:
+  group: cloud-test-execution-audit-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+    steps:
+      # Use trusted default-branch tooling; the private checkout is parsed as data only.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Resolve the current private PR revision
+        id: source
+        run: python3 -B .github/scripts/cloud_test_execution_audit.py resolve --event "$GITHUB_EVENT_PATH"
+      - name: Publish pending audit status
+        if: steps.source.outputs.enabled == 'true'
+        run: >-
+          python3 -B .github/scripts/cloud_test_execution_audit.py status
+          --pr '${{ steps.source.outputs.pr }}' --sha '${{ steps.source.outputs.sha }}' --state pending
+      - uses: actions/checkout@v4
+        if: steps.source.outputs.enabled == 'true'
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          ref: ${{ steps.source.outputs.sha }}
+          path: cloud-source
+          persist-credentials: false
+      - name: Reconcile new tests with same-source execution logs
+        if: steps.source.outputs.enabled == 'true'
+        run: >-
+          python3 -B .github/scripts/cloud_test_execution_audit.py github
+          --source cloud-source --pr '${{ steps.source.outputs.pr }}'
+          --sha '${{ steps.source.outputs.sha }}' --output test-execution-audit.json --publish
+      - name: Publish verification failure
+        if: failure() && steps.source.outputs.enabled == 'true'
+        run: >-
+          python3 -B .github/scripts/cloud_test_execution_audit.py status
+          --pr '${{ steps.source.outputs.pr }}' --sha '${{ steps.source.outputs.sha }}' --state failure
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.source.outputs.enabled == 'true'
+        with:
+          name: cloud-test-execution-audit-${{ steps.source.outputs.sha }}
+          path: test-execution-audit.json
+          if-no-files-found: warn
+          retention-days: 14

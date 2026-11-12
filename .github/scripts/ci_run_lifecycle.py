@@ -28,6 +28,7 @@ SOURCE_WORKFLOWS = {
         "cloud_backend_ci.yaml", "cloud_frontend_ci.yaml", "cloud_e2e_ci.yaml",
         "cloud_docker_ci.yaml", "cloud_rustlint_ci.yaml", INTEGRATION_WORKFLOW,
         "cloud_commercial_integration_ci.yaml", "webhook_receiver.yaml",
+        "cloud_test_execution_audit.yaml",
     },
 }
 IDENTITY = re.compile(

@@ -46,6 +46,9 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref }}
 
+      - name: Record Cloud test source
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+
       - name: Install prerequisites
         run: |
           sudo apt-get update
@@ -113,6 +116,9 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ github.event.client_payload.pr_ref }}
+
+      - name: Record Cloud test source
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
 
       - name: Checkout CI contract helpers
         uses: actions/checkout@v4
@@ -294,6 +300,10 @@ jobs:
           APPFLOWY_PRESENTATION_TEST_AI_URL: http://localhost:5001
         run: python3 -B ci-tools/.github/scripts/commercial_presentation_runner.py --source "$GITHUB_WORKSPACE"
 
+      - name: Run SCIM identity recovery contracts
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        run: python3 -B ci-tools/.github/scripts/commercial_scim_runner.py --source "$GITHUB_WORKSPACE"
+
       - name: Run Tests
         env:
           APPFLOWY_MCP_TEST_BASE_URL: http://localhost:8002
@@ -314,7 +324,8 @@ jobs:
               echo "==> Testing module: ${module}"
               RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
                 --features=commercial-ci "${module}" \
-                -- --skip stress_test --skip whitelist --skip commercial_test::presentation_test:: --test-threads=1
+                -- --skip stress_test --skip whitelist --skip commercial_test::presentation_test:: \
+                --skip commercial_test::scim_test::identity_recovery:: --test-threads=1
             done
           fi
 

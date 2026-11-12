@@ -164,6 +164,10 @@ jobs:
           ref: ${{ needs.image_source.outputs.sha }}
           path: appflowy-cloud-premium
 
+      - name: Record Cloud test source
+        working-directory: appflowy-cloud-premium
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+
       - name: Detect encoded cache suite
         id: encoded_cache
         working-directory: appflowy-cloud-premium
@@ -275,6 +279,9 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
           persist-credentials: false
+      - name: Record Cloud test source
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -311,6 +318,9 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
           persist-credentials: false
+      - name: Record Cloud test source
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+
       - name: Install pinned Prometheus evaluator
         run: |
           set -euo pipefail
@@ -579,6 +589,9 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
+
+      - name: Record Cloud test source
+        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
 
       - name: Decide where AI calls go
         env:
