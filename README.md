@@ -18,6 +18,37 @@ Choose only the affected suite (`flutter_ci.yaml`, `rust_ci.yaml`, or `ios_ci.ya
 additional runtime inputs it needs. Workflow-script tests do not replace an end-to-end validation
 when changing build or runtime behavior. Ordinary private-source CI keeps its full test matrices.
 
+## Cloud test execution notifications
+
+`cloud_test_execution_audit.yaml` runs after the Cloud integration and commercial workflows
+complete. Trusted default-branch tooling reads the current private PR source as data and
+reconciles newly added Rust test functions or changed test attributes against both workflows'
+libtest logs and native private test workflows for the same head (including SDK and Backup).
+Public test jobs record `AF_TEST_SOURCE_SHA`; older/native jobs require a recorded private
+checkout or an API-verified GitHub PR test merge whose second parent is the requested head.
+Private workflow completion dispatches let the audit settle when those jobs finish last.
+Logs from another source, compilation
+output, incomplete/count-mismatched segments and ignored cases cannot establish execution.
+
+The audit publishes `CI test execution audit` on the exact private head. It remains pending while
+related workflows run, then reports missing/failed/unverified cases as a failed status with job
+annotations and a JSON artifact. A closed or advanced PR cannot receive a stale result. No PR
+code is imported/executed by the privileged audit job, and repository credentials are never
+forwarded to signed log-download hosts. Collection is bounded to 300 jobs per related run,
+32 MiB per log and 256 MiB total; unavailable or truncated evidence fails verification.
+
+The initial notification gate covers PR-added standard Rust test functions. Generated/conditional
+cases and duplicate function names are explicitly unverified; it does not infer complete runtime
+case inventories or every feature/platform configuration from source parsing. Reviewed manual
+exceptions use exact `path.rs::function` keys with explanatory values in the source's
+`script/ci/test_execution_exemptions.json`, and remain visible in the report.
+
+For an offline audit, `.github/scripts/cloud_test_execution_audit.py report` accepts `--source`,
+`--sha`, a GitHub compare JSON as `--changes`, and a directory of attested `.log` files as `--logs`.
+Supply `--output report.json` and `--strict` to fail on gaps. `--all-tests` provides an advisory
+legacy-source inventory; feature/platform-only and manual cases can legitimately lack evidence
+in a particular run. This checks test execution, not LLVM line or branch coverage.
+
 Manual Rust/Flutter validation from a non-default CI branch has its own concurrency
 group per CI branch and private PR, so the automatic main workflow cannot cancel it
 while testing that same PR. A newer manual attempt in the same group still replaces

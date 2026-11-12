@@ -19,7 +19,7 @@ SOURCE_WORKFLOWS = {
     **dict.fromkeys(("cloud_backend_ci.yaml", "cloud_frontend_ci.yaml",
                      "cloud_docker_ci.yaml", "cloud_e2e_ci.yaml",
                      "cloud_rustlint_ci.yaml", "cloud_integration_ci.yaml",
-                     "cloud_commercial_integration_ci.yaml"), CLOUD_REPO),
+                     "cloud_commercial_integration_ci.yaml", "cloud_test_execution_audit.yaml"), CLOUD_REPO),
 }
 
 

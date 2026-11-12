@@ -30,6 +30,7 @@ def step(job, name):
 
 
 @unittest.skipUnless(shutil.which("cargo") and shutil.which("cc"), "requires Rust and a C compiler")
+@unittest.skipUnless(sys.platform.startswith("linux"), "archive fixture uses ELF .so files and LD_LIBRARY_PATH")
 class CloudTestArchiveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
