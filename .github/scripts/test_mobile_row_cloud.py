@@ -198,6 +198,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertEqual(calls.read_text().splitlines(), [
                 str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+                "--verbose", "--reporter", "expanded",
                 "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
             ])
 
@@ -401,6 +402,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
     def test_only_flutter_simulator_commands_receive_the_intel_override(self):
         commands = {
             "Pre-build iOS app for simulator": ["build", "ios", "--simulator", "--debug"],
+            "Pre-build focused iOS app for selected simulator": [
+                "build", "ios", "--simulator", "--debug", "--target",
+                "integration_test/mobile_runner_4.dart", "-d", "fixture-device", "--verbose",
+            ],
             "Run Flutter integration tests (runner ${{ matrix.test_number }})":
                 ["test", "integration_test/mobile_runner_4.dart", "-d", "fixture-device"],
             "Run Cloud row-page tests on iOS":
@@ -414,6 +419,8 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("env", {}))
         for target in ("x86_64-apple-ios", "aarch64-apple-ios-sim"):
             for name, arguments in commands.items():
+                if name == "Pre-build focused iOS app for selected simulator" and target != "x86_64-apple-ios":
+                    continue  # Its workflow condition excludes the ARM runners.
                 with self.subTest(target=target, step=name), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     flutter = root / "flutter"
@@ -436,6 +443,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     captured = json.loads((root / "capture.json").read_text())
                     self.assertEqual(captured["args"][:len(arguments)], arguments)
+                    if name == "Run Flutter integration tests (runner ${{ matrix.test_number }})":
+                        self.assertEqual("--verbose" in captured["args"], target == "x86_64-apple-ios")
+                        self.assertEqual("--reporter" in captured["args"], target == "x86_64-apple-ios")
                     if target == "x86_64-apple-ios":
                         self.assertEqual(captured["override"], str(root / "mobile-intel-simulator.xcconfig"))
                     else:

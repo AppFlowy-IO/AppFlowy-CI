@@ -25,8 +25,17 @@ legacy and exact-source fixtures.
 
 The automatic lane keeps its matching x86 simulator build. The separate
 `ios_ci_test.yaml` workflow stays unchanged; the default iOS matrix still uses
-four runner slots. The job, local-test and Cloud-test budgets remain
-180, 60 and 20 minutes, respectively.
+four runner slots. Intel has a 210-minute job provisioning window; the other
+jobs remain at 120 minutes. Local and Cloud functional limits remain 60 and
+20 minutes.
+
+Runner 4 prebuilds the exact `mobile_runner_4.dart` integration target for the
+selected simulator in a separate 90-minute build step. This prevents cold Pods
+and Xcode compilation from consuming the functional-test deadline before any
+test body starts. Its temporary architecture override remains scoped to Flutter
+commands. Verbose prebuild output is retained in `mobile-local-results/prebuild.log`;
+the subsequent normal test build retains expanded/verbose output and the JSON
+reporter. No functional test is skipped and the application assertions are unchanged.
 
 The additional phase is not applicable when an older Desktop revision lacks the
 focused entry point and no exact server was requested; discovery writes that

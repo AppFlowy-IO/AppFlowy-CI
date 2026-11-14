@@ -46,9 +46,9 @@ concurrency:
 jobs:
   integration-tests:
     name: Mobile integration tests (runner ${{ matrix.test_number }})
-    # Cold Intel build/startup reached its first test completion 93 minutes into
-    # the job. Bound local work separately so failure still leaves Cloud time.
-    timeout-minutes: ${{ matrix.test_number == 4 && 180 || 120 }}
+    # Cold Intel native/Xcode compilation needs provisioning time outside the
+    # unchanged local and Cloud functional-suite deadlines.
+    timeout-minutes: ${{ matrix.test_number == 4 && 210 || 120 }}
     strategy:
       fail-fast: false
       matrix:
@@ -150,9 +150,6 @@ jobs:
           shutdown_after_job: false
           wait_for_boot: true
 
-      # Runner 4 builds through flutter test below, using the selected Intel
-      # simulator. The generic pre-build can complete Xcode compilation while
-      # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
         if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
@@ -162,6 +159,22 @@ jobs:
           fi
           flutter build ios --simulator --debug
 
+      # Generic prebuilds have left Flutter's TARGET_BUILD_DIR lookup empty.
+      # Match the integration target/device used by the following test build,
+      # and finish cold compilation before the functional-suite clock starts.
+      - name: Pre-build focused iOS app for selected simulator
+        if: matrix.test_number == 4
+        working-directory: frontend/appflowy_flutter
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mobile-local-results"
+          export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          flutter build ios --simulator --debug --target integration_test/mobile_runner_4.dart \
+            -d '${{ steps.simulator-action.outputs.udid }}' --verbose \
+            2>&1 | tee "$RUNNER_TEMP/mobile-local-results/prebuild.log"
+
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
         timeout-minutes: 60
@@ -170,11 +183,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
+          set --
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+            set -- --verbose --reporter expanded
           fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
+            "$@" \
             --file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json" \
             2>&1 | tee "$RUNNER_TEMP/mobile-local-results/flutter.log"
 
