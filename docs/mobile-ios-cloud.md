@@ -88,6 +88,11 @@ build with the two exact inputs. Wait for active related runs before dispatching
 the concurrency key includes `pr_number`, so another run for that PR can cancel
 its current iOS run. An iOS-only dispatch does not repeat Flutter/Rust pipelines.
 
+Select `test_runner=3` to diagnose the existing ARM runner's loading/launch path
+without repeating the other three jobs. Runner 3 retains verbose/expanded local
+output as runner 4 does. Its architecture, simulator, complete local suite and
+deadlines are unchanged; it does not provision the runner-4-only Cloud fixture.
+
 For runtime-stall diagnosis, manual dispatch also accepts `local_test_name`, a
 test-name regular expression applied only to runner 4's local command. Use one
 regex with alternation to select a predecessor and the stalled case in their

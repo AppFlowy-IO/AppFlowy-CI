@@ -114,8 +114,8 @@ class IntelPrebuildTest(unittest.TestCase):
         self.assertIn("prebuild stdout", result.stdout)
         self.assertIn("prebuild stderr", result.stdout)
 
-    def run_local(self, target, name_filter):
-        script = self.step(LOCAL)["run"].replace("${{ matrix.test_number }}", "4").replace(
+    def run_local(self, target, name_filter, arm_diagnostics=False, runner_number="4"):
+        script = self.step(LOCAL)["run"].replace("${{ matrix.test_number }}", runner_number).replace(
             "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")
         with tempfile.TemporaryDirectory(prefix="ios-local-selection-") as directory:
             root = Path(directory)
@@ -133,7 +133,8 @@ class IntelPrebuildTest(unittest.TestCase):
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                      "RUNNER_TEMP": directory, "CAPTURE": str(capture),
                      "GITHUB_STEP_SUMMARY": str(summary), "IOS_RUST_TARGET": target,
-                     "IOS_LOCAL_TEST_NAME": name_filter},
+                     "IOS_LOCAL_TEST_NAME": name_filter,
+                     "IOS_ARM_LAUNCH_DIAGNOSTICS": str(arm_diagnostics).lower()},
                 capture_output=True, text=True, timeout=5,
             )
             self.assertEqual(result.returncode, 7, result.stderr)
@@ -169,6 +170,18 @@ class IntelPrebuildTest(unittest.TestCase):
         self.assertEqual(inputs["local_test_name"]["type"], "string")
         self.assertEqual(self.step(LOCAL)["env"]["IOS_LOCAL_TEST_NAME"],
                          "${{ github.event_name == 'workflow_dispatch' && inputs.local_test_name || '' }}")
+
+    def test_arm_launch_diagnostics_keep_the_architecture_and_full_suite(self):
+        arguments, summary = self.run_local(
+            "aarch64-apple-ios-sim", "8476", arm_diagnostics=True, runner_number="3")
+        self.assertEqual(arguments[:4], [
+            "test", "integration_test/mobile_runner_3.dart", "-d", "owned-simulator-id"])
+        self.assertIn("--verbose", arguments)
+        self.assertIn("--reporter", arguments)
+        self.assertNotIn("--name", arguments)
+        self.assertEqual(summary, "")
+        self.assertEqual(self.step(LOCAL)["env"]["IOS_ARM_LAUNCH_DIAGNOSTICS"],
+                         "${{ matrix.test_number == 3 }}")
 
 
 if __name__ == "__main__":

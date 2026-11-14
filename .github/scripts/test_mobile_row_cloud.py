@@ -128,9 +128,10 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(list(self.workflow["jobs"]), ["integration-tests"])
         self.assertEqual(self.job["strategy"]["matrix"], {"test_number":
             "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' "
-            "&& '[4]' || '[1,2,3,4]') }}"})
+            "&& '[4]' || github.event_name == 'workflow_dispatch' && inputs.test_runner == '3' "
+            "&& '[3]' || '[1,2,3,4]') }}"})
         inputs = self.workflow[True]["workflow_dispatch"]["inputs"]
-        self.assertEqual(inputs["test_runner"]["options"], ["all", "4"])
+        self.assertEqual(inputs["test_runner"]["options"], ["all", "3", "4"])
         self.assertEqual(inputs["test_runner"]["default"], "all")
         self.assertEqual(inputs["test_runner"]["type"], "choice")
         self.assertEqual(self.job["runs-on"],

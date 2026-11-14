@@ -20,11 +20,11 @@ on:
         type: string
         default: "main"
       test_runner:
-        description: "Run the usual four mobile suites, or only runner 4 for focused Cloud validation"
+        description: "Run all four mobile suites, or select runner 3 or 4 for diagnosis"
         required: false
         type: choice
         default: "all"
-        options: ["all", "4"]
+        options: ["all", "3", "4"]
       local_test_name:
         description: "Optional runner 4 test-name regex for diagnosis; empty runs its full local suite"
         required: false
@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || '[1,2,3,4]') }}
+        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || github.event_name == 'workflow_dispatch' && inputs.test_runner == '3' && '[3]' || '[1,2,3,4]') }}
 
     # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
     # runner 4 runs its local suite first, then the focused Cloud row-page suite.
@@ -187,6 +187,7 @@ jobs:
         working-directory: frontend/appflowy_flutter
         env:
           IOS_LOCAL_TEST_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.local_test_name || '' }}
+          IOS_ARM_LAUNCH_DIAGNOSTICS: ${{ matrix.test_number == 3 }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
@@ -198,6 +199,8 @@ jobs:
               set -- "$@" --name "$IOS_LOCAL_TEST_NAME"
               echo "Manual runner 4 name filter enabled; this run does not cover the full local suite." >> "$GITHUB_STEP_SUMMARY"
             fi
+          elif [[ "${IOS_ARM_LAUNCH_DIAGNOSTICS:-}" == true ]]; then
+            set -- --verbose --reporter expanded
           fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
