@@ -14,12 +14,19 @@ tests pass that file through `XCODE_XCCONFIG_FILE`, so Desktop's ARM-oriented
 `Debug.xcconfig` cannot exclude the Intel library. The checkout, ARM runners,
 physical-device builds, and macOS host-tool settings are unchanged.
 
-The Intel requirement follows the existing manual `ios_ci_test.yaml` approach:
-[setup-docker-macos-action](https://github.com/douglascamata/setup-docker-macos-action)
-supports hosted `macos-15-intel` nested virtualization and localhost forwarding.
-The automatic lane uses the matching x86 simulator build rather than the manual
-workflow's ARM profile. The separate `ios_ci_test.yaml` workflow stays unchanged;
-the default iOS matrix still uses four runner slots.
+The Intel host provides nested virtualization and localhost forwarding. Docker,
+Compose, Buildx, Colima and Lima come from checksum-pinned release binaries via
+this repository's `macos-docker` component, avoiding Homebrew source builds.
+Tools, Docker authentication configuration and VM profiles stay under
+`RUNNER_TEMP`; installed host tools and preferences are not edited. The VM uses
+two CPUs and at most eight GiB of RAM, reserving at least six GiB for the host and
+CoreSimulator. Setup has a 15-minute bound. Compose concurrency is two for both
+legacy and exact-source fixtures.
+
+The automatic lane keeps its matching x86 simulator build. The separate
+`ios_ci_test.yaml` workflow stays unchanged; the default iOS matrix still uses
+four runner slots. The job, local-test and Cloud-test budgets remain
+180, 60 and 20 minutes, respectively.
 
 The additional phase is not applicable when an older Desktop revision lacks the
 focused entry point and no exact server was requested; discovery writes that
@@ -82,6 +89,8 @@ and generated credential files; no global Docker prune is used.
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts -p test_mobile_row_cloud.py
+python3 -B -m unittest discover -s .github/scripts -p test_macos_docker.py
+python3 -B -m unittest discover -s .github/scripts -p test_start_mobile_cloud.py
 python3 -B -m unittest discover -s .github/scripts
 python3 -B -m unittest discover -s scripts -p test_check_test_module_coverage.py
 actionlint .github/workflows/ios_ci.yaml

@@ -61,6 +61,7 @@ jobs:
       IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
       IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
       COMPOSE_PROJECT_NAME: ios-row-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PARALLEL_LIMIT: "2"
       APPFLOWY_CLOUD_VERSION: latest-amd64
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
@@ -236,7 +237,8 @@ jobs:
       - name: Setup Docker on macOS
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/macos-docker
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"
