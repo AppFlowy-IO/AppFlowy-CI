@@ -85,6 +85,15 @@ build with the two exact inputs. Wait for active related runs before dispatching
 the concurrency key includes `pr_number`, so another run for that PR can cancel
 its current iOS run. An iOS-only dispatch does not repeat Flutter/Rust pipelines.
 
+For runtime-stall diagnosis, manual dispatch also accepts `local_test_name`, a
+test-name regular expression applied only to runner 4's local command. Use one
+regex with alternation to select a predecessor and the stalled case in their
+existing registration order. The input is passed as one literal argument and
+the job summary marks the local coverage as partial. The target, simulator,
+prebuild, assertions and Cloud suite stay the same. An empty value runs the full
+local suite; repository dispatch ignores this manual diagnostic input. A filtered
+success does not validate the complete local suite.
+
 `mobile_row_cloud.py` creates a new private `.env` and a mode-0600 Dart-define
 file with the same randomly generated GoTrue admin credentials. The simulator
 receives its test Cloud/auth endpoints through that file; it does not depend on

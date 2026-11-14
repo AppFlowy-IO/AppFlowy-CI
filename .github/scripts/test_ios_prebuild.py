@@ -114,6 +114,62 @@ class IntelPrebuildTest(unittest.TestCase):
         self.assertIn("prebuild stdout", result.stdout)
         self.assertIn("prebuild stderr", result.stdout)
 
+    def run_local(self, target, name_filter):
+        script = self.step(LOCAL)["run"].replace("${{ matrix.test_number }}", "4").replace(
+            "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")
+        with tempfile.TemporaryDirectory(prefix="ios-local-selection-") as directory:
+            root = Path(directory)
+            capture = root / "capture.json"
+            summary = root / "summary.md"
+            flutter = root / "flutter"
+            flutter.write_text(
+                f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+                "Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))\n"
+                "print('local output', flush=True)\nsys.exit(7)\n"
+            )
+            flutter.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-c", script], cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                     "RUNNER_TEMP": directory, "CAPTURE": str(capture),
+                     "GITHUB_STEP_SUMMARY": str(summary), "IOS_RUST_TARGET": target,
+                     "IOS_LOCAL_TEST_NAME": name_filter},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual((root / "mobile-local-results/flutter.log").read_text(), "local output\n")
+            return json.loads(capture.read_text()), summary.read_text() if summary.exists() else ""
+
+    def test_manual_filter_is_one_literal_argument_and_reports_partial_coverage(self):
+        name_filter = "Mobile date.*|Mobile grid opens row detail.*"
+        arguments, summary = self.run_local("x86_64-apple-ios", name_filter)
+        self.assertEqual(arguments, [
+            "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+            "--verbose", "--reporter", "expanded", "--name", name_filter,
+            "--file-reporter", arguments[-1],
+        ])
+        self.assertTrue(arguments[-1].endswith("/mobile-local-results/tests.json"))
+        self.assertIn("does not cover the full local suite", summary)
+
+    def test_ordinary_and_arm_local_commands_keep_full_coverage(self):
+        for target, name_filter in (
+            ("x86_64-apple-ios", ""),
+            ("aarch64-apple-ios-sim", "Mobile hidden row detail"),
+        ):
+            with self.subTest(target=target):
+                arguments, summary = self.run_local(target, name_filter)
+                self.assertNotIn("--name", arguments)
+                self.assertEqual(summary, "")
+                self.assertEqual("--verbose" in arguments, target == "x86_64-apple-ios")
+
+    def test_local_filter_only_comes_from_explicit_manual_input(self):
+        trigger = self.workflow.get("on", self.workflow.get(True))
+        inputs = trigger["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["local_test_name"]["default"], "")
+        self.assertEqual(inputs["local_test_name"]["type"], "string")
+        self.assertEqual(self.step(LOCAL)["env"]["IOS_LOCAL_TEST_NAME"],
+                         "${{ github.event_name == 'workflow_dispatch' && inputs.local_test_name || '' }}")
+
 
 if __name__ == "__main__":
     unittest.main()

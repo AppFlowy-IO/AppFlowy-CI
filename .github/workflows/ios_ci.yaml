@@ -25,6 +25,11 @@ on:
         type: choice
         default: "all"
         options: ["all", "4"]
+      local_test_name:
+        description: "Optional runner 4 test-name regex for diagnosis; empty runs its full local suite"
+        required: false
+        type: string
+        default: ""
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -180,6 +185,8 @@ jobs:
         timeout-minutes: 60
         shell: bash
         working-directory: frontend/appflowy_flutter
+        env:
+          IOS_LOCAL_TEST_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.local_test_name || '' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
@@ -187,6 +194,10 @@ jobs:
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
             set -- --verbose --reporter expanded
+            if [[ -n "${IOS_LOCAL_TEST_NAME:-}" ]]; then
+              set -- "$@" --name "$IOS_LOCAL_TEST_NAME"
+              echo "Manual runner 4 name filter enabled; this run does not cover the full local suite." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
