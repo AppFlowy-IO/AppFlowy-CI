@@ -194,6 +194,17 @@ class RequestTest(unittest.TestCase):
             runtime.prepare_request(SOURCE, "123", self.desktop, self.cloud, DESKTOP,
                                     self.manifest, self.run_command, ci_ref=CI, profile="web")
 
+    def test_mobile_request_downloads_the_core_images_from_a_complete_build(self):
+        self.artifacts["artifacts"].append({"name": "docker-image-ai", "id": 5, "expired": False})
+        self.assertTrue(runtime.prepare_request(
+            SOURCE, "123", self.desktop, self.cloud, DESKTOP, self.manifest,
+            self.run_command, profile="mobile"))
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(state["runtime_profile"], "mobile")
+        self.assertEqual(set(state["image_artifacts"]), {
+            "docker-image-cloud", "docker-image-worker", "docker-image-search",
+        })
+
     def test_explicit_tools_ref_cannot_be_mutable_or_differ_from_checkout(self):
         for revision in ("main", "f" * 40):
             with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "CI runtime"):
@@ -667,6 +678,32 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(up[-5:], ["up", "-d", "--no-build", "--pull", "never"])
         self.assertFalse(any("ai" in args for args, _ in self.calls if "pull" in args))
 
+    def test_mobile_profile_keeps_gateway_and_omits_full_suite_dependencies(self):
+        state = json.loads(self.manifest.read_text())
+        state.update(runtime_profile="mobile", image_artifacts={
+            f"docker-image-{name.removeprefix('appflowy_')}": index
+            for index, name in enumerate(("appflowy_cloud", "appflowy_worker", "appflowy_search"), 1)
+        })
+        runtime.write_manifest(self.manifest, state)
+        for name in ("ai", "ai_web_search_fixture", "appflowy_mcp", "appflowy_billing", "admin_frontend"):
+            self.config["services"][name] = {"image": "optional"}
+        self.config["services"]["appflowy_cloud"]["depends_on"] = {"postgres": {"condition": "service_healthy"}}
+        override = self.root / "mobile-override.yml"
+        override.write_text("services: {}\n")
+        runtime.start_runtime(self.root, self.root, self.manifest, run=self.run_command,
+                              compose_override=override)
+        state = json.loads(self.manifest.read_text())
+        self.assertEqual(set(state["runtime_images"]), {
+            "appflowy_cloud", "appflowy_worker", "appflowy_search",
+        })
+        pull = next(args for args, _ in self.calls if "pull" in args)
+        self.assertEqual(pull[pull.index("pull") + 1:],
+                         ["--quiet", "appflowy_gateway", "nginx", "postgres"])
+        up = next(args for args, _ in self.calls if "up" in args)
+        self.assertIn(str(self.root / "docker-compose-ci.yml"), up)
+        self.assertIn(str(override.resolve()), up)
+        self.assertEqual(tuple(up[-len(runtime.MOBILE_SERVICES):]), runtime.MOBILE_SERVICES)
+
     def test_web_profile_requires_its_override_and_trusted_ai_compose_role(self):
         self.add_ai_artifact("web")
         with self.assertRaisesRegex(ValueError, "Compose override"):
@@ -743,6 +780,17 @@ class RuntimeTest(unittest.TestCase):
                          ["appflowy_gateway", "inactive", "nginx", "postgres"])
         self.assertEqual(runtime.dependency_services(self.config, ["*"]),
                          ["appflowy_gateway", "inactive", "nginx", "postgres"])
+        core = {name: name for name in runtime.SERVICES if name != "appflowy_mcp"}
+        self.config["services"]["appflowy_cloud"]["depends_on"] = {"postgres": {"condition": "service_healthy"}}
+        self.config["services"]["postgres"]["depends_on"] = ["appflowy_cloud"]
+        self.assertEqual(runtime.dependency_services(self.config, protected=core,
+                                                    roots=runtime.MOBILE_SERVICES),
+                         ["appflowy_gateway", "nginx", "postgres"])
+        self.config["services"]["postgres"]["depends_on"].append("missing")
+        with self.assertRaisesRegex(ValueError, "Missing Cloud runtime service: missing"):
+            runtime.dependency_services(self.config, protected=core, roots=runtime.MOBILE_SERVICES)
+        with self.assertRaisesRegex(ValueError, "omits a verified Cloud service"):
+            runtime.dependency_services(self.config, protected=core, roots=("nginx",))
 
 
 class WorkflowWiringTest(unittest.TestCase):

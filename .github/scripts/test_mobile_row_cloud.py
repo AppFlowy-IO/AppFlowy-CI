@@ -14,6 +14,7 @@ from unittest.mock import patch
 import yaml
 
 import mobile_row_cloud
+import desktop_cloud_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -134,7 +135,9 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(inputs["test_runner"]["default"], "all")
         self.assertEqual(inputs["test_runner"]["type"], "choice")
         self.assertEqual(self.job["runs-on"],
-                         "${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}")
+                         "${{ matrix.test_number == 4 && 'macos-26-intel' || 'macos-latest' }}")
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertEqual(simulator["with"]["model"], "iPhone 17 Pro")
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
         cloud = self.step("Run Cloud row-page tests on iOS")
         setup = self.step("Setup Docker on macOS")
@@ -160,14 +163,166 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         previous = tools
         for name in (
             "Checkout Cloud fixture", "Prepare private Cloud and simulator configuration",
-            "Setup Docker on macOS", "Log in to Docker Hub", "Start the verified exact Cloud runtime",
+            "Stop selected simulator during Cloud provisioning", "Setup Docker on macOS",
+            "Log in to Docker Hub", "Start the verified exact Cloud runtime",
             "Start job-owned Cloud services",
-            "Wait for Cloud readiness", "Run Cloud row-page tests on iOS",
+            "Wait for Cloud readiness", "Boot selected simulator for Cloud tests",
+            "Run Cloud row-page tests on iOS",
         ):
             step = self.step(name)
             self.assertIn("!cancelled()", step["if"])
             self.assertIn(f"steps.{previous['id']}.outcome == 'success'", step["if"])
             previous = step
+
+    def test_final_simulator_cleanup_handles_failed_cloud_provisioning(self):
+        cleanup = self.step("Stop selected simulator after tests")
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertIs(simulator["with"]["shutdown_after_job"], False)
+        self.assertIn("always()", cleanup["if"])
+        self.assertIn("matrix.test_number == 4", cleanup["if"])
+        with tempfile.TemporaryDirectory(prefix="final-simulator-cleanup-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "if sys.argv[1:] == ['simctl', 'list', 'devices', '--json']:\n"
+                " print(json.dumps({'devices': {'runtime': [\n"
+                "  {'udid': 'other-device', 'state': 'Booted'},\n"
+                "  {'udid': 'owned-device', 'state': os.environ['DEVICE_STATE']}\n"
+                " ]}}))\n"
+                "if sys.argv[2] == 'shutdown' and os.environ['DEVICE_STATE'] == 'Shutdown': sys.exit(149)\n"
+                "sys.exit(7 if os.environ.get('FAIL_COMMAND') == sys.argv[2] else 0)\n")
+            xcrun.chmod(0o700)
+            values = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                      "SIMULATOR_UDID": "owned-device", "CALLS": str(calls)}
+            for state in ("Shutdown", "Booted"):
+                with self.subTest(state=state):
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-c", cleanup["run"]],
+                                            env={**values, "DEVICE_STATE": state},
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                    expected = [["simctl", "list", "devices", "--json"]]
+                    if state == "Booted":
+                        expected.append(["simctl", "shutdown", "owned-device"])
+                    self.assertEqual(commands, expected)
+            for override in ({"SIMULATOR_UDID": ""}, {"SIMULATOR_UDID": "missing-device"},
+                             {"FAIL_COMMAND": "list"}, {"FAIL_COMMAND": "shutdown"}):
+                with self.subTest(override=override):
+                    result = subprocess.run(["bash", "-c", cleanup["run"]],
+                                            env={**values, "DEVICE_STATE": "Booted", **override},
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_cloud_provisioning_and_boot_only_control_the_selected_simulator(self):
+        stop = self.step("Stop selected simulator during Cloud provisioning")
+        boot = self.step("Boot selected simulator for Cloud tests")
+        self.assertEqual(stop["timeout-minutes"], 2)
+        self.assertEqual(boot["timeout-minutes"], 8)
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertIs(simulator["with"]["shutdown_after_job"], False)
+        with tempfile.TemporaryDirectory(prefix="cloud-simulator-lifecycle-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                "sys.exit(7 if os.environ.get('FAIL_COMMAND') == sys.argv[2] else 0)\n")
+            xcrun.chmod(0o700)
+            values = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                      "SIMULATOR_UDID": "owned-device", "CALLS": str(calls)}
+            for step in (stop, boot):
+                result = subprocess.run(["bash", "-c", step["run"]], env=values,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            commands = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual(commands, [["simctl", "shutdown", "owned-device"],
+                                        ["simctl", "boot", "owned-device"],
+                                        ["simctl", "bootstatus", "owned-device", "-b"]])
+            for step, command in ((stop, "shutdown"), (boot, "boot"), (boot, "bootstatus")):
+                calls.write_text("")
+                result = subprocess.run(["bash", "-c", step["run"]],
+                                        env={**values, "FAIL_COMMAND": command},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 7)
+                commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual(commands[-1][1], command)
+            for step in (stop, boot):
+                calls.write_text("")
+                result = subprocess.run(["bash", "-c", step["run"]],
+                                        env={**values, "SIMULATOR_UDID": ""},
+                                        capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls.read_text(), "")
+
+    def test_exact_and_registry_pulls_share_the_bounded_parallel_limit(self):
+        self.assertEqual(self.job["env"]["COMPOSE_PARALLEL_LIMIT"], "2")
+        override = ".github/docker/mobile-row-cloud.yml"
+        self.assertEqual(self.step("Start the verified exact Cloud runtime")["with"]["compose-override"],
+                         f".mobile-ci-tools/{override}")
+        config = yaml.safe_load((WORKFLOW.parents[2] / override).read_text())
+        self.assertEqual(config, {"services": {"postgres": {"healthcheck": {"start_period": "120s"}}}})
+        self.assertEqual(self.step("Start the verified exact Cloud runtime")["with"]["runtime-profile"],
+                         "mobile")
+        services = self.job["env"]["MOBILE_CLOUD_SERVICES"].split()
+        self.assertEqual(tuple(services), desktop_cloud_runtime.MOBILE_SERVICES)
+        for name in ("Start the verified exact Cloud runtime", "Start job-owned Cloud services"):
+            self.assertNotIn("COMPOSE_PARALLEL_LIMIT", self.step(name).get("env", {}))
+        startup = self.step("Start job-owned Cloud services")
+        self.assertEqual(startup["timeout-minutes"], 20)
+        self.assertEqual(self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")["timeout-minutes"], 60)
+        self.assertEqual(self.step("Run Cloud row-page tests on iOS")["timeout-minutes"], 20)
+        self.assertEqual(self.job["timeout-minutes"], "${{ matrix.test_number == 4 && 180 || 120 }}")
+        with tempfile.TemporaryDirectory(prefix="mobile-cloud-pull-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            executable = root / "docker"
+            executable.write_text(
+                "#!/usr/bin/env python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                " out.write(json.dumps({'args':sys.argv[1:], 'parallel':os.environ.get('COMPOSE_PARALLEL_LIMIT')})+'\\n')\n"
+                "print('[]')\n")
+            executable.chmod(0o700)
+            executable = root / "git"
+            executable.write_text("#!/bin/sh\nprintf '%040d\\n' 1\n")
+            executable.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", startup["run"]], cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                     "COMPOSE_PARALLEL_LIMIT": self.job["env"]["COMPOSE_PARALLEL_LIMIT"],
+                     "MOBILE_CLOUD_SERVICES": self.job["env"]["MOBILE_CLOUD_SERVICES"],
+                     "EXACT_CLOUD_ENABLED": "false", "RUNNER_TEMP": directory, "CALLS": str(calls)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = [json.loads(line) for line in calls.read_text().splitlines()]
+            compose = ["compose", "-f", "docker-compose-ci.yml", "-f", f"../.mobile-ci-tools/{override}"]
+            self.assertEqual(rows[0], {"args": compose + ["pull", "--include-deps", *services], "parallel": "2"})
+            self.assertEqual(rows[1]["args"], compose + ["up", "-d", "--no-build", *services])
+            self.assertTrue(all(row["parallel"] == "2" for row in rows))
+
+    def test_cloud_failure_evidence_is_uploaded_before_owned_runtime_cleanup(self):
+        capture = self.step("Capture mobile Cloud runtime failure")
+        upload = self.step("Upload Cloud row-page test results")
+        cleanup = self.step("Remove job-owned Cloud services and credentials")
+        self.assertLess(self.steps.index(capture), self.steps.index(upload))
+        self.assertLess(self.steps.index(upload), self.steps.index(cleanup))
+        self.assertEqual(capture["timeout-minutes"], 2)
+        self.assertIn("always()", capture["if"])
+        self.assertIn("!cancelled()", capture["if"])
+        self.assertIn("matrix.test_number == 4", capture["if"])
+        self.assertIn("steps.cloud-tools.outcome == 'success'", capture["if"])
+        for stage in ("cloud-docker", "exact-cloud", "cloud-start", "cloud-ready", "cloud-tests"):
+            self.assertIn(f"steps.{stage}.outcome == 'failure'", capture["if"])
+        self.assertIn('macos_docker.py diagnose', capture["run"])
+        self.assertIn('--output "$RUNNER_TEMP/mobile-cloud-results/diagnostics"', capture["run"])
+        self.assertIn('--compose-file .mobile-cloud/docker-compose-ci.yml', capture["run"])
 
     def test_runner_four_builds_for_the_booted_simulator_and_propagates_failure(self):
         simulator = next(step for step in self.steps
@@ -175,7 +330,12 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertTrue(simulator["with"].get("wait_for_boot", False))
         prebuild = self.step("Pre-build iOS app for simulator")
         self.assertEqual(prebuild.get("if"), "matrix.test_number != 4")
+        intel = self.step("Pre-build Intel mobile test app")
+        self.assertEqual(intel["if"], "matrix.test_number == 4")
+        self.assertEqual(intel["timeout-minutes"], 60)
+        self.assertLess(self.steps.index(simulator), self.steps.index(intel))
         local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertLess(self.steps.index(intel), self.steps.index(local))
         self.assertNotIn("if", local)
         self.assertNotIn("--no-build", local["run"])
         command = local["run"].replace("${{ matrix.test_number }}", "4").replace(
@@ -185,7 +345,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             calls = root / "calls"
             flutter = root / "flutter"
             flutter.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$XCODE_XCCONFIG_FILE" "$@" > "$CALLS"\nexit 7\n')
+                '#!/bin/sh\nprintf "%s\\n" "$@" > "$CALLS"\nexit 7\n')
             flutter.chmod(0o700)
             result = subprocess.run(
                 ["bash", "-c", command], cwd=root,
@@ -196,10 +356,71 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 7)
             self.assertEqual(calls.read_text().splitlines(), [
-                str(root / "mobile-intel-simulator.xcconfig"),
                 "test", "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
                 "--file-reporter", f"json:{root}/mobile-local-results/tests.json",
+                "--verbose",
             ])
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", intel["run"].replace(
+                    "${{ steps.simulator-action.outputs.udid }}", "owned-simulator-id")],
+                cwd=root,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "CALLS": str(calls)},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual(calls.read_text().splitlines(), [
+                "build", "ios", "--simulator", "--debug", "--target",
+                "integration_test/mobile_runner_4.dart", "-d", "owned-simulator-id",
+            ])
+
+    def test_intel_simulator_restarts_after_prebuild_before_local_tests(self):
+        restart = self.step("Restart selected Intel simulator after prebuild")
+        prebuild = self.step("Pre-build Intel mobile test app")
+        local = self.step("Run Flutter integration tests (runner ${{ matrix.test_number }})")
+        self.assertEqual(restart["if"], "matrix.test_number == 4")
+        self.assertEqual(restart["timeout-minutes"], 8)
+        self.assertTrue(restart["continue-on-error"])
+        self.assertEqual(restart["env"]["SIMULATOR_UDID"], "${{ steps.simulator-action.outputs.udid }}")
+        self.assertLess(self.steps.index(prebuild), self.steps.index(restart))
+        self.assertLess(self.steps.index(restart), self.steps.index(local))
+        expected = [["simctl", "shutdown", "owned-simulator"],
+                    ["simctl", "boot", "owned-simulator"],
+                    ["simctl", "bootstatus", "owned-simulator", "-b"]]
+        with tempfile.TemporaryDirectory(prefix="intel-simulator-restart-") as directory:
+            root = Path(directory)
+            calls = root / "calls.jsonl"
+            xcrun = root / "xcrun"
+            xcrun.write_text(
+                '#!/usr/bin/env python3\nimport json, os, sys\n'
+                'with open(os.environ["CALLS"], "a") as output:\n'
+                '    output.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                'sys.exit(7 if sys.argv[2] == os.environ["FAIL_AT"] else 0)\n')
+            xcrun.chmod(0o700)
+            for failure, count in (("", 3), ("shutdown", 1), ("boot", 2), ("bootstatus", 3)):
+                with self.subTest(failure=failure):
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", "-c", restart["run"]], cwd=root,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "SIMULATOR_UDID": "owned-simulator", "CALLS": str(calls),
+                             "FAIL_AT": failure},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, 7 if failure else 0, result.stderr)
+                    self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()],
+                                     expected[:count])
+
+    def test_intel_failure_diagnostics_run_before_result_upload(self):
+        capture = self.step("Capture Intel simulator failure")
+        checkout = self.step("Checkout native failure diagnostics")
+        upload = self.step("Upload local mobile test results")
+        self.assertLess(self.steps.index(checkout), self.steps.index(capture))
+        self.assertLess(self.steps.index(capture), self.steps.index(upload))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertIn("always()", capture["if"])
+        self.assertIn("matrix.test_number == 4", capture["if"])
+        self.assertIn("steps.local-mobile-tests.outcome == 'failure'", capture["if"])
+        self.assertEqual(capture["timeout-minutes"], 2)
 
     def test_report_capture_retains_stdout_stderr_and_the_flutter_failure(self):
         for name, report_directory in (
@@ -306,6 +527,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", prefix + script], cwd=root,
                     env={**os.environ, "EXACT_CLOUD_ENABLED": enabled,
+                         "MOBILE_CLOUD_SERVICES": self.job["env"]["MOBILE_CLOUD_SERVICES"],
                          "RUNNER_TEMP": directory, "CALLS": str(calls)},
                     capture_output=True, text=True, timeout=5,
                 )
@@ -315,10 +537,12 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     continue
                 self.assertEqual(result.returncode, 0, result.stderr)
                 commands = calls.read_text().splitlines()
-                expected = ["compose -f docker-compose-ci.yml images --format json"]
+                compose = "compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml"
+                expected = [f"{compose} images --format json"]
                 if enabled == "false":
-                    expected = ["compose -f docker-compose-ci.yml pull",
-                                "compose -f docker-compose-ci.yml up -d --no-build", *expected]
+                    services = self.job["env"]["MOBILE_CLOUD_SERVICES"]
+                    expected = [f"{compose} pull --include-deps {services}",
+                                f"{compose} up -d --no-build {services}", *expected]
                 self.assertEqual(commands, expected)
 
     def test_intel_rust_target_profile_and_simulator_match(self):
@@ -336,81 +560,47 @@ class MobileCloudWorkflowTest(unittest.TestCase):
         self.assertEqual(build.count('cargo make --profile "$IOS_BUILD_PROFILE"'), 2)
         self.assertIn('test "$(uname -m)" = x86_64', self.step("Verify Docker runner architecture")["run"])
 
-    def test_intel_simulator_override_requires_matching_ffi_and_preserves_desktop_config(self):
+    def test_intel_debug_config_requires_matching_ffi_and_applies_before_boot(self):
         prepare = self.step("Prepare Intel simulator architecture")
         self.assertEqual(prepare["if"], "matrix.test_number == 4")
         self.assertLess(self.steps.index(self.step("Build AppFlowy")), self.steps.index(prepare))
         self.assertLess(self.steps.index(prepare), self.steps.index(self.step("Pre-build iOS app for simulator")))
+        simulator = next(step for step in self.steps if step.get("id") == "simulator-action")
+        self.assertLess(self.steps.index(prepare), self.steps.index(simulator))
         for architecture in ("x86_64", "arm64", "x86_64 arm64"):
             with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                temporary = root / "job temporary files"
-                temporary.mkdir()
                 config = root / "frontend/appflowy_flutter/ios/Flutter/Debug.xcconfig"
                 config.parent.mkdir(parents=True)
                 original = "EXCLUDED_ARCHS[sdk=iphonesimulator*] = x86_64\n"
                 config.write_text(original)
+                release = config.with_name("Release.xcconfig")
+                release.write_text("#include \"Generated.xcconfig\"\n")
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c",
-                     'lipo() { printf "%s\\n" "$FFI_ARCHS"; }\n' + prepare["run"]],
-                    cwd=root, env={**os.environ, "RUNNER_TEMP": str(temporary), "FFI_ARCHS": architecture},
+                     'lipo() { printf "%s\\n" "$FFI_ARCHS"; }\n'
+                     + prepare["run"]],
+                    cwd=root, env={**os.environ, "FFI_ARCHS": architecture},
                     capture_output=True, text=True, timeout=5,
                 )
-                override = temporary / "mobile-intel-simulator.xcconfig"
-                self.assertEqual(config.read_text(), original)
+                self.assertEqual(release.read_text(), "#include \"Generated.xcconfig\"\n")
                 if architecture != "x86_64":
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse(override.exists())
+                    self.assertEqual(config.read_text(), original)
                     continue
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(override.read_text().splitlines(), [
+                self.assertEqual(config.read_text().splitlines(), [
+                    original.strip(), "",
                     "ARCHS[sdk=iphonesimulator*] = x86_64",
                     "EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64",
-                ], "The override must not affect macOS host tools or physical-device builds")
-                self.assertNotIn("GITHUB_ENV", prepare["run"])
+                ])
 
-    def test_only_flutter_simulator_commands_receive_the_intel_override(self):
-        commands = {
-            "Pre-build iOS app for simulator": ["build", "ios", "--simulator", "--debug"],
-            "Run Flutter integration tests (runner ${{ matrix.test_number }})":
-                ["test", "integration_test/mobile_runner_4.dart", "-d", "fixture-device"],
-            "Run Cloud row-page tests on iOS":
-                ["test", "integration_test/mobile_row_page_cloud_runner.dart", "-d", "fixture-device"],
-        }
+    def test_workflow_uses_project_settings_for_ios_destinations(self):
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.workflow.get("env", {}))
         self.assertNotIn("XCODE_XCCONFIG_FILE", self.job["env"])
         for step in self.steps:
-            if step.get("name") not in commands:
-                self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("run", ""))
-                self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("env", {}))
-        for target in ("x86_64-apple-ios", "aarch64-apple-ios-sim"):
-            for name, arguments in commands.items():
-                with self.subTest(target=target, step=name), tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    flutter = root / "flutter"
-                    flutter.write_text(
-                        '#!/usr/bin/env python3\nimport json, os, sys\n'
-                        'from pathlib import Path\n'
-                        'Path(os.environ["CAPTURE"]).write_text(json.dumps({\n'
-                        ' "args": sys.argv[1:], "override": os.getenv("XCODE_XCCONFIG_FILE")}))\n'
-                    )
-                    flutter.chmod(0o755)
-                    script = self.step(name)["run"].replace("${{ matrix.test_number }}", "4").replace(
-                        "${{ steps.simulator-action.outputs.udid }}", "fixture-device")
-                    env = {key: value for key, value in os.environ.items() if key != "XCODE_XCCONFIG_FILE"}
-                    result = subprocess.run(
-                        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
-                        env={**env, "PATH": f"{root}:{env['PATH']}", "RUNNER_TEMP": directory,
-                             "CAPTURE": str(root / "capture.json"), "IOS_RUST_TARGET": target},
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    captured = json.loads((root / "capture.json").read_text())
-                    self.assertEqual(captured["args"][:len(arguments)], arguments)
-                    if target == "x86_64-apple-ios":
-                        self.assertEqual(captured["override"], str(root / "mobile-intel-simulator.xcconfig"))
-                    else:
-                        self.assertIsNone(captured["override"])
+            self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("run", ""))
+            self.assertNotIn("XCODE_XCCONFIG_FILE", step.get("env", {}))
 
     def test_checkouts_cannot_clean_away_each_other(self):
         desktop = self.step("Checkout private repository")

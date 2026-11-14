@@ -63,6 +63,79 @@ Desktop can optionally test direct shared-crate server pins against an exact
 private Cloud image build. See [Desktop exact Cloud runtime](docs/desktop-exact-cloud.md)
 for input provenance, legacy behavior and CI-branch validation before receiver activation.
 
+The webhook receiver waits up to two hours for dispatched workflows. If that monitoring
+deadline expires, its comment distinguishes pending runs from failed jobs and unavailable
+results. Only explicit success from every requested workflow permits automatic approval;
+missing run links, API errors, and incomplete results do not pass.
+
+The Intel iOS Cloud lane installs checksum-pinned Docker, Compose, Buildx, Colima and
+Lima binaries under its job's temporary directory. This avoids Homebrew's Intel source
+builds. Lima 1.2.3 supports the macOS 15 runner; newer upstream Intel releases have a
+macOS 26 deployment target. The installer checks every binary's deployment target before
+execution and retains the VZ runtime. The launcher creates the job-owned Colima home
+before use, overrides inherited Lima paths, and caps the VM at two CPUs and 8 GiB,
+reserving host capacity for macOS and the simulator. Compose limits concurrent engine
+calls to two, including cold image pulls, for both runtime-selection paths. Registry
+image provisioning has a 20-minute cap after observed pulls outlasted 15 minutes.
+The mobile Cloud fixture gives PostgreSQL a two-minute startup grace for snapshot
+restore. Service startup still requires the restore marker and TCP readiness.
+Failed setup retains the PostgreSQL restore log alongside Docker diagnostics.
+The overall Intel job remains capped at 180 minutes, with the local and Cloud
+functional suites still capped at 60 and 20 minutes respectively. A failed
+Cloud bootstrap or test retains bounded Docker storage, host memory/disk, guest disk,
+kernel and Docker/containerd journal entries, and owned Lima/network logs before cleanup.
+The selected Intel simulator is stopped during cold VM/image provisioning and booted
+again only after Cloud readiness. The workflow controls its selected UUID, preserves
+simulator data, checks boot completion, and stops that device in final cleanup. Cleanup
+accepts an already stopped device after failed provisioning and propagates other
+shutdown errors. Docker retains Colima's generated image-store configuration; readiness
+checks target only the job-owned socket. Failed Intel local
+tests retain a simulator screenshot, bounded app error logs, a native sample when available,
+and recent app crash reports alongside the existing test output.
+
+For an Intel simulator stall, manually dispatch `workflow_checks.yaml` with
+`intel_runtime_probe=true` before selecting a different runner image. It compares
+fresh four-sample Metal rendering on the standard Intel macOS 15 and 26 images,
+checks every resolved pixel, and requires a fresh 90-second report and successful
+process exit. It also records simulator availability and exercises the existing
+job-owned Docker bootstrap on the macOS 26 image. This control tests the
+runner environment; application validation still runs separately. See the
+[runner-image GPU report](https://github.com/actions/runner-images/issues/14836).
+
+The Intel lane uses `macos-26-intel` and iPhone 17 Pro, available in its iOS 26
+runtimes. The preceding macOS 15 Intel application run stalled and then lost
+communication with the hosted runner, leaving Cloud tests unexecuted. Before
+selecting the new image, the [environment comparison](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/42909518855)
+verified correct fresh Metal readbacks on both images, an available iPhone 17 Pro
+on macOS 26, and its job-owned Docker daemon running an actual container. The
+earlier application stall's cause remains unclassified. The original four-job
+matrix, local and Cloud suites, and functional deadlines are retained.
+
+The Intel job sets the simulator architecture in `Flutter/Debug.xcconfig` in its
+checkout. The previous environment override left the booted device ineligible
+for the Runner scheme on Xcode 26.6. The job checks the native library architecture
+before booting the simulator. Flutter's test build resolves the selected device.
+
+Cloud prerequisite and application-artifact downloads finish before the disposable
+Cloud stack starts. After the tests, failure logs are collected and the stack is
+removed before artifact uploads and GitHub status publication. TLS verification
+remains enabled. Flutter's bundled Dart SDK supplies `dart`; these jobs do not
+register a separate Dart APT repository.
+
+The warm-dashboard wall-clock performance suite uses `flutter drive --profile`
+with Desktop's existing integration driver. It reuses the same debug Rust FFI
+artifact, so native load counters and simulated delays remain active. The
+12-widget fixture, three-second first-data deadline, cache assertions and test
+budgets stay intact. CI also requires a fresh profile timing report with native
+counter evidence; other Cloud suites retain debug execution and coverage.
+
+Manual Flutter workflow dispatches can set `cloud_suites` to a JSON array such as
+`["database","dashboard_loading_warm","pdf_export"]`. This runs preparation and
+only those source-owned Cloud suites, with a `cloud-only` label and a separate
+concurrency group. Empty input and automatic dispatches run full CI. Empty,
+duplicate and unknown selections fail during preparation. A focused replay is
+partial validation; the available suite inventory and default matrix stay intact.
+
 Desktop PDF exports have three focused commit statuses: `PDF export regression (Rust)`,
 `PDF export regression (UI)` and `PDF export regression (Cloud UI)`. The source-owned
 `frontend/rust-lib/integration-test/pdf_export_contract.json` names the required native
@@ -96,6 +169,20 @@ Prerequisite installation has a separate 10-minute deadline. The test matrix,
 45-minute test limits, package signatures, and repository suites stay intact.
 The configuration script refuses to run outside a GitHub Linux runner; its
 local tests use temporary files without root or network access.
+
+Run `42540394474` also stalled while the primary archive transferred a media
+package. Socket inactivity limits do not stop a response that trickles bytes.
+Prerequisite commands now download under a two-minute limit and resume once
+from APT's retained archives after a timeout. Installation then uses only those
+archives, with no download and no process timeout that could interrupt dpkg.
+Package errors still fail immediately. The ten-minute overall prerequisite
+deadline remains in place, and the helper refuses local development environments.
+
+The headless desktop media runner opts into Desktop's existing
+`APPFLOWY_TEST_BACKGROUND_FRAMES` test binding. It keeps WidgetTester pumps live
+through native window lifecycle changes and supplies a five-minute per-test
+timeout. Other desktop runners keep their usual binding. The suite is selected
+by its media-runner import so changing shard numbers does not change this scope.
 
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
@@ -328,7 +415,7 @@ available; retaining both copies can exhaust hosted-runner disk before any contr
 
 Run the workflow regression checks on Linux with Python 3.12 or newer, PyYAML, OpenSSL, Git,
 `jq`, a C compiler, and Rust with Cargo and `rustfmt`. The binary-archive fixtures execute native
-Linux test binaries; Ubuntu 24.04 matches the hosted CI runtime.
+Linux test binaries; use an AMD64 Linux environment for the complete suite.
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts

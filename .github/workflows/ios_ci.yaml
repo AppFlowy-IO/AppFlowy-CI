@@ -56,11 +56,15 @@ jobs:
 
     # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
     # runner 4 runs its local suite first, then the focused Cloud row-page suite.
-    runs-on: ${{ matrix.test_number == 4 && 'macos-15-intel' || 'macos-latest' }}
+    runs-on: ${{ matrix.test_number == 4 && 'macos-26-intel' || 'macos-latest' }}
     env:
       IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
       IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
       COMPOSE_PROJECT_NAME: ios-row-${{ github.run_id }}-${{ github.run_attempt }}
+      # Cold, simultaneous image pulls stopped progressing on the two-CPU VM.
+      # Bound engine calls for both exact-image and registry fixture startup.
+      COMPOSE_PARALLEL_LIMIT: "2"
+      MOBILE_CLOUD_SERVICES: "appflowy_cloud appflowy_worker appflowy_search appflowy_gateway nginx"
       APPFLOWY_CLOUD_VERSION: latest-amd64
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
@@ -129,11 +133,16 @@ jobs:
 
       - name: Prepare Intel simulator architecture
         if: matrix.test_number == 4
+        shell: bash
         run: |
-          test "$(lipo -archs frontend/appflowy_flutter/packages/appflowy_backend/ios/libdart_ffi.a)" = x86_64
-          # Desktop's Debug.xcconfig excludes Intel simulators. Override only this
-          # job's simulator builds; keep the checkout and host tool settings intact.
-          cat > "$RUNNER_TEMP/mobile-intel-simulator.xcconfig" <<'XCCONFIG'
+          set -euo pipefail
+          ios=frontend/appflowy_flutter/ios
+          test "$(lipo -archs "$ios/../packages/appflowy_backend/ios/libdart_ffi.a")" = x86_64
+          debug_config="$ios/Flutter/Debug.xcconfig"
+          test -f "$debug_config"
+          # Xcode uses the project's Debug settings to find eligible devices.
+          cat >> "$debug_config" <<'XCCONFIG'
+
           ARCHS[sdk=iphonesimulator*] = x86_64
           EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 arm64
           XCCONFIG
@@ -145,21 +154,43 @@ jobs:
       - uses: futureware-tech/simulator-action@v4
         id: simulator-action
         with:
-          model: ${{ matrix.test_number == 4 && 'iPhone 16 Pro' || 'iPhone 17 Pro' }}
+          # The macOS 26 image provides iOS 26 runtimes and this model on
+          # both architectures; the old Intel SE model is unavailable there.
+          model: 'iPhone 17 Pro'
+          # Runner 4 owns both provisioning shutdown and final cleanup.
           shutdown_after_job: false
           wait_for_boot: true
 
-      # Runner 4 builds through flutter test below, using the selected Intel
-      # simulator. The generic pre-build can complete Xcode compilation while
-      # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
         if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
+        run: flutter build ios --simulator --debug
+
+      # The cold Intel build consumed the local suite's deadline before its
+      # first case. Warm the actual test target for the selected destination.
+      - name: Pre-build Intel mobile test app
+        if: matrix.test_number == 4
+        timeout-minutes: 60
+        working-directory: frontend/appflowy_flutter
         run: |
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
-          fi
-          flutter build ios --simulator --debug
+          flutter build ios --simulator --debug \
+            --target integration_test/mobile_runner_4.dart \
+            -d '${{ steps.simulator-action.outputs.udid }}'
+
+      # Xcode completed on Intel while the subsequent simctl launch stalled.
+      # Refresh the selected device after the cold compilation phase.
+      - name: Restart selected Intel simulator after prebuild
+        if: matrix.test_number == 4
+        timeout-minutes: 8
+        continue-on-error: true
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl shutdown "$SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
@@ -169,13 +200,34 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          test_args=(--file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json")
+          if [[ "${{ matrix.test_number }}" == 4 ]]; then
+            test_args+=(--verbose)
           fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
-            --file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json" \
+            "${test_args[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mobile-local-results/flutter.log"
+
+      - name: Checkout native failure diagnostics
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.local-mobile-tests.outcome == 'failure'"
+        id: failure-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mobile-failure-tools
+
+      - name: Capture Intel simulator failure
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.local-mobile-tests.outcome == 'failure' && steps.failure-tools.outcome == 'success'"
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          python3 .mobile-failure-tools/.github/scripts/collect_ios_failure.py \
+            --device "$SIMULATOR_UDID" \
+            --output "$RUNNER_TEMP/mobile-local-results/diagnostics"
 
       - name: Upload local mobile test results
         if: always()
@@ -233,10 +285,24 @@ jobs:
             --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
             --desktop "$GITHUB_WORKSPACE" --temporary "$RUNNER_TEMP"
 
-      - name: Setup Docker on macOS
+      # Keep the idle simulator out of cold VM/image provisioning. Boot the same
+      # device afterward so a failed local Metal context cannot reach Cloud tests.
+      - name: Stop selected simulator during Cloud provisioning
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
+        id: cloud-simulator-stop
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl shutdown "${SIMULATOR_UDID:?Missing job simulator UUID}"
+
+      - name: Setup Docker on macOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-simulator-stop.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/macos-docker
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"
@@ -258,6 +324,8 @@ jobs:
           image-run-id: ${{ env.CLOUD_IMAGE_RUN_ID }}
           desktop-ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref || 'main' }}
           cloud-path: .mobile-cloud
+          runtime-profile: mobile
+          compose-override: .mobile-ci-tools/.github/docker/mobile-row-cloud.yml
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Start job-owned Cloud services
@@ -267,16 +335,20 @@ jobs:
           AI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
           EXACT_CLOUD_ENABLED: ${{ steps.exact-cloud.outputs.enabled }}
         working-directory: .mobile-cloud
-        timeout-minutes: 15
+        # Cold pulls were still extracting at the former 15-minute cap. Keep
+        # this within the unchanged 180-minute job and functional test budgets.
+        timeout-minutes: 20
         run: |
+          compose=(docker compose -f docker-compose-ci.yml -f ../.mobile-ci-tools/.github/docker/mobile-row-cloud.yml)
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
-            docker compose -f docker-compose-ci.yml pull
-            docker compose -f docker-compose-ci.yml up -d --no-build
+            read -r -a services <<< "$MOBILE_CLOUD_SERVICES"
+            "${compose[@]}" pull --include-deps "${services[@]}"
+            "${compose[@]}" up -d --no-build "${services[@]}"
           elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
             echo "::error::Cloud runtime selection did not complete"
             exit 1
           fi
-          docker compose -f docker-compose-ci.yml images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
+          "${compose[@]}" images --format json > "$RUNNER_TEMP/mobile-row-cloud-images.json"
           git rev-parse HEAD > "$RUNNER_TEMP/mobile-row-cloud-compose-revision.txt"
 
       - name: Wait for Cloud readiness
@@ -294,8 +366,20 @@ jobs:
           echo "::error::The job-owned Cloud fixture did not become ready"
           exit 1
 
-      - name: Run Cloud row-page tests on iOS
+      - name: Boot selected simulator for Cloud tests
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-ready.outcome == 'success'"
+        id: cloud-simulator-boot
+        timeout-minutes: 8
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "${SIMULATOR_UDID:?Missing job simulator UUID}"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Run Cloud row-page tests on iOS
+        if: "!cancelled() && matrix.test_number == 4 && steps.cloud-simulator-boot.outcome == 'success'"
         id: cloud-tests
         shell: bash
         working-directory: frontend/appflowy_flutter
@@ -303,14 +387,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-cloud-results"
-          if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
-            export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
-          fi
           flutter test integration_test/mobile_row_page_cloud_runner.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
             --dart-define-from-file="$RUNNER_TEMP/mobile-row-cloud-defines.json" \
             --file-reporter "json:$RUNNER_TEMP/mobile-cloud-results/tests.json" \
             2>&1 | tee "$RUNNER_TEMP/mobile-cloud-results/flutter.log"
+
+      - name: Capture mobile Cloud runtime failure
+        if: "always() && !cancelled() && matrix.test_number == 4 && steps.cloud-tools.outcome == 'success' && (steps.cloud-docker.outcome == 'failure' || steps.exact-cloud.outcome == 'failure' || steps.cloud-start.outcome == 'failure' || steps.cloud-ready.outcome == 'failure' || steps.cloud-tests.outcome == 'failure' || steps.cloud-simulator-boot.outcome == 'failure')"
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python3 .mobile-ci-tools/.github/scripts/macos_docker.py diagnose \
+            --root "$RUNNER_TEMP/appflowy-macos-docker" \
+            --output "$RUNNER_TEMP/mobile-cloud-results/diagnostics" \
+            --compose-file .mobile-cloud/docker-compose-ci.yml
 
       - name: Upload Cloud row-page test results
         if: always() && matrix.test_number == 4
@@ -341,3 +432,31 @@ jobs:
         run: |
           docker compose -f docker-compose-ci.yml down --volumes --remove-orphans || true
           rm -f .env "$RUNNER_TEMP/mobile-row-cloud-defines.json"
+
+      - name: Stop selected simulator after tests
+        if: always() && matrix.test_number == 4 && steps.simulator-action.outputs.udid != ''
+        timeout-minutes: 2
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator-action.outputs.udid }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+
+          udid = os.environ["SIMULATOR_UDID"]
+          if not udid:
+              raise SystemExit("Missing job simulator UUID")
+          result = subprocess.run(
+              ["xcrun", "simctl", "list", "devices", "--json"],
+              check=True, capture_output=True, text=True, timeout=30,
+          )
+          devices = [device for runtime in json.loads(result.stdout)["devices"].values()
+                     for device in runtime if device["udid"] == udid]
+          if len(devices) != 1:
+              raise SystemExit("Could not identify the job simulator")
+          if devices[0]["state"] != "Shutdown":
+              subprocess.run(["xcrun", "simctl", "shutdown", udid], check=True, timeout=60)
+          PYTHON

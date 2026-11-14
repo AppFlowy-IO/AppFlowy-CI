@@ -3,7 +3,7 @@ run-name: >-
   [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Premium' }}
   pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
-  ${{ github.workflow }}
+  ${{ github.workflow }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && format(' [cloud-only={0}]', inputs.cloud_suites) || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' && format(' [desktop-only={0}]', inputs.desktop_runners) || '' }}
 
 on:
   repository_dispatch:
@@ -19,6 +19,14 @@ on:
         required: false
         type: string
         default: "main"
+      cloud_suites:
+        description: 'Optional JSON array of source-owned Cloud suites for a focused manual replay; empty runs full CI'
+        required: false
+        type: string
+      desktop_runners:
+        description: 'Optional JSON array of source-owned desktop runner numbers for a focused manual replay'
+        required: false
+        type: string
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -47,13 +55,14 @@ env:
 concurrency:
   # A manual CI-branch validation must coexist with automatic main runs for the
   # same private PR. Retries within that CI branch still replace older attempts.
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch) && format('ci-branch-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && '-cloud-only' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' && '-desktop-only' || '' }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || github.event.client_payload.pr_ref || github.event.inputs.pr_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   prepare-linux:
     outputs:
       cloud_test_suites: ${{ steps.cloud-test-suites.outputs.suites }}
+      selected_cloud_test_suites: ${{ steps.cloud-test-suites.outputs.selected_suites }}
       desktop_test_runners: ${{ steps.desktop-test-runners.outputs.runners }}
     strategy:
       fail-fast: true
@@ -99,6 +108,9 @@ jobs:
       - name: Select desktop test runners from the tested revision
         id: desktop-test-runners
         shell: bash
+        env:
+          REQUESTED_DESKTOP_RUNNERS: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners || '' }}
+          REQUESTED_CLOUD_SUITES: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites || '' }}
         run: |
           python3 - <<'PY'
           import json
@@ -115,6 +127,16 @@ jobs:
           })
           if not runners:
               raise SystemExit("No desktop integration test runners found")
+          requested = os.environ.get("REQUESTED_DESKTOP_RUNNERS", "")
+          if requested:
+              if os.environ.get("REQUESTED_CLOUD_SUITES"):
+                  raise SystemExit("Select one focused test scope")
+              requested = json.loads(requested)
+              if not (isinstance(requested, list) and requested
+                      and all(type(number) is int and number in runners for number in requested)
+                      and len(set(requested)) == len(requested)):
+                  raise SystemExit("Requested desktop runners must be a nonempty unique subset of the tested source")
+              runners = requested
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"runners={json.dumps(runners)}\n")
           print(f"Desktop integration test runners: {runners}")
@@ -123,6 +145,8 @@ jobs:
       - name: Select cloud test suites from the tested revision
         id: cloud-test-suites
         shell: bash
+        env:
+          REQUESTED_CLOUD_SUITES: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites || '' }}
         run: |
           manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
           if [ -f "$manifest" ]; then
@@ -136,8 +160,20 @@ jobs:
             # Older AppFlowy branches do not understand the split suite names.
             suites='["core_workspace","sidebar","database","document"]'
           fi
+          selected=$suites
+          if [ -n "$REQUESTED_CLOUD_SUITES" ]; then
+            selected=$(jq -cne --argjson available "$suites" --argjson requested "$REQUESTED_CLOUD_SUITES" '
+              if ($requested | type == "array" and length > 0
+                  and all(.[]; type == "string")
+                  and (unique | length) == length)
+                and all($requested[]; . as $suite | $available | index($suite) != null)
+              then $requested else error("Requested Cloud suites must be a nonempty unique subset of the tested source") end
+            ')
+          fi
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "selected_suites=$selected" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
+          echo "Selected Cloud integration suites: $selected"
 
       - uses: actions/setup-python@v5
         with:
@@ -213,17 +249,15 @@ jobs:
         run: |
           case $RUNNER_OS in
             Linux)
-              sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-              sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-              sudo apt-get update
-              sudo apt-get install -y --fix-broken
-              sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-              sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
-              sudo apt-get install -y libmpv-dev mpv libasound2-dev
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
               # Install GStreamer for audioplayers_linux
               # Install libunwind-dev first to resolve dependency issues
-              sudo apt-get -y install libunwind-dev
-              sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+              python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
               ;;
             Windows)
               vcpkg integrate install
@@ -332,7 +366,7 @@ jobs:
     name: PDF export regression (Linux)
     needs: [prepare-linux]
     # A failed preparation must produce a failing private status, not a missing success.
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == ''))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -403,17 +437,15 @@ jobs:
         timeout-minutes: 10
         working-directory: frontend
         run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-          sudo apt-get update
-          sudo apt-get install -y --fix-broken
-          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev xvfb xauth
-          sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
-          sudo apt-get install -y libmpv-dev mpv libasound2-dev
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev xvfb xauth
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
           # Install GStreamer for audioplayers_linux
           # Install libunwind-dev first to resolve dependency issues
-          sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
 
       - name: Enable Flutter Desktop
@@ -493,6 +525,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
   unit_test:
+    if: github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == '')
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
@@ -565,17 +598,15 @@ jobs:
         working-directory: frontend
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-            sudo apt-get update
-            sudo apt-get install -y --fix-broken
-            sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-            sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
-            sudo apt-get install -y libmpv-dev mpv libasound2-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
             # Install GStreamer for audioplayers_linux
             # Install libunwind-dev first to resolve dependency issues
-            sudo apt-get -y install libunwind-dev
-            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
           fi
         shell: bash
 
@@ -688,7 +719,7 @@ jobs:
     needs: [prepare-linux]
     # Legacy heads need an explicit NA status. A current contract without its
     # matrix suite must fail instead of silently losing the required check.
-    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || (inputs.cloud_suites == '' && inputs.desktop_runners == '')) && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -721,6 +752,7 @@ jobs:
             --gate-outcome skipped
 
   cloud_integration_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.desktop_runners == ''
     name: Cloud integration test (${{ matrix.cloud_test_suite }})
     needs: [prepare-linux]
     strategy:
@@ -728,7 +760,7 @@ jobs:
       max-parallel: 4
       matrix:
         os: [ubuntu-latest]
-        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.cloud_test_suites) }}
+        cloud_test_suite: ${{ fromJSON(needs.prepare-linux.outputs.selected_cloud_test_suites) }}
         include:
           - os: ubuntu-latest
             flutter_profile: development-linux-x86_64
@@ -736,6 +768,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
+      NATIVE_HANG_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_suites != '' && matrix.cloud_test_suite == 'database_rows' }}
       MINIO_DATA_DIR: /tmp/minio-data
       APPFLOWY_CLOUD_URL: https://localhost
       # Only this job's disposable Compose database; never infer a developer database.
@@ -847,6 +880,74 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+      - name: Install flutter
+        id: flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
+
+      # Setup failures must not upload stale output from an earlier attempt.
+      - name: Initialize Cloud test output
+        shell: bash
+        run: |
+          rm -f /tmp/test_output.txt /tmp/cloud-test-events.jsonl
+
+      - name: Install prerequisites
+        id: flutter-prerequisites
+        # Keep a stalled package mirror from consuming the entire test job.
+        timeout-minutes: 10
+        working-directory: frontend
+        shell: bash
+        run: |
+          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
+          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
+          echo "Installing Flutter Linux prerequisites..."
+          {
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
+            # Install GStreamer for audioplayers_linux
+            # Install libunwind-dev first to resolve dependency issues
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+            python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+          } > "$setup_log" 2>&1
+          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
+
+      - name: Install native debugger for focused replay
+        if: env.NATIVE_HANG_DIAGNOSTICS == 'true'
+        continue-on-error: true
+        timeout-minutes: 3
+        working-directory: frontend
+        run: python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y gdb
+
+      - name: Enable Flutter Desktop
+        run: |
+          flutter config --enable-linux-desktop
+        shell: bash
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.run_id }}-${{ matrix.os }}
+
+      - name: Uncompressed appflowy_flutter
+        run: |
+          tar -xf appflowy_flutter.tar.gz
+
+      - name: Inspect media_kit native plugin
+        working-directory: frontend/appflowy_flutter
+        run: |
+          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
+          pkg-config --modversion mpv || true
+          pkg-config --modversion epoxy || true
+
       - name: Clean Docker-Compose
         working-directory: AppFlowy-Cloud-Premium
         env:
@@ -957,62 +1058,6 @@ jobs:
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
           docker compose -f docker-compose-ci.yml logs minio
 
-      - name: Install flutter
-        id: flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make@${{ env.CARGO_MAKE_VERSION }}
-
-      - name: Install prerequisites
-        # Keep a stalled package mirror from consuming the entire test job.
-        timeout-minutes: 10
-        working-directory: frontend
-        shell: bash
-        run: |
-          setup_log="$RUNNER_TEMP/flutter-prerequisites.log"
-          trap 'setup_status=$?; if [ "$setup_status" -ne 0 ]; then echo "::error::Flutter prerequisites failed; last 100 log lines:"; tail -n 100 "$setup_log"; fi; exit "$setup_status"' EXIT
-          echo "Installing Flutter Linux prerequisites..."
-          {
-            sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-            sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-            sudo apt-get update
-            sudo apt-get install -y --fix-broken
-            sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-            sudo apt-get install -y keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager postgresql-client
-            sudo apt-get install -y libmpv-dev mpv libasound2-dev
-            # Install GStreamer for audioplayers_linux
-            # Install libunwind-dev first to resolve dependency issues
-            sudo apt-get -y install libunwind-dev
-            sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-          } > "$setup_log" 2>&1
-          echo "Flutter Linux prerequisites installed; full log retained in the cloud-test-output artifact."
-
-      - name: Enable Flutter Desktop
-        run: |
-          flutter config --enable-linux-desktop
-        shell: bash
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ github.run_id }}-${{ matrix.os }}
-
-      - name: Uncompressed appflowy_flutter
-        run: |
-          tar -xf appflowy_flutter.tar.gz
-
-      - name: Inspect media_kit native plugin
-        working-directory: frontend/appflowy_flutter
-        run: |
-          find build/linux -name 'libmedia_kit_video_plugin.so' -print -exec ldd {} \; || true
-          pkg-config --modversion mpv || true
-          pkg-config --modversion epoxy || true
-
       - name: Run Flutter integration tests (${{ matrix.cloud_test_suite }})
         id: cloud-test-run
         # Leave time inside the 60-minute job limit to upload partial results.
@@ -1022,27 +1067,68 @@ jobs:
           cd frontend/appflowy_flutter
           flutter pub get
           dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
+          NATIVE_WATCH_PID=
+          cleanup_test() {
+            if [ -n "$NATIVE_WATCH_PID" ]; then
+              if jobs -pr | grep -Fxq "$NATIVE_WATCH_PID"; then
+                kill -TERM "$NATIVE_WATCH_PID" 2>/dev/null || true
+              fi
+              wait "$NATIVE_WATCH_PID" || true
+            fi
+            dart run pdfrx:remove_wasm_modules --revert
+          }
+          trap cleanup_test EXIT
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           docker ps -a
           rm -f /tmp/cloud-test-events.jsonl
+          if [ "${NATIVE_HANG_DIAGNOSTICS:-false}" = true ]; then
+            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/native_hang_diagnostics.py" \
+              --events /tmp/cloud-test-events.jsonl \
+              --app-root "$GITHUB_WORKSPACE/frontend/appflowy_flutter/build/linux" \
+              --output "$RUNNER_TEMP/native-hang-diagnostics" &
+            NATIVE_WATCH_PID=$!
+          fi
           if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
             export APPFLOWY_PDF_TEST_OUTPUT_DIR="$RUNNER_TEMP/pdf-cloud-ui-regression/saved-exports"
             mkdir -p "$APPFLOWY_PDF_TEST_OUTPUT_DIR"
           fi
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            # Debug framework checks dominate this wall-clock benchmark. Keep
+            # the debug Rust library (and its counters) but profile the Dart UI.
+            # Refuse stale evidence from an earlier invocation.
+            mkdir "$RUNNER_TEMP/dashboard-warm-profile"
+          fi
 
           set +e
-          flutter test \
-            --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
-            --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
-            integration_test/desktop/cloud/cloud_runner.dart \
-            -d Linux \
-            --file-reporter=json:/tmp/cloud-test-events.jsonl \
-            --coverage 2>&1 | tee /tmp/test_output.txt
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            flutter drive --profile \
+              --driver=integration_test/desktop/perf/dashboard_perf_driver.dart \
+              --target=integration_test/desktop/cloud/cloud_runner.dart \
+              --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+              --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
+              --dart-define=DASHBOARD_LOADING_REPORT_DIR="$RUNNER_TEMP/dashboard-warm-profile" \
+              -d Linux 2>&1 | tee /tmp/test_output.txt
+          else
+            flutter test \
+              --dart-define=CLOUD_TEST_SUITE=${{ matrix.cloud_test_suite }} \
+              --dart-define=APPFLOWY_CLOUD_URL="$APPFLOWY_CLOUD_URL" \
+              integration_test/desktop/cloud/cloud_runner.dart \
+              -d Linux \
+              --file-reporter=json:/tmp/cloud-test-events.jsonl \
+              --coverage 2>&1 | tee /tmp/test_output.txt
+          fi
           # bash runs with pipefail, so tee cannot hide a failing Flutter exit.
           TEST_EXIT=$?
           set -eo pipefail
+
+          if [ "${{ matrix.cloud_test_suite }}" = dashboard_loading_warm ]; then
+            if [ "$TEST_EXIT" -eq 0 ]; then
+              python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/verify_dashboard_warm_profile.py" \
+                --reports "$RUNNER_TEMP/dashboard-warm-profile"
+            fi
+            exit "$TEST_EXIT"
+          fi
 
           if [ "${{ matrix.cloud_test_suite }}" = pdf_export ]; then
             cp /tmp/test_output.txt "$RUNNER_TEMP/pdf-cloud-ui-regression/test.log"
@@ -1073,6 +1159,48 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Show bounded prerequisite failure diagnostics
+        if: always() && steps.flutter-prerequisites.outcome == 'failure'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "flutter-prerequisites.log"
+          if path.is_file():
+              with path.open("rb") as source:
+                  source.seek(max(0, path.stat().st_size - 65536))
+                  print("\n".join(source.read(65536).decode("utf-8", errors="replace").splitlines()[-100:]))
+          else:
+              print("Prerequisite log was not created")
+          PY
+
+      - name: Collect Docker logs
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        run: |
+          docker ps -a > docker-ps-output.txt
+          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
+          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
+          docker logs --tail 200 appflowy-cloud-premium-pg_snapshot_unpack-1 > pg_snapshot_unpack_logs.txt 2>&1 || true
+
+      # External artifact and status requests must outlive the disposable
+      # fixture's HTTPS listener and private Docker routes. Preserve logs first.
+      - name: Remove job-owned Cloud services before reporting
+        if: always()
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          if [ -f AppFlowy-Cloud-Premium/docker-compose-ci.yml ]; then
+            docker compose -f AppFlowy-Cloud-Premium/docker-compose-ci.yml \
+              down --remove-orphans --timeout 10
+          fi
+
       - name: Upload exact Cloud runtime manifest
         if: always()
         uses: actions/upload-artifact@v4
@@ -1092,19 +1220,10 @@ jobs:
             /tmp/test_output.txt
             /tmp/cloud-test-events.jsonl
             ${{ runner.temp }}/flutter-prerequisites.log
+            ${{ runner.temp }}/dashboard-warm-profile/
+            ${{ runner.temp }}/native-hang-diagnostics/
           if-no-files-found: warn
           retention-days: 7
-
-      - name: Collect Docker logs
-        if: failure() || cancelled()
-        timeout-minutes: 2
-        run: |
-          docker ps -a > docker-ps-output.txt
-          docker logs appflowy-cloud-premium-appflowy_cloud-1 > appflowy_cloud_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-appflowy_worker-1 > appflowy_worker_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-minio-1 > minio_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-gotrue-1 > gotrue_logs.txt 2>&1 || true
-          docker logs appflowy-cloud-premium-nginx-1 > nginx_logs.txt 2>&1 || true
 
       - name: Upload Docker logs
         if: failure() || cancelled()
@@ -1119,6 +1238,7 @@ jobs:
             minio_logs.txt
             gotrue_logs.txt
             nginx_logs.txt
+            pg_snapshot_unpack_logs.txt
           retention-days: 1
 
       - name: Upload PDF cloud UI regression evidence
@@ -1143,6 +1263,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
 
   integration_test:
+    if: github.event_name != 'workflow_dispatch' || inputs.cloud_suites == ''
     needs: [prepare-linux]
     strategy:
       fail-fast: false
@@ -1154,6 +1275,8 @@ jobs:
             target: "x86_64-unknown-linux-gnu"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      NATIVE_HANG_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runners != '' }}
     steps:
       - name: Checkout private repository
         uses: actions/checkout@v4
@@ -1202,17 +1325,15 @@ jobs:
         timeout-minutes: 10
         working-directory: frontend
         run: |
-          sudo wget -qO /etc/apt/trusted.gpg.d/dart_linux_signing_key.asc https://dl-ssl.google.com/linux/linux_signing_key.pub
-          sudo wget -qO /etc/apt/sources.list.d/dart_stable.list https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list
-          sudo apt-get update
-          sudo apt-get install -y --fix-broken
-          sudo apt-get install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
-          sudo apt-get install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
-          sudo apt-get install -y libmpv-dev mpv libasound2-dev
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py update
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y --fix-broken
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y build-essential libsqlite3-dev libssl-dev clang cmake ninja-build pkg-config libgtk-3-dev libcurl4-openssl-dev libepoxy-dev
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install keybinder-3.0 libnotify-dev libwayland-cursor0 libwayland-client0 libwayland-egl1 unzip liblzma-dev network-manager
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y libmpv-dev mpv libasound2-dev
           # Install GStreamer for audioplayers_linux
           # Install libunwind-dev first to resolve dependency issues
-          sudo apt-get -y install libunwind-dev
-          sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libunwind-dev
+          python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
 
       - name: Enable Flutter Desktop
@@ -1250,6 +1371,31 @@ jobs:
           ls -lh "$PDFIUM_DIR/lib/libpdfium.so"
         shell: bash
 
+      - name: Build fixed libmpv for media integration tests
+        timeout-minutes: 10
+        working-directory: frontend/appflowy_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_FILE="integration_test/desktop_runner_${{ matrix.test_number }}.dart"
+          if ! grep -Fq 'desktop/document/document_media_test_runner.dart' "$TEST_FILE"; then
+            exit 0
+          fi
+          python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/run_flutter_apt.py" install -y meson
+          MEDIA_RUNTIME="$RUNNER_TEMP/linux-media-runtime"
+          python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/prepare_linux_mpv.py" \
+            --directory "$MEDIA_RUNTIME"
+          # Regenerate cached pkg-config results so the app bundles this build.
+          rm -f build/linux/x64/debug/CMakeCache.txt
+          echo "PKG_CONFIG_PATH=$MEDIA_RUNTIME/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+
+      - name: Install native debugger for focused replay
+        if: env.NATIVE_HANG_DIAGNOSTICS == 'true'
+        continue-on-error: true
+        timeout-minutes: 3
+        working-directory: frontend
+        run: python3 ../.desktop-ci-tools/.github/scripts/run_flutter_apt.py install -y gdb
+
       - name: Run Flutter integration tests
         # Leave time inside the 60-minute job limit to upload partial results.
         timeout-minutes: 45
@@ -1258,14 +1404,42 @@ jobs:
           cd frontend/appflowy_flutter
           flutter pub get
           dart run pdfrx:remove_wasm_modules
-          trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
+          NATIVE_WATCH_PID=
+          cleanup_test() {
+            if [ -n "$NATIVE_WATCH_PID" ]; then
+              if jobs -pr | grep -Fxq "$NATIVE_WATCH_PID"; then
+                kill -TERM "$NATIVE_WATCH_PID" 2>/dev/null || true
+              fi
+              wait "$NATIVE_WATCH_PID" || true
+            fi
+            dart run pdfrx:remove_wasm_modules --revert
+          }
+          trap cleanup_test EXIT
           export DISPLAY=:99
           sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
           sudo apt-get install network-manager
 
+          TEST_FILE=integration_test/desktop_runner_${{ matrix.test_number }}.dart
+          TEST_ARGS=()
+          # Media cases use WidgetTester while native players change window lifecycle.
+          # Keep their pumps live in Xvfb, with the binding's per-test timeout.
+          # Identify the suite by its import so runner renumbering stays safe.
+          if grep -Fq 'desktop/document/document_media_test_runner.dart' "$TEST_FILE"; then
+            TEST_ARGS+=(--dart-define=APPFLOWY_TEST_BACKGROUND_FRAMES=true)
+          fi
+          rm -f /tmp/desktop-test-events.jsonl
+          if [ "${NATIVE_HANG_DIAGNOSTICS:-false}" = true ]; then
+            python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/native_hang_diagnostics.py" \
+              --events /tmp/desktop-test-events.jsonl \
+              --app-root "$GITHUB_WORKSPACE/frontend/appflowy_flutter/build/linux" \
+              --output "$RUNNER_TEMP/native-hang-diagnostics" &
+            NATIVE_WATCH_PID=$!
+          fi
+
           set +e
           flutter test \
-            integration_test/desktop_runner_${{ matrix.test_number }}.dart \
+            "${TEST_ARGS[@]}" \
+            "$TEST_FILE" \
             -d Linux \
             --file-reporter=json:/tmp/desktop-test-events.jsonl \
             --coverage 2>&1 | tee /tmp/test_output.txt
@@ -1297,6 +1471,27 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Verify bundled media runtime
+        if: always()
+        timeout-minutes: 1
+        working-directory: frontend/appflowy_flutter
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          manifest = Path(os.environ["RUNNER_TEMP"]) / "linux-media-runtime/manifest.json"
+          if manifest.exists():
+              result = json.loads(manifest.read_text())
+              library = Path("build/linux/x64/debug/bundle/lib/libmpv.so.2")
+              digest = hashlib.sha256(library.read_bytes()).hexdigest()
+              assert digest == result["library_sha256"], "The app bundled a different libmpv"
+              assert library.samefile(library.with_name("libmpv.so")), "The libmpv aliases differ"
+              result.update(bundled_library=str(library), bundled_library_sha256=digest)
+              manifest.write_text(json.dumps(result, indent=2) + "\n")
+              print(json.dumps(result))
+          PY
+
       - name: Upload desktop test output
         if: always()
         timeout-minutes: 3
@@ -1306,5 +1501,8 @@ jobs:
           path: |
             /tmp/test_output.txt
             /tmp/desktop-test-events.jsonl
+            ${{ runner.temp }}/native-hang-diagnostics/
+            ${{ runner.temp }}/linux-media-runtime/build.log
+            ${{ runner.temp }}/linux-media-runtime/manifest.json
           if-no-files-found: warn
           retention-days: 7

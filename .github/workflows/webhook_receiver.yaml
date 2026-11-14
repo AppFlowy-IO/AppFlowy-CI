@@ -759,6 +759,12 @@ jobs:
     needs: [dispatch-workflows, create-pr-comment]
     if: github.event.client_payload.pr_number || github.event.inputs.pr_number
     steps:
+      - name: Check out CI result reporter
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+
       - name: Parse event data
         id: parse
         run: |
@@ -785,7 +791,7 @@ jobs:
 
       - name: Wait for CI workflows to complete
         env:
-          ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           WORKFLOWS: ${{ steps.parse.outputs.workflows }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
           FLUTTER_RUN_URL: ${{ needs.dispatch-workflows.outputs.flutter_run_url }}
@@ -802,104 +808,7 @@ jobs:
           RUSTLINT_RUN_URL: ${{ needs.dispatch-workflows.outputs.rustlint_run_url }}
           INTEGRATION_RUN_URL: ${{ needs.dispatch-workflows.outputs.integration_run_url }}
           COMMERCIAL_RUN_URL: ${{ needs.dispatch-workflows.outputs.commercial_run_url }}
-        run: |
-          echo "⏳ Waiting for CI workflows to complete for PR $PR_NUMBER..."
-
-          # Map workflow names to their run URLs
-          declare -A workflow_run_urls=(
-            ["flutter"]="$FLUTTER_RUN_URL"
-            ["rust"]="$RUST_RUN_URL"
-            ["mobile"]="$MOBILE_RUN_URL"
-            ["ios"]="$IOS_RUN_URL"
-            ["rust_coverage"]="$RUST_COVERAGE_RUN_URL"
-            ["docker"]="$DOCKER_RUN_URL"
-            ["commit_lint"]="$COMMIT_LINT_RUN_URL"
-            ["backend"]="$BACKEND_RUN_URL"
-            ["frontend"]="$FRONTEND_RUN_URL"
-            ["e2e"]="$E2E_RUN_URL"
-            ["cloud_docker"]="$CLOUD_DOCKER_RUN_URL"
-            ["rustlint"]="$RUSTLINT_RUN_URL"
-            ["integration"]="$INTEGRATION_RUN_URL"
-            ["commercial"]="$COMMERCIAL_RUN_URL"
-          )
-
-          IFS=',' read -ra WORKFLOW_ARRAY <<< "$WORKFLOWS"
-
-          echo "Monitoring workflows for PR $PR_NUMBER: $WORKFLOWS"
-
-          # Wait 30 seconds for workflows to be dispatched and show up in API
-          echo "⏳ Waiting 30 seconds for workflows to initialize..."
-          sleep 30
-
-          max_wait=7200
-          wait_interval=30
-          elapsed=0
-
-          while [ $elapsed -lt $max_wait ]; do
-            all_complete=true
-            all_success=true
-            workflow_status_summary=""
-
-            for workflow in "${WORKFLOW_ARRAY[@]}"; do
-              run_url="${workflow_run_urls[$workflow]}"
-
-              if [ -z "$run_url" ]; then
-                echo "  No run URL found for $workflow, skipping"
-                continue
-              fi
-
-              # Extract run ID from URL (format: https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/12345)
-              run_id=$(echo "$run_url" | grep -oE '[0-9]+$')
-
-              if [ -z "$run_id" ]; then
-                echo "  Could not extract run ID from URL: $run_url"
-                all_complete=false
-                continue
-              fi
-
-              echo "Checking status of workflow: $workflow (run ID: $run_id)"
-
-              # Query the specific run by ID
-              response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/runs/$run_id")
-
-              status=$(echo "$response" | jq -r '.status // "unknown"')
-              conclusion=$(echo "$response" | jq -r '.conclusion // "null"')
-
-              echo "  Status: $status, Conclusion: $conclusion"
-              workflow_status_summary="$workflow_status_summary\n- $workflow: $status ($conclusion)"
-
-              if [ "$status" != "completed" ]; then
-                all_complete=false
-              fi
-
-              if [ "$conclusion" != "success" ] && [ "$conclusion" != "unknown" ] && [ "$conclusion" != "null" ]; then
-                all_success=false
-              fi
-            done
-
-            if [ "$all_complete" = true ]; then
-              if [ "$all_success" = true ]; then
-                echo "✅ All workflows completed successfully for PR $PR_NUMBER"
-                echo "all_workflows_passed=true" >> $GITHUB_ENV
-                break
-              else
-                echo "❌ Some workflows failed for PR $PR_NUMBER"
-                echo "all_workflows_passed=false" >> $GITHUB_ENV
-                break
-              fi
-            fi
-
-            echo "⏳ Workflows still running for PR $PR_NUMBER..."
-            echo -e "Current status:$workflow_status_summary"
-            sleep $wait_interval
-            elapsed=$((elapsed + wait_interval))
-          done
-
-          if [ $elapsed -ge $max_wait ]; then
-            echo "⏰ Timeout reached waiting for workflows for PR $PR_NUMBER"
-            echo "all_workflows_passed=false" >> $GITHUB_ENV
-          fi
+        run: python3 ci-tools/.github/scripts/ci_workflow_results.py
 
       - name: Auto-approve PR if all tests pass
         if: env.all_workflows_passed == 'true'
@@ -922,218 +831,17 @@ jobs:
 
           echo "✅ PR $PR_NUMBER auto-approved successfully!"
 
-      - name: Report failed tests
+      - name: Report non-passing or pending CI results
         if: env.all_workflows_passed == 'false'
         env:
           ADMIN_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.parse.outputs.pr_number }}
-          FLUTTER_RUN_URL: ${{ needs.dispatch-workflows.outputs.flutter_run_url }}
-          RUST_RUN_URL: ${{ needs.dispatch-workflows.outputs.rust_run_url }}
-          IOS_RUN_URL: ${{ needs.dispatch-workflows.outputs.ios_run_url }}
         run: |
-          echo "❌ Some CI tests failed or timed out for PR $PR_NUMBER"
-
-          # Only support these three main CI workflows for detailed error reporting
-          declare -A workflow_run_urls=(
-            ["flutter"]="$FLUTTER_RUN_URL"
-            ["rust"]="$RUST_RUN_URL"
-            ["ios"]="$IOS_RUN_URL"
-          )
-
-          declare -A workflow_display_names=(
-            ["flutter"]="Flutter CI/CD"
-            ["rust"]="Rust Testing"
-            ["ios"]="iOS CI"
-          )
-
-          # Process only the supported workflows
-          WORKFLOW_ARRAY=("flutter" "rust" "ios")
-
-          # Start building the failure report
-          FAILURE_REPORT="❌ **Some CI tests failed or timed out** for PR $PR_NUMBER. Please check the workflow results and fix any issues before requesting another review.\n\n"
-          FAILURE_REPORT+="### Failed Workflows\n\n"
-
-          HAS_FAILURES=false
-
-          for workflow in "${WORKFLOW_ARRAY[@]}"; do
-            run_url="${workflow_run_urls[$workflow]}"
-            workflow_name="${workflow_display_names[$workflow]}"
-
-            if [ -z "$run_url" ]; then
-              echo "No run URL found for $workflow, skipping"
-              continue
-            fi
-
-            # Extract run ID from URL
-            run_id=$(echo "$run_url" | grep -oE '[0-9]+$')
-
-            if [ -z "$run_id" ]; then
-              echo "Could not extract run ID from URL: $run_url"
-              continue
-            fi
-
-            echo "Checking workflow: $workflow (run ID: $run_id)"
-
-            # Get workflow run details
-            run_response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-              "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/runs/$run_id")
-
-            run_conclusion=$(echo "$run_response" | jq -r '.conclusion // "null"')
-
-            # Skip if workflow succeeded
-            if [ "$run_conclusion" = "success" ]; then
-              echo "Workflow $workflow succeeded, skipping"
-              continue
-            fi
-
-            HAS_FAILURES=true
-
-            # Add workflow to report
-            FAILURE_REPORT+="**$workflow_name**: $run_url (PR $PR_NUMBER)\n"
-
-            # Get all jobs for this workflow run
-            jobs_response=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-              "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/runs/$run_id/jobs?per_page=100")
-
-            # Count failed jobs
-            failed_jobs=$(echo "$jobs_response" | jq '[.jobs[] | select(.conclusion == "failure")] | length')
-
-            echo "Found $failed_jobs failed jobs for workflow $workflow"
-
-            if [ "$failed_jobs" -eq 0 ]; then
-              FAILURE_REPORT+="- Status: $run_conclusion (no specific job failures detected)\n\n"
-              continue
-            fi
-
-            # Parse each failed job using process substitution to avoid subshell
-            while IFS= read -r line; do
-              if [[ $line == JOB_NAME:* ]]; then
-                JOB_NAME="${line#JOB_NAME:}"
-              elif [[ $line == JOB_ID:* ]]; then
-                JOB_ID="${line#JOB_ID:}"
-              elif [[ $line == JOB_URL:* ]]; then
-                JOB_URL="${line#JOB_URL:}"
-              elif [[ $line == JOB_RUNNER:* ]]; then
-                JOB_RUNNER="${line#JOB_RUNNER:}"
-              elif [[ $line == "---" ]]; then
-                echo "Processing failed job: $JOB_NAME (ID: $JOB_ID)"
-
-                # Add job to report
-                FAILURE_REPORT+="- **Job**: $JOB_NAME ($JOB_RUNNER) - [View Job]($JOB_URL)\n"
-
-                # Get job details including steps
-                job_details=$(curl -s -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/$JOB_ID")
-
-                # Find failed steps
-                failed_steps=$(echo "$job_details" | jq -r '.steps[] | select(.conclusion == "failure") | .name' || true)
-
-                if [ -n "$failed_steps" ]; then
-                  while IFS= read -r step_name; do
-                    if [ -n "$step_name" ]; then
-                      FAILURE_REPORT+="  - ❌ Failed step: $step_name\n"
-                    fi
-                  done <<< "$failed_steps"
-                else
-                  FAILURE_REPORT+="  - ❌ Job failed (see logs for details)\n"
-                fi
-
-                # Try to fetch logs and extract test failures
-                echo "Attempting to fetch logs for job $JOB_ID..."
-                job_logs=$(curl -s -L -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
-                  "https://api.github.com/repos/AppFlowy-IO/AppFlowy-CI/actions/jobs/$JOB_ID/logs" 2>/dev/null || true)
-
-                if [ -n "$job_logs" ]; then
-                  # Detect workflow type and extract failures accordingly
-                  test_failures=""
-
-                  # For Rust tests: look for "test ... FAILED" patterns
-                  if [[ "$workflow" == "rust" ]]; then
-                    echo "Extracting Rust test failures..."
-                    test_failures=$(echo "$job_logs" | grep -E "^test .* \.\.\. FAILED$" | head -n 20 || true)
-
-                    if [ -n "$test_failures" ]; then
-                      echo "Found Rust test failures"
-                      FAILURE_REPORT+="  **Failed Tests:**\n"
-                      while IFS= read -r failure_line; do
-                        if [ -n "$failure_line" ]; then
-                          # Extract test name from "test test_name ... FAILED"
-                          test_name=$(echo "$failure_line" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/')
-                          FAILURE_REPORT+="  - \`$test_name\`\n"
-                        fi
-                      done <<< "$test_failures"
-                    else
-                      # Try alternative pattern for test failures
-                      test_failures=$(echo "$job_logs" | grep -E "---- .* ----" | head -n 20 || true)
-                      if [ -n "$test_failures" ]; then
-                        echo "Found Rust test failures (alternative pattern)"
-                        FAILURE_REPORT+="  **Failed Tests:**\n"
-                        while IFS= read -r failure_line; do
-                          if [ -n "$failure_line" ]; then
-                            # Extract test name from "---- test_name ----"
-                            test_name=$(echo "$failure_line" | sed -E 's/^---- (.*) ----$/\1/')
-                            FAILURE_REPORT+="  - \`$test_name\`\n"
-                          fi
-                        done <<< "$test_failures"
-                      fi
-                    fi
-                  fi
-
-                  # For Flutter tests: look for various failure patterns
-                  if [[ "$workflow" == "flutter" ]]; then
-                    echo "Extracting Flutter test failures..."
-                    # Try multiple patterns for Flutter test failures
-                    test_failures=$(echo "$job_logs" | grep -E "(^✖|^FAILED:.*test|^Error:|test.*FAILED)" | head -n 20 || true)
-
-                    if [ -n "$test_failures" ]; then
-                      echo "Found Flutter test failures"
-                      FAILURE_REPORT+="  **Failed Tests/Errors:**\n"
-                      while IFS= read -r failure_line; do
-                        if [ -n "$failure_line" ]; then
-                          # Clean and truncate the failure line
-                          cleaned_line=$(echo "$failure_line" | sed 's/^[[:space:]]*//g' | head -c 200)
-                          FAILURE_REPORT+="  - \`$cleaned_line\`\n"
-                        fi
-                      done <<< "$test_failures"
-                    fi
-                  fi
-
-                  # Generic error extraction if no specific test failures found
-                  if [ -z "$test_failures" ]; then
-                    echo "No specific test failures found, looking for generic errors..."
-                    generic_errors=$(echo "$job_logs" | grep -iE "(error:|failed|fatal:|panic)" | grep -v "0 failed" | head -n 10 || true)
-                    if [ -n "$generic_errors" ]; then
-                      echo "Found generic errors"
-                      FAILURE_REPORT+="  **Errors Found:**\n"
-                      while IFS= read -r error_line; do
-                        if [ -n "$error_line" ]; then
-                          cleaned_line=$(echo "$error_line" | sed 's/^[[:space:]]*//g' | head -c 200)
-                          FAILURE_REPORT+="  - \`$cleaned_line\`\n"
-                        fi
-                      done <<< "$generic_errors"
-                    fi
-                  fi
-                fi
-
-                FAILURE_REPORT+="\n"
-              fi
-            done < <(echo "$jobs_response" | jq -r '.jobs[] | select(.conclusion == "failure") | "JOB_NAME:\(.name)\nJOB_ID:\(.id)\nJOB_URL:\(.html_url)\nJOB_RUNNER:\(.runner_name // \"unknown\")\n---"')
-
-          done
-
-          if [ "$HAS_FAILURES" = false ]; then
-            FAILURE_REPORT+="No specific workflow failures detected. This may be due to a timeout or cancellation.\n\n"
-          fi
-
-          # Save the report to a file
-          echo -e "$FAILURE_REPORT" > failure_report.md
-
-          # Post the failure report as a comment
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Authorization: token $ADMIN_GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/AppFlowy-IO/${{ steps.parse.outputs.source_repo }}/issues/$PR_NUMBER/comments \
-            -d "{\"body\": $(jq -Rs . < failure_report.md)}"
+            -d "{\"body\": $(jq -Rs . < ci-results.md)}"
 
-          echo "ℹ️  Failure notification posted to ${{ steps.parse.outputs.source_repo }} PR $PR_NUMBER"
+          echo "CI result notification posted to ${{ steps.parse.outputs.source_repo }} PR $PR_NUMBER"

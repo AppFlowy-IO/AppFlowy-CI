@@ -11,8 +11,14 @@ on:
       - '.github/scripts/**'
       - '.github/actions/**'
       - '.github/docker/**'
+      - '.github/probes/**'
       - 'scripts/**'
   workflow_dispatch:
+    inputs:
+      intel_runtime_probe:
+        description: "Compare Intel Metal rendering and check the candidate macOS Docker runtime"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,3 +39,40 @@ jobs:
       - run: python -m pip install PyYAML==6.0.2
       - run: python -B -m unittest discover -s .github/scripts
       - run: python -B -m unittest discover -s scripts -p 'test_check_test_module_coverage.py'
+
+  intel-runtime-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.intel_runtime_probe
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-26-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise fresh multisample rendering
+        timeout-minutes: 4
+        run: python3 .github/scripts/intel_runtime_probe.py --output "$RUNNER_TEMP/intel-rendering"
+      - name: Record installed simulators
+        timeout-minutes: 5
+        run: |
+          git rev-parse HEAD > "$RUNNER_TEMP/intel-rendering/ci-commit.txt"
+          xcrun simctl list --json devices available > "$RUNNER_TEMP/intel-rendering/simulators.json"
+      - name: Verify candidate Docker runtime
+        id: docker
+        if: matrix.os == 'macos-26-intel'
+        timeout-minutes: 15
+        uses: ./.github/actions/macos-docker
+      - name: Run an isolated Docker container
+        if: matrix.os == 'macos-26-intel' && steps.docker.outcome == 'success'
+        timeout-minutes: 2
+        run: docker run --rm hello-world
+      - name: Retain runtime probe evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-runtime-probe-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/intel-rendering/
+          if-no-files-found: error
+          retention-days: 7
