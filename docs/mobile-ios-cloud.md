@@ -14,12 +14,28 @@ tests pass that file through `XCODE_XCCONFIG_FILE`, so Desktop's ARM-oriented
 `Debug.xcconfig` cannot exclude the Intel library. The checkout, ARM runners,
 physical-device builds, and macOS host-tool settings are unchanged.
 
-The Intel requirement follows the existing manual `ios_ci_test.yaml` approach:
-[setup-docker-macos-action](https://github.com/douglascamata/setup-docker-macos-action)
-supports hosted `macos-15-intel` nested virtualization and localhost forwarding.
-The automatic lane uses the matching x86 simulator build rather than the manual
-workflow's ARM profile. The separate `ios_ci_test.yaml` workflow stays unchanged;
-the default iOS matrix still uses four runner slots.
+The Intel host provides nested virtualization and localhost forwarding. Docker,
+Compose, Buildx, Colima and Lima come from checksum-pinned release binaries via
+this repository's `macos-docker` component, avoiding Homebrew source builds.
+Tools, Docker authentication configuration and VM profiles stay under
+`RUNNER_TEMP`; installed host tools and preferences are not edited. The VM uses
+two CPUs and at most eight GiB of RAM, reserving at least six GiB for the host and
+CoreSimulator. Setup has a 15-minute bound. Compose concurrency is two for both
+legacy and exact-source fixtures.
+
+The automatic lane keeps its matching x86 simulator build. The separate
+`ios_ci_test.yaml` workflow stays unchanged; the default iOS matrix still uses
+four runner slots. Intel has a 210-minute job provisioning window; the other
+jobs remain at 120 minutes. Local and Cloud functional limits remain 60 and
+20 minutes.
+
+Runner 4 prebuilds the exact `mobile_runner_4.dart` integration target for the
+selected simulator in a separate 90-minute build step. This prevents cold Pods
+and Xcode compilation from consuming the functional-test deadline before any
+test body starts. Its temporary architecture override remains scoped to Flutter
+commands. Verbose prebuild output is retained in `mobile-local-results/prebuild.log`;
+the subsequent normal test build retains expanded/verbose output and the JSON
+reporter. No functional test is skipped and the application assertions are unchanged.
 
 The additional phase is not applicable when an older Desktop revision lacks the
 focused entry point and no exact server was requested; discovery writes that
@@ -34,6 +50,24 @@ By default, the fixture pulls `latest-amd64` Cloud/Worker images using the main
 server repository's Compose configuration. Publish the server API in the normal
 latest image before relying on that mode for new API coverage. Mutable `latest`
 is not an exact-source guarantee.
+
+Registry startup uses `start_mobile_cloud.py` with plain output and at most two
+concurrent Compose operations. It retains pull/start output and attempt results
+under `mobile-cloud-results/startup` before the tests begin, so the existing
+always-run results upload includes a failed pull even when no test can start.
+Recognized temporary transfer failures, such as unexpected EOF or connection
+timeouts, receive at most three pull attempts with bounded backoff.
+Authentication, missing-image, storage and unknown errors stop immediately.
+Pulls, retry delays and startup share a monotonic 870-second budget within the
+existing 15-minute step, leaving time for reports and image identities. Startup
+and each pull use the remaining budget; a progressing cold extraction is not
+interrupted by a separate three-minute cap. A hung pull still exhausts that
+shared deadline without another out-of-budget attempt. Startup uses
+`--no-build --pull never` to consume the completed
+pull. A failed or exhausted operation still fails the job;
+test deadlines and assertions are unchanged. Diagnostics exclude credential
+files, service logs and rendered Compose environments. Exact-source mode keeps
+its existing verified startup and never falls back to this registry helper.
 
 For pre-merge API validation, supply both `cloud_source_sha` and
 `cloud_image_run_id`, with an immutable Desktop SHA in `pr_ref`. Runner 4 reuses
@@ -54,6 +88,20 @@ build with the two exact inputs. Wait for active related runs before dispatching
 the concurrency key includes `pr_number`, so another run for that PR can cancel
 its current iOS run. An iOS-only dispatch does not repeat Flutter/Rust pipelines.
 
+Select `test_runner=3` to diagnose the existing ARM runner's loading/launch path
+without repeating the other three jobs. Runner 3 retains verbose/expanded local
+output as runner 4 does. Its architecture, simulator, complete local suite and
+deadlines are unchanged; it does not provision the runner-4-only Cloud fixture.
+
+For runtime-stall diagnosis, manual dispatch also accepts `local_test_name`, a
+test-name regular expression applied only to runner 4's local command. Use one
+regex with alternation to select a predecessor and the stalled case in their
+existing registration order. The input is passed as one literal argument and
+the job summary marks the local coverage as partial. The target, simulator,
+prebuild, assertions and Cloud suite stay the same. An empty value runs the full
+local suite; repository dispatch ignores this manual diagnostic input. A filtered
+success does not validate the complete local suite.
+
 `mobile_row_cloud.py` creates a new private `.env` and a mode-0600 Dart-define
 file with the same randomly generated GoTrue admin credentials. The simulator
 receives its test Cloud/auth endpoints through that file; it does not depend on
@@ -67,6 +115,8 @@ and generated credential files; no global Docker prune is used.
 
 ```sh
 python3 -B -m unittest discover -s .github/scripts -p test_mobile_row_cloud.py
+python3 -B -m unittest discover -s .github/scripts -p test_macos_docker.py
+python3 -B -m unittest discover -s .github/scripts -p test_start_mobile_cloud.py
 python3 -B -m unittest discover -s .github/scripts
 python3 -B -m unittest discover -s scripts -p test_check_test_module_coverage.py
 actionlint .github/workflows/ios_ci.yaml
