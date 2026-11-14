@@ -20,11 +20,16 @@ on:
         type: string
         default: "main"
       test_runner:
-        description: "Run the usual four mobile suites, or only runner 4 for focused Cloud validation"
+        description: "Run all four mobile suites, or select runner 3 or 4 for diagnosis"
         required: false
         type: choice
         default: "all"
-        options: ["all", "4"]
+        options: ["all", "3", "4"]
+      local_test_name:
+        description: "Optional runner 4 test-name regex for diagnosis; empty runs its full local suite"
+        required: false
+        type: string
+        default: ""
       cloud_source_sha:
         description: "Optional exact Cloud source SHA; requires cloud_image_run_id and immutable pr_ref"
         required: false
@@ -46,13 +51,13 @@ concurrency:
 jobs:
   integration-tests:
     name: Mobile integration tests (runner ${{ matrix.test_number }})
-    # Cold Intel build/startup reached its first test completion 93 minutes into
-    # the job. Bound local work separately so failure still leaves Cloud time.
-    timeout-minutes: ${{ matrix.test_number == 4 && 180 || 120 }}
+    # Cold Intel native/Xcode compilation needs provisioning time outside the
+    # unchanged local and Cloud functional-suite deadlines.
+    timeout-minutes: ${{ matrix.test_number == 4 && 210 || 120 }}
     strategy:
       fail-fast: false
       matrix:
-        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || '[1,2,3,4]') }}
+        test_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_runner == '4' && '[4]' || github.event_name == 'workflow_dispatch' && inputs.test_runner == '3' && '[3]' || '[1,2,3,4]') }}
 
     # Docker on hosted macOS needs an Intel VM. Keep the existing four jobs;
     # runner 4 runs its local suite first, then the focused Cloud row-page suite.
@@ -61,6 +66,7 @@ jobs:
       IOS_RUST_TARGET: ${{ matrix.test_number == 4 && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
       IOS_BUILD_PROFILE: ${{ matrix.test_number == 4 && 'development-ios-x86_64-sim' || 'development-ios-arm64-sim' }}
       COMPOSE_PROJECT_NAME: ios-row-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PARALLEL_LIMIT: "2"
       APPFLOWY_CLOUD_VERSION: latest-amd64
       APPFLOWY_HISTORY_VERSION: latest-amd64
       APPFLOWY_WORKER_VERSION: latest-amd64
@@ -149,9 +155,6 @@ jobs:
           shutdown_after_job: false
           wait_for_boot: true
 
-      # Runner 4 builds through flutter test below, using the selected Intel
-      # simulator. The generic pre-build can complete Xcode compilation while
-      # Flutter retains an empty build-settings lookup (missing TARGET_BUILD_DIR).
       - name: Pre-build iOS app for simulator
         if: matrix.test_number != 4
         working-directory: frontend/appflowy_flutter
@@ -161,19 +164,47 @@ jobs:
           fi
           flutter build ios --simulator --debug
 
+      # Generic prebuilds have left Flutter's TARGET_BUILD_DIR lookup empty.
+      # Match the integration target/device used by the following test build,
+      # and finish cold compilation before the functional-suite clock starts.
+      - name: Pre-build focused iOS app for selected simulator
+        if: matrix.test_number == 4
+        working-directory: frontend/appflowy_flutter
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mobile-local-results"
+          export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+          flutter build ios --simulator --debug --target integration_test/mobile_runner_4.dart \
+            -d '${{ steps.simulator-action.outputs.udid }}' --verbose \
+            2>&1 | tee "$RUNNER_TEMP/mobile-local-results/prebuild.log"
+
       - name: Run Flutter integration tests (runner ${{ matrix.test_number }})
         id: local-mobile-tests
         timeout-minutes: 60
         shell: bash
         working-directory: frontend/appflowy_flutter
+        env:
+          IOS_LOCAL_TEST_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.local_test_name || '' }}
+          IOS_ARM_LAUNCH_DIAGNOSTICS: ${{ matrix.test_number == 3 }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mobile-local-results"
+          set --
           if [[ "$IOS_RUST_TARGET" == x86_64-apple-ios ]]; then
             export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/mobile-intel-simulator.xcconfig"
+            set -- --verbose --reporter expanded
+            if [[ -n "${IOS_LOCAL_TEST_NAME:-}" ]]; then
+              set -- "$@" --name "$IOS_LOCAL_TEST_NAME"
+              echo "Manual runner 4 name filter enabled; this run does not cover the full local suite." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [[ "${IOS_ARM_LAUNCH_DIAGNOSTICS:-}" == true ]]; then
+            set -- --verbose --reporter expanded
           fi
           flutter test integration_test/mobile_runner_${{ matrix.test_number }}.dart \
             -d '${{ steps.simulator-action.outputs.udid }}' \
+            "$@" \
             --file-reporter "json:$RUNNER_TEMP/mobile-local-results/tests.json" \
             2>&1 | tee "$RUNNER_TEMP/mobile-local-results/flutter.log"
 
@@ -236,7 +267,8 @@ jobs:
       - name: Setup Docker on macOS
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-config.outcome == 'success'"
         id: cloud-docker
-        uses: douglascamata/setup-docker-macos-action@v1
+        timeout-minutes: 15
+        uses: ./.mobile-ci-tools/.github/actions/macos-docker
 
       - name: Log in to Docker Hub
         if: "!cancelled() && matrix.test_number == 4 && steps.cloud-docker.outcome == 'success'"
@@ -270,8 +302,9 @@ jobs:
         timeout-minutes: 15
         run: |
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
-            docker compose -f docker-compose-ci.yml pull
-            docker compose -f docker-compose-ci.yml up -d --no-build
+            python3 "$GITHUB_WORKSPACE/.mobile-ci-tools/.github/scripts/start_mobile_cloud.py" \
+              --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
+              --output "$RUNNER_TEMP/mobile-cloud-results/startup"
           elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
             echo "::error::Cloud runtime selection did not complete"
             exit 1

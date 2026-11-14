@@ -1,0 +1,47 @@
+{
+  "platform": "Darwin",
+  "architecture": "x86_64",
+  "artifacts": [
+    {
+      "name": "lima",
+      "version": "1.2.3",
+      "url": "https://github.com/lima-vm/lima/releases/download/v1.2.3/lima-1.2.3-Darwin-x86_64.tar.gz",
+      "sha256": "ec998cc0e1ce5c49232843c019b16165ada60034cea06a4d39442c156d431d7d",
+      "format": "tar",
+      "destination": "tools"
+    },
+    {
+      "name": "colima",
+      "version": "0.10.3",
+      "url": "https://github.com/abiosoft/colima/releases/download/v0.10.3/colima-Darwin-x86_64",
+      "sha256": "3082737fe8a98afda11cba7d9a20b6e56fe80c6153464beda04bec630758770b",
+      "format": "file",
+      "destination": "tools/bin/colima"
+    },
+    {
+      "name": "compose",
+      "version": "5.7.0",
+      "url": "https://github.com/docker/compose/releases/download/v5.7.0/docker-compose-darwin-x86_64",
+      "sha256": "f57fad1fc3a942309b76da99e0a1c49dc97f7c56d4a03593d71bb01577aeeb29",
+      "format": "file",
+      "destination": "docker/cli-plugins/docker-compose"
+    },
+    {
+      "name": "buildx",
+      "version": "0.38.2",
+      "url": "https://github.com/docker/buildx/releases/download/v0.38.2/buildx-v0.38.2.darwin-amd64",
+      "sha256": "ad2418546e6d168a3e3b59fdf2a24997bc84263abeb4a5d9d0422cfe782743fc",
+      "format": "file",
+      "destination": "docker/cli-plugins/docker-buildx"
+    },
+    {
+      "name": "docker",
+      "version": "29.9.3",
+      "url": "https://download.docker.com/mac/static/stable/x86_64/docker-29.9.3.tgz",
+      "sha256": "f7d8f835391cd0a8c676d9a8d2547f909da6a2d029595943b0ce8d5f169abe47",
+      "format": "tar",
+      "destination": "tools/bin/docker",
+      "member": "docker/docker"
+    }
+  ]
+}
