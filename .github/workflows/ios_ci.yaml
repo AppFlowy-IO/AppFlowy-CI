@@ -270,8 +270,9 @@ jobs:
         timeout-minutes: 15
         run: |
           if [[ "$EXACT_CLOUD_ENABLED" == false ]]; then
-            docker compose -f docker-compose-ci.yml pull
-            docker compose -f docker-compose-ci.yml up -d --no-build
+            python3 "$GITHUB_WORKSPACE/.mobile-ci-tools/.github/scripts/start_mobile_cloud.py" \
+              --cloud "$GITHUB_WORKSPACE/.mobile-cloud" \
+              --output "$RUNNER_TEMP/mobile-cloud-results/startup"
           elif [[ "$EXACT_CLOUD_ENABLED" != true ]]; then
             echo "::error::Cloud runtime selection did not complete"
             exit 1

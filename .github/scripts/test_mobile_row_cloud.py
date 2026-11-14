@@ -302,11 +302,14 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 calls = root / "calls"
-                prefix = 'docker() { echo "$*" >> "$CALLS"; }\ngit() { echo "fixture-sha"; }\n'
+                prefix = ('docker() { echo "docker $*" >> "$CALLS"; }\n'
+                          'python3() { echo "python3 $*" >> "$CALLS"; }\n'
+                          'git() { echo "fixture-sha"; }\n')
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", prefix + script], cwd=root,
                     env={**os.environ, "EXACT_CLOUD_ENABLED": enabled,
-                         "RUNNER_TEMP": directory, "CALLS": str(calls)},
+                         "RUNNER_TEMP": directory, "GITHUB_WORKSPACE": directory,
+                         "CALLS": str(calls)},
                     capture_output=True, text=True, timeout=5,
                 )
                 if enabled not in ("true", "false"):
@@ -315,11 +318,37 @@ class MobileCloudWorkflowTest(unittest.TestCase):
                     continue
                 self.assertEqual(result.returncode, 0, result.stderr)
                 commands = calls.read_text().splitlines()
-                expected = ["compose -f docker-compose-ci.yml images --format json"]
+                expected = ["docker compose -f docker-compose-ci.yml images --format json"]
                 if enabled == "false":
-                    expected = ["compose -f docker-compose-ci.yml pull",
-                                "compose -f docker-compose-ci.yml up -d --no-build", *expected]
+                    expected = [f"python3 {directory}/.mobile-ci-tools/.github/scripts/start_mobile_cloud.py "
+                                f"--cloud {directory}/.mobile-cloud "
+                                f"--output {directory}/mobile-cloud-results/startup", *expected]
                 self.assertEqual(commands, expected)
+
+    def test_startup_failure_is_retained_before_tests_and_still_blocks_readiness(self):
+        start = self.step("Start job-owned Cloud services")
+        ready = self.step("Wait for Cloud readiness")
+        upload = self.step("Upload Cloud row-page test results")
+        self.assertIn("steps.cloud-start.outcome == 'success'", ready["if"])
+        self.assertIn("always()", upload["if"])
+        self.assertIn("mobile-cloud-results/", upload["with"]["path"])
+        self.assertIn("mobile-cloud-results/startup", start["run"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = ('python3() { mkdir -p "$RUNNER_TEMP/mobile-cloud-results/startup"; '
+                      'echo "unexpected EOF" > "$RUNNER_TEMP/mobile-cloud-results/startup/pull.log"; '
+                      'return 7; }\n'
+                      'docker() { touch "$RUNNER_TEMP/unexpected-docker-call"; }\n'
+                      + start["run"])
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                env={**os.environ, "EXACT_CLOUD_ENABLED": "false", "RUNNER_TEMP": directory,
+                     "GITHUB_WORKSPACE": directory},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual((root / "mobile-cloud-results/startup/pull.log").read_text(), "unexpected EOF\n")
+            self.assertFalse((root / "unexpected-docker-call").exists())
 
     def test_intel_rust_target_profile_and_simulator_match(self):
         env = self.job["env"]
@@ -425,8 +454,7 @@ class MobileCloudWorkflowTest(unittest.TestCase):
             self.assertEqual(self.job["env"][variable], "latest-amd64")
         self.assertIn("github.run_id", self.job["env"]["COMPOSE_PROJECT_NAME"])
         start = self.step("Start job-owned Cloud services")["run"]
-        self.assertIn("pull", start)
-        self.assertIn("up -d --no-build", start)
+        self.assertIn("start_mobile_cloud.py", start)
         cleanup = self.step("Remove job-owned Cloud services and credentials")
         self.assertIn("always()", cleanup["if"])
         self.assertIn("steps.cloud-config.outcome == 'success'", cleanup["if"])

@@ -35,6 +35,21 @@ server repository's Compose configuration. Publish the server API in the normal
 latest image before relying on that mode for new API coverage. Mutable `latest`
 is not an exact-source guarantee.
 
+Registry startup uses `start_mobile_cloud.py` with plain output and at most two
+concurrent Compose operations. It retains pull/start output and attempt results
+under `mobile-cloud-results/startup` before the tests begin, so the existing
+always-run results upload includes a failed pull even when no test can start.
+Recognized temporary transfer failures, such as unexpected EOF or connection
+timeouts, receive at most three 180-second pull attempts with bounded backoff.
+Authentication, missing-image, storage and unknown errors stop immediately.
+Pulls, retry delays and startup share a monotonic 870-second budget within the
+existing 15-minute step, leaving time for reports and image identities. Startup
+uses the remaining budget and `--no-build --pull never` to consume the completed
+pull. A failed or exhausted operation still fails the job;
+test deadlines and assertions are unchanged. Diagnostics exclude credential
+files, service logs and rendered Compose environments. Exact-source mode keeps
+its existing verified startup and never falls back to this registry helper.
+
 For pre-merge API validation, supply both `cloud_source_sha` and
 `cloud_image_run_id`, with an immutable Desktop SHA in `pr_ref`. Runner 4 reuses
 the [existing exact-runtime component](desktop-exact-cloud.md), including its
