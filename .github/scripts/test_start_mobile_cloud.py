@@ -111,7 +111,8 @@ sys.exit(response.get("exit", 0))
             self.assertEqual(invocation["args"][:7],
                              ["compose", "--ansi", "never", "--progress", "plain", "-f", "docker-compose-ci.yml"])
         self.assertEqual(self.invocations()[-1]["args"][7:], ["up", "-d", "--no-build", "--pull", "never"])
-        self.assertEqual(report["pull_attempts"][0]["timeout_seconds"], 180)
+        self.assertGreater(report["pull_attempts"][0]["timeout_seconds"], 860)
+        self.assertLessEqual(report["pull_attempts"][0]["timeout_seconds"], 870)
         self.assertGreater(report["startup"]["timeout_seconds"], 120)
         self.assertLessEqual(report["startup"]["timeout_seconds"], 870)
         self.assertEqual(report["budget_seconds"], 870)
@@ -156,18 +157,21 @@ sys.exit(response.get("exit", 0))
         self.assertEqual(len(self.invocations()), 2)
         sleep.assert_not_called()
 
-    def test_command_timeout_is_bounded_and_its_output_survives_retry(self):
+    def test_total_budget_bounds_a_hung_pull_and_retains_its_output(self):
         result, _, sleep = self.run_start([
-            {"stdout": "partial transfer", "sleep": 10}, {}, {},
-        ], PULL_TIMEOUT=0.5)
-        self.assertEqual(result, 0)
+            {"stdout": "partial transfer", "sleep": 10},
+        ], STARTUP_BUDGET=0.5)
+        self.assertEqual(result, 124)
         first = self.report()["pull_attempts"][0]
         self.assertEqual(first["exit_code"], 124)
         self.assertTrue(first["timed_out"])
         self.assertTrue(first["retryable"])
         self.assertIn("partial transfer", (self.output / "pull-1.log").read_text())
         self.assertIn("timed out", (self.output / "pull-1.log").read_text())
-        sleep.assert_called_once_with(10)
+        self.assertTrue(self.report()["budget_exhausted"])
+        self.assertIsNone(self.report()["startup"])
+        self.assertEqual(len(self.invocations()), 1)
+        sleep.assert_not_called()
 
     def test_start_timeout_stays_failed(self):
         result, _, sleep = self.run_start([{}, {"stdout": "starting", "sleep": 10}], STARTUP_BUDGET=0.5)
@@ -187,6 +191,19 @@ sys.exit(response.get("exit", 0))
         self.assertFalse(self.report()["budget_exhausted"])
         sleep.assert_not_called()
 
+    def test_cold_image_pull_can_progress_beyond_three_minutes_within_total_budget(self):
+        result, _, sleep = self.run_start([
+            {"stdout": "Large layer extracted", "elapsed": 360},
+            {"elapsed": 180},
+        ], clock=Clock())
+        self.assertEqual(result, 0)
+        report = self.report()
+        self.assertGreaterEqual(report["pull_attempts"][0]["timeout_seconds"], 360)
+        self.assertEqual(len(report["pull_attempts"]), 1)
+        self.assertEqual(report["startup"]["timeout_seconds"], 510)
+        self.assertFalse(report["budget_exhausted"])
+        sleep.assert_not_called()
+
     def test_pull_time_and_retry_backoff_reduce_start_budget(self):
         result, _, sleep = self.run_start([
             {"stderr": "unexpected EOF", "exit": 1, "elapsed": 170},
@@ -194,7 +211,7 @@ sys.exit(response.get("exit", 0))
         ], clock=Clock())
         self.assertEqual(result, 0)
         self.assertEqual(self.report()["startup"]["timeout_seconds"], 540)
-        self.assertEqual([x["timeout_seconds"] for x in self.report()["pull_attempts"]], [180, 180])
+        self.assertEqual([x["timeout_seconds"] for x in self.report()["pull_attempts"]], [870, 690])
         sleep.assert_called_once_with(10)
 
     def test_pull_and_backoff_cannot_exceed_remaining_budget(self):
@@ -204,7 +221,7 @@ sys.exit(response.get("exit", 0))
         ], clock=Clock(), STARTUP_BUDGET=200)
         self.assertEqual(result, 124)
         report = self.report()
-        self.assertEqual([x["timeout_seconds"] for x in report["pull_attempts"]], [180, 20])
+        self.assertEqual([x["timeout_seconds"] for x in report["pull_attempts"]], [200, 20])
         self.assertTrue(report["budget_exhausted"])
         self.assertEqual(report["exit_code"], 124)
         self.assertIsNone(report["startup"])

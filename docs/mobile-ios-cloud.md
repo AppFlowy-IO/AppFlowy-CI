@@ -56,11 +56,14 @@ concurrent Compose operations. It retains pull/start output and attempt results
 under `mobile-cloud-results/startup` before the tests begin, so the existing
 always-run results upload includes a failed pull even when no test can start.
 Recognized temporary transfer failures, such as unexpected EOF or connection
-timeouts, receive at most three 180-second pull attempts with bounded backoff.
+timeouts, receive at most three pull attempts with bounded backoff.
 Authentication, missing-image, storage and unknown errors stop immediately.
 Pulls, retry delays and startup share a monotonic 870-second budget within the
 existing 15-minute step, leaving time for reports and image identities. Startup
-uses the remaining budget and `--no-build --pull never` to consume the completed
+and each pull use the remaining budget; a progressing cold extraction is not
+interrupted by a separate three-minute cap. A hung pull still exhausts that
+shared deadline without another out-of-budget attempt. Startup uses
+`--no-build --pull never` to consume the completed
 pull. A failed or exhausted operation still fails the job;
 test deadlines and assertions are unchanged. Diagnostics exclude credential
 files, service logs and rendered Compose environments. Exact-source mode keeps

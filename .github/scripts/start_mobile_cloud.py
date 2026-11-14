@@ -14,7 +14,6 @@ import subprocess
 from time import monotonic as _monotonic, sleep
 
 
-PULL_TIMEOUT = 180
 # Leave the existing fifteen-minute workflow step thirty seconds for image
 # identities and final report writes. Compose up may wait for cold health checks.
 STARTUP_BUDGET = 870
@@ -116,7 +115,10 @@ def start(cloud: Path, output: Path) -> int:
 
     save()
     for attempt in range(1, len(RETRY_DELAYS) + 2):
-        timeout = min(PULL_TIMEOUT, remaining())
+        # Cold image extraction can progress for several minutes. Restarting it
+        # at an arbitrary per-pull limit discards useful work; the shared budget
+        # already bounds a hung command as well as transport-error retries.
+        timeout = remaining()
         if timeout <= 0:
             return exhausted()
         result, stdout = _command(cloud, output, f"pull-{attempt}", ["pull"], timeout, environment)
