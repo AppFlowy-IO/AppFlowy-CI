@@ -430,9 +430,8 @@ class PresentationWorkflowTest(unittest.TestCase):
         for option in ("--memory 256m", "--memory-swap 256m", '--health-cmd "redis-cli ping"',
                        "--health-interval 2s", "--health-timeout 2s", "--health-retries 20"):
             self.assertIn(option, redis["options"])
-        self.assertEqual(job["env"]["TEST_REDIS_URL"],
-                         "${{ matrix.package == 'appflowy-ai' && "
-                         "format('redis://127.0.0.1:{0}', job.services.redis.ports[6379]) || '' }}")
+        # GitHub exposes service ports to steps, not to the job-level env context.
+        self.assertEqual(job["env"]["TEST_REDIS_URL"], "")
         steps = job["steps"]
         setup = next(i for i, step in enumerate(steps)
                      if step.get("name") == "Configure the owned AI instruction Redis fixture")
@@ -440,9 +439,14 @@ class PresentationWorkflowTest(unittest.TestCase):
                        if step.get("name") == "Run ordinary and explicitly owned ignored package contracts")
         self.assertLess(setup, execute)
         self.assertEqual(steps[setup]["if"], "matrix.package == 'appflowy-ai'")
+        self.assertEqual(steps[setup]["env"]["TEST_REDIS_URL"],
+                         "${{ format('redis://127.0.0.1:{0}', job.services.redis.ports['6379']) }}")
         self.assertIn('redis-cli -u "$TEST_REDIS_URL" CONFIG SET maxmemory 134217728 '
                       'maxmemory-policy noeviction', steps[setup]["run"])
         self.assertIn('test "$(redis-cli -u "$TEST_REDIS_URL" PING)" = PONG', steps[setup]["run"])
+        export = 'printf \'TEST_REDIS_URL=%s\\n\' "$TEST_REDIS_URL" >> "$GITHUB_ENV"'
+        self.assertIn(export, steps[setup]["run"])
+        self.assertLess(steps[setup]["run"].index("PING"), steps[setup]["run"].index(export))
 
     def test_four_packages_have_independent_default_feature_builds_and_owned_database(self):
         job = WORKFLOW["jobs"]["presentation-contracts"]

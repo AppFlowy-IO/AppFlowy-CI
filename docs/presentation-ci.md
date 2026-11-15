@@ -91,6 +91,8 @@ The `appflowy-ai` package also owns a health-checked Redis 7 service on a dynami
 loopback port. `TEST_REDIS_URL` points only to that service; its 128 MiB `noeviction` policy sits
 inside a 256 MiB container limit. Setup verifies Redis responds before execution. Instruction
 cases create unique PostgreSQL schemas and Redis key prefixes and clean up their own state.
+The setup step resolves the mapped port and exports the verified URL through `GITHUB_ENV`;
+GitHub does not expose `job.services` in job-level environment expressions.
 
 `require_tests` rejects missing required names or insufficient ordinary discovery. New ignored
 tests fail until their prerequisite owner is reviewed. Every executed target must report exactly

@@ -1423,7 +1423,7 @@ jobs:
       APPFLOWY_PRESENTATION_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
       TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
       APPFLOWY_PRESENTATION_CI_OWNED_POSTGRES: '1'
-      TEST_REDIS_URL: ${{ matrix.package == 'appflowy-ai' && format('redis://127.0.0.1:{0}', job.services.redis.ports[6379]) || '' }}
+      TEST_REDIS_URL: ''
       CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout exact Cloud source
@@ -1453,9 +1453,12 @@ jobs:
           sudo locale-gen en_US.UTF-8
       - name: Configure the owned AI instruction Redis fixture
         if: matrix.package == 'appflowy-ai'
+        env:
+          TEST_REDIS_URL: ${{ format('redis://127.0.0.1:{0}', job.services.redis.ports['6379']) }}
         run: |
           test "$(redis-cli -u "$TEST_REDIS_URL" CONFIG SET maxmemory 134217728 maxmemory-policy noeviction)" = OK
           test "$(redis-cli -u "$TEST_REDIS_URL" PING)" = PONG
+          printf 'TEST_REDIS_URL=%s\n' "$TEST_REDIS_URL" >> "$GITHUB_ENV"
       - name: Run ordinary and explicitly owned ignored package contracts
         env:
           PACKAGE: ${{ matrix.package }}
