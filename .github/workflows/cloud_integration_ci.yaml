@@ -1409,13 +1409,21 @@ jobs:
           POSTGRES_DB: presentation_ci
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U postgres -d presentation_ci"
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d presentation_ci"
           --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: ${{ matrix.package == 'appflowy-ai' && 'redis:7-alpine' || '' }}
+        ports: ['6379/tcp']
+        options: >-
+          --memory 256m --memory-swap 256m
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 2s --health-retries 20
     env:
       DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
       APPFLOWY_PRESENTATION_TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
       TEST_DATABASE_URL: postgres://postgres:password@127.0.0.1:5432/presentation_ci
       APPFLOWY_PRESENTATION_CI_OWNED_POSTGRES: '1'
+      TEST_REDIS_URL: ${{ matrix.package == 'appflowy-ai' && format('redis://127.0.0.1:{0}', job.services.redis.ports[6379]) || '' }}
       CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout exact Cloud source
@@ -1443,6 +1451,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8
+      - name: Configure the owned AI instruction Redis fixture
+        if: matrix.package == 'appflowy-ai'
+        run: |
+          test "$(redis-cli -u "$TEST_REDIS_URL" CONFIG SET maxmemory 134217728 maxmemory-policy noeviction)" = OK
+          test "$(redis-cli -u "$TEST_REDIS_URL" PING)" = PONG
       - name: Run ordinary and explicitly owned ignored package contracts
         env:
           PACKAGE: ${{ matrix.package }}

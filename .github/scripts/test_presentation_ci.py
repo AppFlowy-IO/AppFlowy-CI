@@ -34,6 +34,35 @@ def local_run(args, *, environment=None, capture_output=False, inherit_stderr=Fa
 
 
 class CoverageGuardsTest(unittest.TestCase):
+    def test_instruction_revision_source_requires_all_ten_database_redis_contracts(self):
+        package = "appflowy-ai"
+        original = json.loads(json.dumps(runner.POLICIES[package]))
+        update = original["source_updates"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory)
+            binaries = [runner.Binary(owner / "libtest", owner)]
+            self.assertEqual(runner.policy_for_source(package, binaries), original)
+            source = owner / update["when_file"]
+            source.parent.mkdir(parents=True)
+            source.write_text("// older instruction persistence without revision fencing\n")
+            self.assertEqual(runner.policy_for_source(package, binaries), original)
+
+            # A production marker remains present if any regression test is deleted or renamed.
+            source.write_text("SELECT nextval('af_user_instructions_revision_seq')\n")
+            current = runner.policy_for_source(package, binaries)
+            self.assertEqual(len(update["database"]), 10)
+            self.assertEqual(len(set(update["database"])), 10)
+            self.assertEqual(current["database"], original["database"] + update["database"])
+            self.assertEqual(len(current["database"]), 18)
+            self.assertEqual(current["external"], original["external"])
+            self.assertTrue(all(name.startswith("tool::update_user_instructions::component_tests::")
+                                for name in update["database"]))
+            for name in update["database"]:
+                with self.subTest(missing=name), self.assertRaisesRegex(RuntimeError, name):
+                    runner.require_tests("instruction ordering", set(current["database"]) - {name},
+                                         len(current["database"]), required=current["database"])
+            self.assertEqual(runner.POLICIES[package], original)
+
     def test_production_source_selects_required_followup_contracts_without_mutating_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = Path(directory)
@@ -392,6 +421,29 @@ fn presentation_gateway_contract_bridge() {
 
 
 class PresentationWorkflowTest(unittest.TestCase):
+    def test_ai_instruction_contracts_have_owned_bounded_redis_and_explicit_loopback_dsn(self):
+        job = WORKFLOW["jobs"]["presentation-contracts"]
+        redis = job["services"]["redis"]
+        self.assertEqual(redis["image"],
+                         "${{ matrix.package == 'appflowy-ai' && 'redis:7-alpine' || '' }}")
+        self.assertEqual(redis["ports"], ["6379/tcp"])
+        for option in ("--memory 256m", "--memory-swap 256m", '--health-cmd "redis-cli ping"',
+                       "--health-interval 2s", "--health-timeout 2s", "--health-retries 20"):
+            self.assertIn(option, redis["options"])
+        self.assertEqual(job["env"]["TEST_REDIS_URL"],
+                         "${{ matrix.package == 'appflowy-ai' && "
+                         "format('redis://127.0.0.1:{0}', job.services.redis.ports[6379]) || '' }}")
+        steps = job["steps"]
+        setup = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Configure the owned AI instruction Redis fixture")
+        execute = next(i for i, step in enumerate(steps)
+                       if step.get("name") == "Run ordinary and explicitly owned ignored package contracts")
+        self.assertLess(setup, execute)
+        self.assertEqual(steps[setup]["if"], "matrix.package == 'appflowy-ai'")
+        self.assertIn('redis-cli -u "$TEST_REDIS_URL" CONFIG SET maxmemory 134217728 '
+                      'maxmemory-policy noeviction', steps[setup]["run"])
+        self.assertIn('test "$(redis-cli -u "$TEST_REDIS_URL" PING)" = PONG', steps[setup]["run"])
+
     def test_four_packages_have_independent_default_feature_builds_and_owned_database(self):
         job = WORKFLOW["jobs"]["presentation-contracts"]
         self.assertEqual(set(job["strategy"]["matrix"]["package"]), set(runner.POLICIES))
@@ -399,6 +451,8 @@ class PresentationWorkflowTest(unittest.TestCase):
         self.assertIn("presentation-contracts", WORKFLOW["jobs"]["notify-webhook"]["needs"])
         self.assertEqual(job["services"]["postgres"]["ports"], ["5432:5432"])
         self.assertEqual(job["services"]["postgres"]["env"]["POSTGRES_DB"], "presentation_ci")
+        self.assertIn("pg_isready -h 127.0.0.1 -U postgres -d presentation_ci",
+                      job["services"]["postgres"]["options"])
         self.assertEqual(job["env"]["DATABASE_URL"], job["env"]["TEST_DATABASE_URL"])
         checkout = next(step for step in job["steps"] if step.get("name") == "Checkout exact Cloud source")
         self.assertEqual(checkout["with"]["ref"], "${{ needs.image_source.outputs.sha }}")
