@@ -29,8 +29,23 @@ The three libraries also run Cargo doctests.
 | `appflowy-ai` | 600 | 8 | Service binary unit tests, including presentation/research handler contracts |
 | `gotrue` | 30 | 0 | Parameter validation and loopback transport/log redaction |
 
+The AI instruction revision follow-up raises AI's required database inventory from 8 to 18.
+Its production `src/tool/update_user_instructions/persistence.rs` reference to
+`af_user_instructions_revision_seq` selects ten exact PostgreSQL/Redis component cases. Older
+sources keep the original eight database cases and one external-provider case. Removing or
+renaming any required test still fails discovery; no instruction case is exempted or counted
+as executed from an ignored result.
+
+These cases also have a native source owner in Cloud Premium's
+`.github/workflows/recovery-components.yml`, **Instruction ordering across real PostgreSQL and
+Redis**. That workflow is path-filtered. This package lane executes the same ten bodies with
+`--exact --ignored`, even when a source PR does not trigger the native owner. They cover delayed
+enqueue, stale flushers, direct profile edits and clears, legacy payload migration, queued merge
+ordering, row-lock revision ordering, explicit versus omitted profile fields, and preserving
+the member's account name on the first AI edit.
+
 The presentation admin/paywall/metrics follow-up raises Cloud-AI's database inventory to 77
-(118 across the three database-backed packages). Its production `read_policy.rs` module selects
+(118 total before the instruction and layout follow-ups). Its production `read_policy.rs` module selects
 the updated inventory: seven added contracts and the renamed admin workspace-identity contract.
 This keeps older main/PR revisions on their original required 70 cases. Selection never depends
 on which tests happen to be discovered, so deleting a required follow-up test still fails CI.
@@ -41,6 +56,8 @@ The production `reuse.rs` call to `validate_generated_template_layouts` requires
 contract, `template_reuse_skips_historical_results_without_layout_bindings`, for 78 Cloud-AI cases
 when both follow-ups apply. The optional `when_contains` source marker preserves older revisions
 whose `reuse.rs` already exists without this validation, while still rejecting a deleted test body.
+With all current source markers present, the three packages require 129 database cases: 78 Cloud-AI,
+33 Presentation and 18 AI.
 
 The exact ignored names are in
 [`presentation_test_inventory.json`](../.github/scripts/presentation_test_inventory.json).
@@ -64,10 +81,18 @@ do not prove a running Billing or Gateway deployment.
 
 Each job owns an empty `pgvector/pgvector:pg16` service at `127.0.0.1:5432/presentation_ci`.
 `DATABASE_URL`, `APPFLOWY_PRESENTATION_TEST_DATABASE_URL` and `TEST_DATABASE_URL` explicitly target
-it, with a create-database role. SQLx and schema fixtures create their own test namespaces. No
+it, with a create-database role. Readiness checks TCP, avoiding the temporary Unix-socket server
+used during PostgreSQL initialization. SQLx and schema fixtures create their own test namespaces. No
 application Compose stack or seeded/developer database is reused. `redis-server` is installed
 for source-owned loopback fixtures. `ffmpeg`, `ffprobe` and `pdftoppm` are installed, version-checked
 and supplied through explicit test executable variables before the two media bodies execute.
+
+The `appflowy-ai` package also owns a health-checked Redis 7 service on a dynamically mapped
+loopback port. `TEST_REDIS_URL` points only to that service; its 128 MiB `noeviction` policy sits
+inside a 256 MiB container limit. Setup verifies Redis responds before execution. Instruction
+cases create unique PostgreSQL schemas and Redis key prefixes and clean up their own state.
+The setup step resolves the mapped port and exports the verified URL through `GITHUB_ENV`;
+GitHub does not expose `job.services` in job-level environment expressions.
 
 `require_tests` rejects missing required names or insufficient ordinary discovery. New ignored
 tests fail until their prerequisite owner is reviewed. Every executed target must report exactly
@@ -177,6 +202,14 @@ The commercial workflow runs `commercial_test::presentation_test::` against its 
 Cloud and AI Docker images, each built with its own `self-host-af` feature. The test binary's
 `commercial-ci` feature does not choose server
 policy: each case first checks `/api/server-info` reports a self-hosted deployment.
+
+The shared commercial Cloud test image also enables `ci-test` for the SCIM realtime completion
+audit. It retains `self-host-af`, `commercial-ci` and `test-mailer`; the other service images keep
+their existing features. This instrumentation does not select deployment policy or bypass licensing
+or authorization. The existing `/ws/debug/realtime-io-audit` endpoint requires authentication,
+workspace access and the test-debug runtime flag already enabled in the CI Compose fixture.
+SCIM tests use it to wait for submitted writes to finish before checking that rejected writes
+left the stream and content unchanged. A missing socket response alone is not evidence of rejection.
 
 The dedicated runner requires all four named cases to be discovered and executed, rejects ignored
 bodies and zero-pass summaries, and excludes this module from the later generic commercial run.

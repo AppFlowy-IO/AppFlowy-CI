@@ -167,6 +167,25 @@
     "acceptance": [],
     "external": [
       "image::open_ai_image::tests::test_official_image_generation"
+    ],
+    "source_updates": [
+      {
+        "when_file": "src/tool/update_user_instructions/persistence.rs",
+        "when_contains": "af_user_instructions_revision_seq",
+        "remove_database": [],
+        "database": [
+          "tool::update_user_instructions::component_tests::ai_merge_includes_a_profile_edit_that_allocated_first_but_commits_later",
+          "tool::update_user_instructions::component_tests::delayed_enqueue_cannot_replace_a_newer_pending_payload",
+          "tool::update_user_instructions::component_tests::direct_fallback_and_explicit_profile_clear_fence_queued_writes",
+          "tool::update_user_instructions::component_tests::direct_profile_revision_is_allocated_after_the_conflicting_row_lock",
+          "tool::update_user_instructions::component_tests::first_ai_write_keeps_the_members_account_name",
+          "tool::update_user_instructions::component_tests::legacy_payload_is_preserved_once_and_cannot_undo_new_profile_edits",
+          "tool::update_user_instructions::component_tests::new_ai_edit_after_profile_clear_ignores_a_stale_queued_merge_base",
+          "tool::update_user_instructions::component_tests::profile_api_distinguishes_omitted_instructions_from_an_explicit_same_value",
+          "tool::update_user_instructions::component_tests::queued_merge_retries_on_top_of_a_newer_pending_value",
+          "tool::update_user_instructions::component_tests::stale_flusher_after_new_ack_cannot_restore_old_instructions"
+        ]
+      }
     ]
   },
   "gotrue": {

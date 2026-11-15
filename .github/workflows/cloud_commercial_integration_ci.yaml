@@ -68,7 +68,7 @@ jobs:
             --parallel \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg PROFILE=debug \
-            --build-arg FEATURES="self-host-af, commercial-ci, test-mailer" \
+            --build-arg FEATURES="self-host-af, commercial-ci, test-mailer, ci-test" \
             appflowy_cloud
           # Each writer owns its deployment feature; a shared-crate feature cannot select it.
           export APPFLOWY_WORKER_VERSION=latest APPFLOWY_SEARCH_VERSION=latest APPFLOWY_MCP_VERSION=latest APPFLOWY_AI_VERSION=latest
