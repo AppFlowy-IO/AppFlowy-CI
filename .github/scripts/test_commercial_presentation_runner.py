@@ -52,7 +52,7 @@ class CommercialPresentationTest(unittest.TestCase):
         repository = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((repository / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())
         builds = "\n".join(step.get("run", "") for step in workflow["jobs"]["setup"]["steps"])
-        self.assertIn('FEATURES="self-host-af, commercial-ci, test-mailer"', builds)
+        self.assertIn('FEATURES="self-host-af, commercial-ci, test-mailer, ci-test"', builds)
         self.assertIn("--build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp ai", builds)
         self.assertIn("appflowy_mcp appflowy_ai; do", builds)
         steps = workflow["jobs"]["test"]["steps"]

@@ -203,6 +203,14 @@ Cloud and AI Docker images, each built with its own `self-host-af` feature. The 
 `commercial-ci` feature does not choose server
 policy: each case first checks `/api/server-info` reports a self-hosted deployment.
 
+The shared commercial Cloud test image also enables `ci-test` for the SCIM realtime completion
+audit. It retains `self-host-af`, `commercial-ci` and `test-mailer`; the other service images keep
+their existing features. This instrumentation does not select deployment policy or bypass licensing
+or authorization. The existing `/ws/debug/realtime-io-audit` endpoint requires authentication,
+workspace access and the test-debug runtime flag already enabled in the CI Compose fixture.
+SCIM tests use it to wait for submitted writes to finish before checking that rejected writes
+left the stream and content unchanged. A missing socket response alone is not evidence of rejection.
+
 The dedicated runner requires all four named cases to be discovered and executed, rejects ignored
 bodies and zero-pass summaries, and excludes this module from the later generic commercial run.
 Captured Cargo stdout is printed before its exit status is checked, so a failing command retains
