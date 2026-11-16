@@ -83,6 +83,66 @@ fn conditional_case() {}
         text = "\n".join("2026-11-12T01:00:00Z " + line for line in text.splitlines())
         self.assertEqual(audit.executions(text, SHA)[0], {"tests::measured": "ok"})
 
+    @unittest.skipUnless(shutil.which("rustc"), "requires Rust for real libtest output")
+    def test_real_should_panic_case_and_child_test_process_keep_their_binary_credited(self):
+        # One `#[should_panic]` case or one test that re-runs its own binary used to make the
+        # audit discard every case of that test binary.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "cases.rs"
+            source.write_text('''#[test]
+fn before() {}
+#[test]
+#[should_panic(expected = "boom")]
+fn rejects() { panic!("boom") }
+#[test]
+fn spawns() {
+    if std::env::var("AUDIT_CHILD").is_ok() { return; }
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "spawns", "--nocapture"]).env("AUDIT_CHILD", "1").status().unwrap();
+    assert!(status.success());
+}
+''')
+            binary = root / "cases"
+            subprocess.run(["rustc", "--test", str(source), "-o", str(binary)], check=True,
+                           capture_output=True, timeout=30)
+            result = subprocess.run([str(binary), "--test-threads=1", "--nocapture"], text=True,
+                                    capture_output=True, check=True, timeout=30)
+            self.assertIn("running 1 test", result.stdout, "the child prints its own libtest segment")
+            observed, issues = audit.executions("AF_TEST_SOURCE_SHA=" + SHA + "\n" + result.stdout, SHA)
+            self.assertEqual(observed, {"before": "ok", "rejects": "ok", "spawns": "ok"})
+            self.assertEqual(issues, [])
+
+    def test_should_panic_case_counts_toward_its_segment(self):
+        text = log({"tests::passed": "ok", "tests::rejects_zero": "ok"}).replace(
+            "test tests::rejects_zero ...", "test tests::rejects_zero - should panic ...")
+        records, issues = audit.executions(text, SHA)
+        self.assertEqual(records, {"tests::passed": "ok", "tests::rejects_zero": "ok"})
+        self.assertEqual(issues, [])
+
+    def test_child_test_process_output_does_not_discard_the_parent_segment(self):
+        child = ("running 1 test\ntest tests::spawns ... ok\n"
+                 "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out;\n")
+        text = log({"tests::before": "ok", "tests::spawns": "ok", "tests::after": "ok"}).replace(
+            "test tests::spawns ... ok\n", "test tests::spawns ... \n" + child + child + "ok\n")
+        records, issues = audit.executions(text, SHA)
+        self.assertEqual(records, {"tests::before": "ok", "tests::spawns": "ok", "tests::after": "ok"})
+        self.assertEqual(issues, [])
+
+    def test_unfinished_segment_stays_uncredited_when_another_binary_follows(self):
+        aborted = log({"tests::lost": "ok"}).split("test result:")[0]
+        records, issues = audit.executions(aborted + log({"tests::kept": "ok"}), SHA)
+        self.assertEqual(records, {"tests::kept": "ok"})
+        self.assertEqual(issues, ["Incomplete libtest segment"])
+
+    def test_failed_child_summary_cannot_close_the_parent_as_passed(self):
+        # The child aborts before its summary, so the parent's summary meets the child's cases.
+        text = log({"tests::before": "ok", "tests::spawns": "ok"}).replace(
+            "test tests::spawns ... ok\n", "test tests::spawns ... \nrunning 1 test\nok\n")
+        records, issues = audit.executions(text, SHA)
+        self.assertEqual(records, {})
+        self.assertIn("Libtest summary did not match parsed case outcomes", issues)
+
     def test_changed_inventory_ignores_helpers_and_notifies_on_ignored_or_missing_bodies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
