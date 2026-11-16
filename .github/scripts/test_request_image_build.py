@@ -246,12 +246,236 @@ class RequestTests(unittest.TestCase):
                                     request=self.github.request)
         self.assertFalse(self.github.calls)
 
+    def fail_observations(self, errors):
+        original = self.github.request
+        pending = iter(errors)
+
+        def request(method, path, payload=None):
+            if method == "GET" and path.endswith("/runs/42"):
+                error = next(pending, None)
+                if error is not None:
+                    self.github.calls.append((method, path, payload))
+                    raise error
+            return original(method, path, payload)
+        self.github.request = request
+
+    def test_primary_limit_waits_until_reset_without_cancel_or_redispatch(self):
+        self.fail_observations([build.GitHubAPIError("GET", "run", status=403, headers={
+            "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1300",
+        }, message="API rate limit exceeded")])
+        self.assertEqual(self.request(wall_time=lambda: 1000 + self.github.elapsed), 42)
+        self.assertEqual(self.github.elapsed, 301)
+        self.assertEqual(len(self.github.writes), 1)
+
+    def test_secondary_limit_and_429_honor_retry_after_without_cancel(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                self.github = FakeGitHub()
+                self.fail_observations([build.GitHubAPIError("GET", "run", status=status,
+                    headers={"retry-after": "75"}, message="secondary rate limit")])
+                self.assertEqual(self.request(), 42)
+                self.assertEqual(self.github.elapsed, 90)
+                self.assertEqual(len(self.github.writes), 1)
+
+    def test_secondary_limit_without_hint_uses_bounded_exponential_wait(self):
+        self.fail_observations([build.GitHubAPIError("GET", "run", status=429)] * 2)
+        self.assertEqual(self.request(), 42)
+        self.assertEqual(self.github.elapsed, 195)
+        self.assertEqual(len(self.github.writes), 1)
+
+    def test_network_and_server_failures_retry_reads_only(self):
+        self.fail_observations([
+            build.GitHubAPIError("GET", "run", transport=True),
+            build.GitHubAPIError("GET", "run", status=503),
+        ])
+        self.assertEqual(self.request(), 42)
+        self.assertEqual(self.github.elapsed, 21)
+        self.assertEqual(len(self.github.writes), 1)
+
+    def test_permanent_auth_and_missing_private_run_fail_without_retry_or_cancel(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                self.github = FakeGitHub()
+                self.fail_observations([build.GitHubAPIError("GET", "run", status=status,
+                    message="Resource not accessible")])
+                with self.assertRaises(build.GitHubAPIError):
+                    self.request()
+                self.assertEqual(self.github.elapsed, 15)
+                self.assertEqual(len(self.github.writes), 1)
+                self.assertFalse(self.output.exists())
+
+    def test_exhausted_observation_retries_preserve_active_matched_build_for_reuse(self):
+        self.fail_observations([build.GitHubAPIError("GET", "run", status=503)] * 4)
+        with self.assertRaises(build.ObservationUnavailable):
+            self.request()
+        self.assertEqual(self.github.elapsed, 29)
+        self.assertEqual(len(self.github.writes), 1)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.request(), 42)
+        self.assertEqual(len(self.github.writes), 1, "reuse must not redispatch or cancel")
+
+    def test_rate_reset_beyond_deadline_does_not_poll_early_or_cancel(self):
+        self.fail_observations([build.GitHubAPIError("GET", "run", status=403, headers={
+            "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1600",
+        })])
+        with self.assertRaises(build.ObservationUnavailable):
+            self.request(timeout=90, wall_time=lambda: 1000 + self.github.elapsed)
+        self.assertEqual(self.github.elapsed, 90)
+        polls = [path for method, path, _ in self.github.calls
+                 if method == "GET" and path.endswith("/runs/42")]
+        self.assertEqual(len(polls), 1)
+        self.assertEqual(len(self.github.writes), 1)
+        self.assertFalse(self.output.exists())
+
+    def test_ambiguous_dispatch_leaves_correlated_build_and_is_never_repeated(self):
+        original = self.github.request
+        def request(method, path, payload=None):
+            result = original(method, path, payload)
+            if path.endswith("/dispatches"):
+                raise build.GitHubAPIError(method, path, transport=True)
+            return result
+        self.github.request = request
+        with self.assertRaises(build.GitHubAPIError):
+            self.request()
+        self.assertEqual(len(self.github.writes), 1)
+        self.assertEqual(self.request(), 42)
+        self.assertEqual(len(self.github.writes), 1)
+
+    def test_unclassified_observation_failure_does_not_cancel_an_active_build(self):
+        self.fail_observations([RuntimeError("cannot observe private run")])
+        with self.assertRaisesRegex(RuntimeError, "cannot observe"):
+            self.request()
+        self.assertEqual(len(self.github.writes), 1, "read failure cannot authorize cancellation")
+        self.assertFalse(self.output.exists())
+
+    def test_changed_poll_identity_cancels_only_original_correlated_run(self):
+        original = self.github.request
+        def request(method, path, payload=None):
+            result = original(method, path, payload)
+            if path.endswith("/runs/42"):
+                result = {**result, "id": 999, "display_title": "unrelated"}
+            return result
+        self.github.request = request
+        with self.assertRaises(build.BuildProvenanceError):
+            self.request()
+        self.assertEqual(self.github.writes[-1][:2], ("POST", f"{build.API_ROOT}/runs/42/cancel"))
+        self.assertFalse(self.output.exists())
+
+    def test_transient_artifact_read_preserves_exact_source_artifact_validation(self):
+        original = self.github.request
+        pending = True
+        def request(method, path, payload=None):
+            nonlocal pending
+            if "/artifacts?" in path and pending:
+                pending = False
+                self.github.calls.append((method, path, payload))
+                raise build.GitHubAPIError(method, path, status=502)
+            return original(method, path, payload)
+        self.github.request = request
+        self.assertEqual(self.request(), 42)
+        self.assertEqual(len(self.github.writes), 1)
+
     def test_ambiguous_dispatch_is_not_retried(self):
         with patch.object(build.subprocess, "run",
                           side_effect=subprocess.TimeoutExpired("gh", 30)) as run:
             with self.assertRaises(RuntimeError):
                 build.api("POST", "example/dispatches", {"ref": "main"})
             self.assertEqual(run.call_count, 1)
+
+
+class ApiTests(unittest.TestCase):
+    def response(self, status, body, headers=None, stderr=""):
+        rendered = "\r\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+        return subprocess.CompletedProcess([], 0 if status < 400 else 1,
+            f"HTTP/2.0 {status} Response\r\n{rendered}\r\n\r\n" + body, stderr)
+
+    def test_error_preserves_only_safe_bounded_evidence(self):
+        response = self.response(403, '{"message":"secondary rate limit secret-token"}', {
+            "Retry-After": "65", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1234",
+            "X-GitHub-Request-Id": "trace-123", "Authorization": "Bearer secret-token",
+            "Set-Cookie": "private-cookie",
+        })
+        with patch.dict(os.environ, {"GH_TOKEN": "secret-token"}), \
+                patch.object(build.subprocess, "run", return_value=response) as run:
+            with self.assertRaises(build.GitHubAPIError) as failure:
+                build.api_once("GET", "example/run")
+        error = failure.exception
+        self.assertEqual(error.status, 403)
+        self.assertTrue(error.rate_limited)
+        self.assertEqual(error.headers["x-github-request-id"], "trace-123")
+        self.assertIn("[redacted]", str(error))
+        self.assertNotIn("secret-token", str(error))
+        self.assertNotIn("private-cookie", str(error))
+        self.assertNotIn("authorization", error.headers)
+        self.assertEqual(run.call_count, 1)
+
+    def test_success_and_empty_mutation_response_keep_existing_json_contract(self):
+        for status, body, expected in ((200, '{"id":42}', {"id": 42}), (204, "", None)):
+            with self.subTest(status=status), patch.object(build.subprocess, "run",
+                    return_value=self.response(status, body)):
+                self.assertEqual(build.api_once("GET" if status == 200 else "POST", "example"), expected)
+
+    def test_non_http_network_failure_is_retryable_but_cli_auth_failure_is_not(self):
+        for stderr, transient in (("dial tcp: connection reset by peer", True),
+                                  ("gh auth login required", False)):
+            with self.subTest(stderr=stderr), patch.object(build.subprocess, "run",
+                    return_value=subprocess.CompletedProcess([], 1, "", stderr)):
+                with self.assertRaises(build.GitHubAPIError) as failure:
+                    build.api_once("GET", "example")
+                self.assertEqual(failure.exception.retryable, transient)
+
+    def test_missing_status_or_malformed_json_is_not_silently_retried(self):
+        for response in (subprocess.CompletedProcess([], 0, '{"id":42}', ""),
+                         self.response(200, 'not-json')):
+            with self.subTest(response=response), patch.object(build.subprocess, "run", return_value=response):
+                with self.assertRaises(build.GitHubAPIError) as failure:
+                    build.api_once("GET", "example")
+                self.assertFalse(failure.exception.retryable)
+
+    def test_process_timeout_uses_remaining_request_budget(self):
+        elapsed = [0]
+        def run(_command, **kwargs):
+            self.assertEqual(kwargs["timeout"], 1.5)
+            elapsed[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired("gh", kwargs["timeout"])
+        with patch.object(build.subprocess, "run", side_effect=run) as process:
+            with self.assertRaises(build.ObservationUnavailable):
+                build.read_with_retry(None, "example", 1.5, lambda delay: elapsed.__setitem__(0, elapsed[0]+delay),
+                                      lambda: elapsed[0], lambda: 1000)
+            self.assertEqual(process.call_count, 1)
+        self.assertEqual(elapsed[0], 1.5)
+
+    def test_positive_read_completing_after_deadline_cannot_start_tests(self):
+        elapsed = [0]
+        def request(*_args):
+            elapsed[0] = 2
+            return {"status": "completed", "conclusion": "success"}
+        with self.assertRaises(build.ObservationUnavailable):
+            build.read_with_retry(request, "example", 1, lambda delay: None,
+                                  lambda: elapsed[0], lambda: 1000)
+
+    def test_known_transient_statuses_and_permanent_denials_are_distinguished(self):
+        for status, expected in ((401, False), (403, False), (404, False), (429, True),
+                                 (500, True), (502, True), (503, True), (504, True)):
+            self.assertEqual(build.GitHubAPIError("GET", "example", status=status).retryable, expected)
+
+    def test_artifact_reader_retains_three_bounded_transient_attempts(self):
+        elapsed = [0]
+        def wait(delay):
+            elapsed[0] += delay
+        with patch.object(build, "api_once", side_effect=build.GitHubAPIError("GET", "x", status=503)) as call, \
+                patch.object(build.time, "monotonic", side_effect=lambda: elapsed[0]), \
+                patch.object(build.time, "sleep", side_effect=wait):
+            with self.assertRaises(build.ObservationUnavailable):
+                build.api("GET", "example")
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(elapsed[0], 6)
+
+    def test_both_rate_headers_require_the_later_deadline(self):
+        error = build.GitHubAPIError("GET", "example", status=429, headers={
+            "retry-after": "10", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1200",
+        })
+        self.assertEqual(error.retry_delay(0, 1000), 201)
 
 
 if __name__ == "__main__":

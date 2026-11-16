@@ -113,7 +113,19 @@ Merge the Cloud Premium builder's `ci_tools_sha` support before enabling this ca
 
 Every integration run uses the private ARM64 self-hosted build. The workflow dispatches one private
 build and waits up to 330 minutes, reporting progress about once per minute. It links that build in
-its job summary and attempts to cancel only that build if interrupted. If no self-hosted runner is
+its job summary. Status/discovery/artifact reads receive at most four attempts within that original
+wait budget. Rate limits honor `Retry-After` and primary-limit reset headers; secondary limits without
+a hint wait at least a minute, while transient network/5xx failures use bounded exponential backoff.
+Authentication/permission failures and malformed responses fail promptly. Diagnostics include only
+the HTTP status, a bounded redacted message, request ID and rate-limit headers.
+The delays follow [GitHub rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
+A failed observation never cancels a queued/running private build or dispatches another one. An
+ambiguous dispatch is also never repeated. Reinvoking the same exact request ID/source can reuse
+its correlated build; this is not permission to reuse another run attempt's artifacts. Explicit
+caller cancellation, the overall healthy-wait timeout, or a provenance mismatch still attempts to
+cancel only the correlated build. Exhausted API retries fail the waiter without publishing test
+outputs; an active builder can require later explicit recovery. If no self-hosted runner is
 available, the build remains queued or fails; it never silently moves compilation to a GitHub-hosted
 runner. The integration test matrix and its package-only Rust lanes still run on GitHub-hosted
 runners after the private images and shared Cloud test binaries are ready.
