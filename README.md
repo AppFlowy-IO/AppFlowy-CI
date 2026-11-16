@@ -29,6 +29,8 @@ checkout or an API-verified GitHub PR test merge whose second parent is the requ
 Private workflow completion dispatches let the audit settle when those jobs finish last.
 Logs from another source, compilation
 output, incomplete/count-mismatched segments and ignored cases cannot establish execution.
+A `#[should_panic]` case and the libtest output of a child process that a test starts from its
+own binary are ordinary output; the segment that contains them stays creditable.
 
 The audit publishes `CI test execution audit` on the exact private head. It remains pending while
 related workflows run, then reports missing/failed/unverified cases as a failed status with job

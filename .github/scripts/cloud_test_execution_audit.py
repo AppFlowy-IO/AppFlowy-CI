@@ -160,36 +160,42 @@ def executions(log, sha):
     markers = set(re.findall(r"AF_TEST_SOURCE_SHA=([a-f0-9]{40})", text))
     if markers != {sha}:
         return {}, ["Missing or mixed source attestation"]
-    observed, current, pending = {}, None, None
-    issues = []
+    observed, issues = {}, []
+    # A test can run its own binary as a child process, and the child's libtest output lands
+    # inside the parent's segment. Segments therefore nest: a summary closes the innermost one.
+    segments = []
     for raw in text.splitlines():
         line = re.sub(r"^\d{4}-\d\d-\d\dT\S+\s+", "", raw).strip()
         if re.fullmatch(r"running \d+ tests?", line):
-            current, pending = {}, None
-        if current is None:
+            segments.append({"cases": {}, "pending": None})
             continue
-        match = re.match(r"test ([A-Za-z_0-9:]+) \.\.\.\s*(ok|FAILED|ignored)?", line)
+        if not segments:
+            continue
+        segment = segments[-1]
+        # libtest reports a `#[should_panic]` case as `test name - should panic ... ok`.
+        match = re.match(r"test ([A-Za-z_0-9:]+)(?: - should panic)? \.\.\.\s*(ok|FAILED|ignored)?", line)
         if match:
-            pending = match[1]
+            segment["pending"] = match[1]
             if match[2]:
-                current[pending] = match[2]
-                pending = None
-        elif pending and line in {"ok", "FAILED", "ignored"}:
-            current[pending] = line
-            pending = None
+                segment["cases"][match[1]] = match[2]
+                segment["pending"] = None
+        elif segment["pending"] and line in {"ok", "FAILED", "ignored"}:
+            segment["cases"][segment["pending"]] = line
+            segment["pending"] = None
         summary = re.match(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", line)
         if summary:
+            cases = segments.pop()["cases"]
             expected = dict(zip(("ok", "FAILED", "ignored"), map(int, summary.groups())))
-            actual = Counter(current.values())
+            actual = Counter(cases.values())
             if all(actual[name] == count for name, count in expected.items()):
-                for name, state in current.items():
+                for name, state in cases.items():
                     # A later ignored delivery never erases an actual execution of the same test.
                     if state != "ignored" or name not in observed:
                         observed[name] = state
             else:
                 issues.append("Libtest summary did not match parsed case outcomes")
-            current, pending = None, None
-    if current:
+    # A segment that never reached its summary, such as an aborted test binary, is not credited.
+    if any(segment["cases"] for segment in segments):
         issues.append("Incomplete libtest segment")
     return observed, issues
 
