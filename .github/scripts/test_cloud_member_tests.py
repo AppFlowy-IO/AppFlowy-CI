@@ -179,14 +179,18 @@ sys.exit(int(os.environ["TEST_EXIT"]))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("--no-run", result.stdout)
 
-    def test_workflow_prepares_only_members_outside_the_unchanged_test_deadline(self):
+    def test_workflow_bounds_member_preparation_and_execution_without_changing_other_lanes(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["test"]
         lanes = job["strategy"]["matrix"]["include"]
         member = next(lane for lane in lanes
                       if lane["test_service"] == "appflowy_cloud_member_packages")
-        self.assertEqual(member["timeout_minutes"], 105)
+        self.assertEqual(member["timeout_minutes"], 145)
+        self.assertEqual(member["test_timeout_minutes"], 90)
         self.assertEqual([lane["test_service"] for lane in lanes
-                          if lane.get("timeout_minutes") == 105], [member["test_service"]])
+                          if "test_timeout_minutes" in lane], [member["test_service"]])
+        for lane in lanes:
+            if lane != member:
+                self.assertEqual(lane.get("test_timeout_minutes", 50), 50)
         steps = job["steps"]
         prepare = next(step for step in steps
                        if step.get("name") == "Prepare shared library test binaries")
@@ -194,7 +198,9 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         self.assertEqual(prepare["if"], "matrix.test_service == 'appflowy_cloud_member_packages'")
         self.assertEqual(prepare["timeout-minutes"], 45)
         self.assertIn("bash ci-tools/.github/scripts/cloud_member_tests.sh prepare", prepare["run"])
-        self.assertEqual(run["timeout-minutes"], 50)
+        self.assertEqual(run["timeout-minutes"], "${{ matrix.test_timeout_minutes || 50 }}")
+        self.assertGreaterEqual(member["timeout_minutes"],
+                                prepare["timeout-minutes"] + member["test_timeout_minutes"] + 10)
         self.assertIn("bash ci-tools/.github/scripts/cloud_member_tests.sh run", run["run"])
         self.assertLess(steps.index(prepare), steps.index(run))
         self.assertEqual(job["timeout-minutes"], "${{ matrix.timeout_minutes || 60 }}")

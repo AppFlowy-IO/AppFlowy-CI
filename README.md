@@ -204,7 +204,7 @@ addresses partial downloads that previously reported success and failed later wi
 failures are never retried by this handoff. A missing or mismatched archive fails the job.
 The final account-deletion script keeps its source-owned guard and uses the same precompiled binary.
 The SQL persistence topic has a 90-minute job budget for artifact transfer, setup and cleanup;
-its test execution still has the same 50-minute deadline as the other topics.
+its test execution retains the default 50-minute deadline.
 Worker, Search and workspace-member lanes compile their different package selections as before.
 The configuration job also runs the source-owned AI web-search fixture tests when that test file
 exists; older Cloud revisions remain supported, while present fixture failures fail the job. The
@@ -241,12 +241,17 @@ or unfiltered test/doc-test coverage. Each feature graph runs once and owns a se
 these member binaries compile on their runner and do not use the root Cloud binary archive.
 The hosted Shared libraries lane has a separate 45-minute preparation step for its ordinary and
 ignored library inventories, required coverage checks, and a full-target `cargo test --no-run`.
-Its unchanged, unfiltered Cargo execution (including doctests) then gets the existing 50-minute
-deadline. One helper owns both phases' complete package selection, preserving Cargo feature
-unification. Only this lane has a 105-minute overall job budget for preparation, execution,
-setup and cleanup. In job `124147400988`, cold preparation took about 28 minutes and passing
-serial tests were still running when the combined step reached 50 minutes; this separation
-keeps that build cost out of the test deadline without reducing coverage.
+Its unfiltered Cargo execution (including doctests) has a separate 90-minute deadline. One helper
+owns both phases' complete package selection, preserving Cargo feature unification. Only this lane
+overrides the default 50-minute execution limit and has a 145-minute overall job budget for
+preparation, execution, setup and cleanup. In job `124147400988`, cold preparation took about
+28 minutes and passing serial tests were still running when the combined step reached 50 minutes;
+this separation keeps that build cost out of the test deadline without reducing coverage.
+In [job 133885618169](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44035005738/job/133885618169),
+Cloud `a448d2491` still reached the separate 50-minute execution limit while database-blob tests
+were progressing. Completed suites included 491 storage, 1,343 database and 744 page tests with
+no failures. The larger execution budget lets the remaining serial suites and doctests finish;
+it does not change individual test limits, selectors, ignored tests or other matrix lanes.
 Older Cloud revisions still run their full package suites without guards for missing features.
 The SQL fixtures use the job's PostgreSQL; MCP token fixtures use the isolated test Redis above.
 These native package tests use the same resolved Cloud SHA as that run's images and root tests.
