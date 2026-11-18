@@ -71,6 +71,20 @@ fi
 # Run this crate separately so its explicitly service-backed ignored fixtures execute once.
 outbound_contract=libs/appflowy-cloud-integrations/src/biz/automation_delivery.rs
 provider_tests=(cargo test --locked -p appflowy-cloud-integrations --lib)
+receipt_name=biz::automation_delivery::receipt_fixture::authenticated_rule_delivers_three_ordered_https_receipts
+receipt_source=libs/appflowy-cloud-integrations/src/biz/automation_delivery/receipt_fixture.rs
+receipt_runner=script/automation/test_outbound_receipts.py
+receipt_args=()
+if [[ -f "$receipt_source" || -f "$receipt_runner" ]]; then
+  # Only this fixture requires authenticated Cloud, S3, a temporary CA and three HTTPS receivers.
+  if ! grep -Fxq "TEST = \"$receipt_name\"" "$receipt_runner" ||
+     ! awk -v runner="$receipt_runner" '$1 == "run:" && $2 == "python3" && $3 == runner { found=1 } END { exit !found }' \
+       .github/workflows/swagger-api-tests.yml; then
+    echo "::error::The private provider-receipts workflow must own $receipt_name"
+    exit 1
+  fi
+  receipt_args=(--skip "$receipt_name")
+fi
 
 require_tests() {
   local prefix="$1" minimum="$2" inventory="$3" selected ignored
@@ -132,6 +146,17 @@ if [[ "$mode" == prepare ]]; then
 
   if [[ -f "$outbound_contract" ]]; then
     provider_inventory=$("${provider_tests[@]}" -- --list)
+    # Libtest --skip is a substring filter. Prove it removes exactly the one ignored case,
+    # and fail if a source still compiles that case without its separate owner.
+    receipt_matches=$(awk -v name="$receipt_name" 'index($0, name) && /: test$/' <<<"$provider_inventory")
+    if [[ ${#receipt_args[@]} -gt 0 || -n "$receipt_matches" ]]; then
+      receipt_ignored=$("${provider_tests[@]}" -- --exact "$receipt_name" --ignored --list)
+      if [[ ${#receipt_args[@]} -eq 0 || "$receipt_matches" != "$receipt_name: test" ]] ||
+         ! grep -Fxq "$receipt_name: test" <<<"$receipt_ignored"; then
+        echo "::error::The member exclusion must match exactly the separately owned ignored provider-receipt case"
+        exit 1
+      fi
+    fi
     for required in \
       biz::automation_delivery::tests::webhook_signing_keys_are_encrypted_rotatable_and_workspace_scoped \
       biz::automation_delivery::tests::smtp_accepts_plain_text_with_the_stable_delivery_id \
@@ -156,6 +181,6 @@ else
     # loopback Redis fixture, and receive provider traffic on their own loopback listeners.
     INTEGRATIONS_TEST_DATABASE_URL="${DATABASE_URL:?member PostgreSQL is required}" \
       INTEGRATIONS_TEST_REDIS_URL="${APPFLOWY_TEST_REDIS_URL:?member Redis is required}" \
-      "${provider_tests[@]}" -- --include-ignored --test-threads=1
+      "${provider_tests[@]}" -- --include-ignored "${receipt_args[@]}" --test-threads=1
   fi
 fi

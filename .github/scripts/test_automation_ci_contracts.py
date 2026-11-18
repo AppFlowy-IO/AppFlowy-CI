@@ -23,6 +23,15 @@ PROVIDERS = [
     "biz::integrations::native::runtime_tests::gmail_delivery_requires_the_owner_scope_and_verified_sender_identity",
 ]
 OUTBOUND = "libs/appflowy-cloud-integrations/src/biz/automation_delivery.rs"
+RECEIPT = "biz::automation_delivery::receipt_fixture::authenticated_rule_delivers_three_ordered_https_receipts"
+RECEIPT_RUNNER = "script/automation/test_outbound_receipts.py"
+RECEIPT_WORKFLOW = ".github/workflows/swagger-api-tests.yml"
+RECEIPT_SOURCES = {
+    OUTBOUND: "",
+    "libs/appflowy-cloud-integrations/src/biz/automation_delivery/receipt_fixture.rs": "",
+    RECEIPT_RUNNER: f'TEST = "{RECEIPT}"\n',
+    RECEIPT_WORKFLOW: f'run: python3 {RECEIPT_RUNNER} --output-dir "$RUNNER_TEMP"\n',
+}
 GATE_SOURCE = "tests/automation/feature_gate_test.rs"
 
 
@@ -30,17 +39,18 @@ class AutomationCiContracts(unittest.TestCase):
     def run_script(self, command, sources=(), names=(), environment=None):
         with tempfile.TemporaryDirectory() as directory:
             cwd = Path(directory)
-            for name in sources:
+            files = sources if isinstance(sources, dict) else dict.fromkeys(sources, "")
+            for name, content in files.items():
                 path = cwd / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.touch()
+                path.write_text(content)
             cargo = cwd / "cargo"
             cargo.write_text(f"#!{sys.executable}\n" + """import json, os, sys
 args = sys.argv[1:]
 with open('calls','a') as output:
     print(json.dumps([args,os.getenv('INTEGRATIONS_TEST_DATABASE_URL'),os.getenv('INTEGRATIONS_TEST_REDIS_URL')]),file=output)
 if '--list' in args:
-    print(os.environ['INVENTORY'])
+    print(os.environ.get('IGNORED_INVENTORY', os.environ['INVENTORY']) if '--ignored' in args else os.environ['INVENTORY'])
 elif '--include-ignored' in args or '--ignored' in args:
     sys.exit(int(os.environ.get('FIXTURE_EXIT','0')))
 """)
@@ -53,6 +63,34 @@ elif '--include-ignored' in args or '--ignored' in args:
             result = subprocess.run(["bash", *command], cwd=cwd, env=env, text=True, capture_output=True)
             calls = cwd / "calls"
             return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+    def test_member_run_excludes_only_the_registered_private_https_receipt(self):
+        names = [*PROVIDERS, RECEIPT]
+        prepared, calls = self.run_script([MEMBERS, "prepare"], RECEIPT_SOURCES, names)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        self.assertIn(["--", "--exact", RECEIPT, "--ignored", "--list"], [args[-5:] for args, _, _ in calls])
+        executed, calls = self.run_script([MEMBERS, "run"], RECEIPT_SOURCES, names)
+        self.assertEqual(executed.returncode, 0, executed.stdout + executed.stderr)
+        self.assertEqual(calls[-1], [
+            ["test", "--locked", "-p", "appflowy-cloud-integrations", "--lib", "--",
+             "--include-ignored", "--skip", RECEIPT, "--test-threads=1"],
+            "postgres://localhost/ci", "redis://127.0.0.1:42612",
+        ])
+
+    def test_member_exclusion_fails_closed_on_stale_ownership_or_selection(self):
+        names = [*PROVIDERS, RECEIPT]
+        for label, sources, inventory, env in [
+            ("missing owner", {OUTBOUND: ""}, names, {}),
+            ("wrong owner case", {**RECEIPT_SOURCES, RECEIPT_RUNNER: 'TEST = "other"'}, names, {}),
+            ("disconnected workflow", {**RECEIPT_SOURCES, RECEIPT_WORKFLOW: ""}, names, {}),
+            ("commented step", {**RECEIPT_SOURCES, RECEIPT_WORKFLOW: "# " + RECEIPT_SOURCES[RECEIPT_WORKFLOW]}, names, {}),
+            ("unregistered", RECEIPT_SOURCES, PROVIDERS, {}),
+            ("ordinary test", RECEIPT_SOURCES, names, {"IGNORED_INVENTORY": ""}),
+            ("substring collision", RECEIPT_SOURCES, [*names, RECEIPT + "_other"], {}),
+        ]:
+            with self.subTest(label=label):
+                result, _ = self.run_script([MEMBERS, "prepare"], sources, inventory, env)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
 
     def test_member_provider_inventory_and_service_backed_execution(self):
         prepared, calls = self.run_script([MEMBERS, "prepare"], [OUTBOUND], PROVIDERS)

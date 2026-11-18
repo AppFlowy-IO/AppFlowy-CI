@@ -151,7 +151,10 @@ the same; Cargo, rather than the shell, expands the package names.
 
 Cloud revisions that include outbound automation actions run the integrations crate in the member
 lane with its PostgreSQL and dedicated Redis fixtures. Its SMTP, Slack, Gmail and webhook tests use
-local receivers. The Databases lane selects all enabled `automation::` HTTP cases. The commercial
+local receivers. The authenticated three-receipt case runs in Cloud’s private provider-receipts
+workflow against its own Cloud, S3 and HTTPS receivers. The member guard verifies the exact
+registered case and its workflow owner before excluding it from the PostgreSQL/Redis run.
+The Databases lane selects all enabled `automation::` HTTP cases. The commercial
 self-host lane runs the exact disabled-route HTTP test once against a server started with
 `APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=false`. Older Cloud checkouts skip the corresponding tests
 when their sources are absent.
@@ -417,10 +420,10 @@ The dashboard job validates Prometheus queries and both CI Compose cache configu
 
 Cloud refs with `script/cache_test_phases.json` must advertise schema version 1 and exactly the
 `cache` and `permission` phases. CI runs them on separate runners with separate Cargo caches and
-the 180-minute limit per phase. The source runner owns each phase's selections and package
-feature graphs; this avoids the combined lane's observed two-hour compilation timeout without
-unifying Cargo features. Both matrix results feed the required `cache-contracts` result, and one
-failure does not cancel its sibling. Full-run completion within the bound still needs CI evidence.
+a 180-minute cache budget. Two cold permission builds were still compiling before their first
+assertions at 180 minutes, so the permission phase has a 300-minute budget. The source runner
+owns each phase's selections and package feature graphs. Both matrix results feed the required
+`cache-contracts` result, and one failure does not cancel its sibling. Full-run completion within the bound still needs CI evidence.
 Older refs without the manifest run their combined `all` gate once. An unsupported or incomplete
 manifest fails setup instead of skipping contracts or duplicating the full gate.
 
