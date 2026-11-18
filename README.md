@@ -233,6 +233,30 @@ including SCIM protocol, group-status SQL and workspace-bound MCP token regressi
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
 cases total), 11 default-feature group-status and 3 MCP token tests, with none ignored.
+When the Cloud revision has `libs/automation-feed/Cargo.toml`, the lane adds `-p automation-feed`
+and requires the detector's one-event race test and at least 4 `detector::race_tests::`. When it
+has `libs/automation-engine/Cargo.toml`, the lane adds `-p automation-engine` and requires at
+least 12 run-queue conformance tests (`automation::run_queue_tests::conformance::`, in
+`-p database`), 12 `dispatcher::tests::` and 10 `executor::race_tests::`, with none ignored.
+The lane also runs `appflowy-notification` and `appflowy-cloud-core`, and `appflowy-openapi` when
+the Cloud revision has `libs/appflowy-openapi/Cargo.toml` (`release/0.19.0` does not). No other
+lane runs the engine's tests in these crates, which cover the notification gate, routing and
+delivery worker, push text and the HTTP API contract, or most of their other tests: **Permission
+contracts** runs only about 30 named `appflowy-cloud-core` tests. Their ignored tests
+(measurements, and fixtures that need an owned PostgreSQL, Redis or MinIO) do not run in this
+lane. A guard counts the test paths that start with its prefix.
+`cargo test --list` prints no crate name, so a top-level module of the same name in another member
+crate would count too; none exists today. Each guard is gated on its crate, so older Cloud
+revisions still pass. The
+integration stack turns `APPFLOWY_DATABASE_AUTOMATIONS_ENABLED` on in place in "Replace values in
+.env", which runs in every lane after `deploy.env` is copied: `sed -i` rewrites the copied line
+to `true`, a `deploy.env` without the line (a Cloud revision from before the engine) gets one
+appended, and the step fails unless `.env` then defines the flag exactly once, as `true`. A
+second line would split the stack, because Compose reads a key's last line but dotenvy, which
+host-side tests load `.env` with, keeps its first. No later step may touch `.env` before Compose
+starts. `docker-compose-ci.yml` gives Worker 21 connections (16 plus the engine's 4-connection
+pool and its control connection) and 10 runs per automation per minute, which this workflow does
+not override.
 The separate **Directory self-host contracts** runner compiles and runs the directory status
 suite with `self-host-af`, requiring all 12 status tests including the exact admin-audit rollback
 case in its nonignored inventory. Moving that feature graph to its own runner keeps its compilation
@@ -266,7 +290,7 @@ The integration matrix has 16 jobs, with `max-parallel: 15`. Actions displays ea
 | Permissions and spaces | Private-space migration, space ACLs, permission enforcement and sharing |
 | Permissions and spaces 2 | Structured-space lifecycle, custom/PRD spaces, group permissions and supporting access suites |
 | Import and publishing | Document/Notion imports, page views and publishing |
-| Databases | Database tests, excluding the index test |
+| Databases | Database tests and automation user cases, excluding the index test |
 | Realtime collaboration | Collab integration tests |
 | AI and authentication | AI, GoTrue, OIDC and user APIs |
 | SQL persistence | SQL core, permissions, collab and workspace persistence |

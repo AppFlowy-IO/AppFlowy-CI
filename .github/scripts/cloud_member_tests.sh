@@ -31,6 +31,8 @@ member_packages=(
   -p collab
   -p collab-rt-entity
   -p appflowy-proto
+  -p appflowy-notification
+  -p appflowy-cloud-core
   -p appflowy-cloud-forms
   -p appflowy-cloud-workspace-support
   -p appflowy-cloud-workspace
@@ -51,6 +53,19 @@ automation_feed_crate=libs/automation-feed/Cargo.toml
 if [[ -f "$automation_feed_crate" ]]; then
   member_packages+=(-p automation-feed)
 fi
+# The database automation engine's crate, gated the same way.
+automation_engine_crate=libs/automation-engine/Cargo.toml
+if [[ -f "$automation_engine_crate" ]]; then
+  member_packages+=(-p automation-engine)
+fi
+# The public HTTP API contract's crate, gated the same way because release/0.19.0 predates it.
+# No other lane runs the engine PR's tests in it, appflowy-notification or appflowy-cloud-core
+# above, or most of their other tests: the Permission contracts job runs only about 30 named
+# appflowy-cloud-core tests.
+openapi_crate=libs/appflowy-openapi/Cargo.toml
+if [[ -f "$openapi_crate" ]]; then
+  member_packages+=(-p appflowy-openapi)
+fi
 
 require_tests() {
   local prefix="$1" minimum="$2" inventory="$3" selected ignored
@@ -70,13 +85,14 @@ require_tests() {
 
 if [[ "$mode" == prepare ]]; then
   echo '==> Preparing workspace member test inventories and binaries'
-  # Guard the SCIM/MCP contracts and the automation feed only when their
-  # sources exist, so this CI revision also supports older Cloud source refs.
-  # Use the same package selection for listing and execution to avoid
-  # recompiling a different feature graph just to count tests.
+  # Guard the SCIM/MCP contracts, the automation feed and the automation engine
+  # only when their sources exist, so this CI revision also supports older Cloud
+  # source refs. Use the same package selection for listing and execution to
+  # avoid recompiling a different feature graph just to count tests.
   scim_contract=libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs
   mcp_contract=libs/appflowy-mcp-core/src/workspace_token.rs
-  if [[ -f "$scim_contract" || -f "$mcp_contract" || -f "$automation_feed_crate" ]]; then
+  if [[ -f "$scim_contract" || -f "$mcp_contract" || -f "$automation_feed_crate" ||
+        -f "$automation_engine_crate" ]]; then
     test_inventory=$(mktemp -d)
     trap 'rm -rf "$test_inventory"' EXIT
     cargo test --locked "${member_packages[@]}" --lib \
@@ -96,6 +112,14 @@ if [[ "$mode" == prepare ]]; then
       # The feed's no-duplicate-event invariant and its pass/restore interleavings.
       require_tests 'detector::tests::racing_detectors_emit_one_event' 1 "$test_inventory"
       require_tests 'detector::race_tests::' 4 "$test_inventory"
+    fi
+    if [[ -f "$automation_engine_crate" ]]; then
+      # The engine's run-queue conformance kit, dispatcher and executor race suites. The
+      # conformance suite is in -p database, which every Cloud ref has, so it is gated on the
+      # engine crate too: otherwise it would fail every Cloud source that predates the engine.
+      require_tests 'automation::run_queue_tests::conformance::' 12 "$test_inventory"
+      require_tests 'dispatcher::tests::' 12 "$test_inventory"
+      require_tests 'executor::race_tests::' 10 "$test_inventory"
     fi
   else
     echo "==> Older Cloud source: running package tests without managed-user count guards"

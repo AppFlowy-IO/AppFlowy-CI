@@ -840,6 +840,25 @@ jobs:
           # Cloud, Worker, MCP and the automation tests read this one value: the tests wait two
           # intervals for a new watch to reach every process, 1 s instead of the default 10 s.
           echo 'APPFLOWY_AUTOMATION_FEED_WATCHED_REFRESH_MS=500' >> .env
+          # The automation engine's end-to-end cases need Cloud and Worker to run automations.
+          # deploy.env ships the flag off, and its value would override docker-compose-ci.yml's
+          # default, so turn it on in place: with a second line, Compose would read the last one
+          # but dotenvy (host-side tests) the first. Cloud sources from before the engine have no
+          # such line and do not read the flag, so append it only there. Do this after the copy,
+          # in a step every lane runs, and make any other .env change in this step too.
+          # docker-compose-ci.yml gives Worker the 21 connections the engine needs (16 +
+          # APPFLOWY_DATABASE_AUTOMATION_PG_CONNECTIONS + 1) and the 10 runs per automation per
+          # minute the rate-limit case counts on, under CI-only names: never set
+          # APPFLOWY_CI_WORKER_DATABASE_MAX_CONNECTIONS below that sum, or
+          # APPFLOWY_CI_DATABASE_AUTOMATION_RUNS_PER_MINUTE to anything but 10.
+          sed -i 's|^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=.*|APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true|' .env
+          grep -q '^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=' .env ||
+            echo 'APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true' >> .env
+          if [[ "$(grep -c '^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=' .env)" != 1 ]] ||
+            ! grep -qx 'APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true' .env; then
+            echo '::error::.env must define APPFLOWY_DATABASE_AUTOMATIONS_ENABLED once, as true'
+            exit 1
+          fi
 
           if [[ "$AI_ON_OLLAMA" == true ]]; then
             # Ollama, which "Point the AI at Ollama" configures, is this lane's only AI provider.

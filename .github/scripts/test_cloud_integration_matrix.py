@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -20,6 +21,73 @@ SCIM_GROUP_POLICY = "biz::directory::group::tests::scim_group_members_can_exceed
 SELF_HOST_STATUS_AUDIT = "biz::directory::status::tests::retry_audits_the_admin_and_rolls_back_when_required_audit_fails"
 FEED_ONE_EVENT = "detector::tests::racing_detectors_emit_one_event"
 GUARD_ERROR = "::error::Required regression coverage is missing or ignored"
+# The automation engine's member-lane guards (Cloud automation engine plan §12.5, H02):
+# fake-inventory suite -> (test path prefix, minimum count with none ignored).
+ENGINE_GUARDS = {
+  "conformance": ("automation::run_queue_tests::conformance::", 12),
+  "dispatcher": ("dispatcher::tests::", 12),
+  "executor_races": ("executor::race_tests::", 10),
+}
+ENGINE_MINIMUMS = {suite: minimum for suite, (_, minimum) in ENGINE_GUARDS.items()}
+# Fake-inventory suites whose test paths contain an engine guard's prefix without starting with
+# it, as a nested module of the same name would.
+ENGINE_DECOYS = {f"{suite}_decoy": f"lifecycle::{prefix}"
+                 for suite, (prefix, _) in ENGINE_GUARDS.items()}
+AUTOMATIONS_FLAG = "APPFLOWY_DATABASE_AUTOMATIONS_ENABLED"
+WORKER_BUDGET = "APPFLOWY_CI_WORKER_DATABASE_MAX_CONNECTIONS"
+WORKER_RATE = "APPFLOWY_CI_DATABASE_AUTOMATION_RUNS_PER_MINUTE"
+ENGINE_POOL = "APPFLOWY_DATABASE_AUTOMATION_PG_CONNECTIONS"
+# What docker-compose-ci.yml's ${NAME:-default} gives Worker when nothing sets these names.
+CI_COMPOSE_DEFAULTS = {WORKER_BUDGET: "21", ENGINE_POOL: "4", WORKER_RATE: "10"}
+# Worker's connections without the engine. With the flag on, the engine reserves its pool plus
+# one control connection on top (Cloud automation engine design §7.16).
+WORKER_BASE_CONNECTIONS = 16
+
+
+def selected_packages(command):
+  """The packages one recorded cargo call selects with `-p`."""
+  return [package for flag, package in zip(command, command[1:]) if flag == "-p"]
+
+
+def dotenv_entries(text):
+  """The plain `KEY=value` lines CI writes to .env, in order, as (key, value). Quoting and
+  inline comments are simplified."""
+  entries = []
+  for line in text.splitlines():
+    line = line.strip()
+    if line and not line.startswith("#") and "=" in line:
+      key, value = line.removeprefix("export ").split("=", 1)
+      entries.append((key.strip(), value.strip().strip("'\"")))
+  return entries
+
+
+def compose_dotenv(text):
+  """Resolves .env as Docker Compose does for interpolation: in order, so a key assigned twice
+  takes its last value (checked against `docker compose config`)."""
+  return dict(dotenv_entries(text))
+
+
+def dotenv_definitions(text, name):
+  """Every value .env gives `name`, in order. Compose interpolates with the last one, but
+  dotenvy, which host-side tests load .env with, keeps the first, so the two agree only on a
+  key that .env defines once."""
+  return [value for key, value in dotenv_entries(text) if key == name]
+
+
+def workflow_assignments(text, name):
+  """Every value the workflow assigns to `name`: `NAME=value` in scripts and .env lines, or
+  `NAME: value` in env mappings. Comment lines assign nothing and are skipped, and so is a
+  pattern anchored at a line's start (`^NAME=` in sed or grep), which finds a definition
+  instead of making one."""
+  code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+  return re.findall(rf"(?<!\^)\b{name}['\"]?\s*[=:]\s*['\"]?([^\s'\"|]*)", code)
+
+
+def step_commands(step):
+  """What a workflow step does: its script without comment lines, and its action inputs."""
+  script = "\n".join(line for line in step.get("run", "").splitlines()
+                     if not line.lstrip().startswith("#"))
+  return "\n".join([script, *(str(value) for value in (step.get("with") or {}).values())])
 
 
 def render_run_tests(lane):
@@ -113,6 +181,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
       "status": "biz::directory::status::tests::",
       "mcp": "workspace_token::tests::",
       "feed_races": "detector::race_tests::",
+      **{suite: prefix for suite, (prefix, _) in ENGINE_GUARDS.items()},
+      **ENGINE_DECOYS,
     }
     exact_names = {"group": SCIM_GROUP_POLICY, "feed_one_event": FEED_ONE_EVENT}
     counts = counts if counts is not None else {"scim": 51, "group": 1, "status": 11, "mcp": 3}
@@ -125,6 +195,8 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
         "scim": "libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs",
         "mcp": "libs/appflowy-mcp-core/src/workspace_token.rs",
         "automation_feed": "libs/automation-feed/Cargo.toml",
+        "automation_engine": "libs/automation-engine/Cargo.toml",
+        "openapi": "libs/appflowy-openapi/Cargo.toml",
       }.items():
         if contract in contracts:
           source = project / relative
@@ -298,6 +370,212 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
           self.assertNotEqual(result.returncode, 0)
           self.assertIn(f"{GUARD_ERROR}: {selector}", result.stdout)
           self.assertEqual(len(commands), 2, "Do not continue after a coverage guard fails")
+
+  def test_the_automation_engine_crate_runs_with_the_members_only_where_it_exists(self):
+    """T-OPS-035 (no guarantee id; H02, H51, DI-029).
+
+    With libs/automation-engine/Cargo.toml in the Cloud source, every cargo call of the member
+    lane selects -p automation-engine and the three engine guards run. Without it no call
+    selects the crate, no engine guard runs and the lane passes: the conformance suite is in
+    -p database, which every Cloud ref has, so an unconditional guard would fail every Cloud PR
+    whose source predates the engine.
+
+    The lane is also the only CI lane for the engine PR's tests in appflowy-notification,
+    appflowy-cloud-core and appflowy-openapi: the notification gate, routing and worker, the push
+    text and the OpenAPI contract (G-C1, G-C2, G-C3, G-C5, G-E26, G-A14). Every call selects the
+    first two, which every Cloud ref the lane supports has, and appflowy-openapi only where
+    libs/appflowy-openapi/Cargo.toml exists: release/0.19.0 predates that crate, and Cargo rejects
+    a -p that matches no package.
+    """
+    managed = {"scim": 51, "group": 1, "status": 11, "mcp": 3}
+    feed = {"feed_one_event": 1, "feed_races": 4}
+    for contracts, counts in [
+      (("scim", "mcp", "automation_feed", "automation_engine", "openapi"),
+       {**managed, **feed, **ENGINE_MINIMUMS}),
+      # The prepare step inventories a source whose only guarded contract is the engine.
+      (("automation_engine", "openapi"), ENGINE_MINIMUMS),
+    ]:
+      with self.subTest(contracts=contracts):
+        result, commands = self.run_member_packages(contracts=contracts, counts=counts)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(commands), 4, commands)
+        for command in commands:
+          self.assertIn("automation-engine", selected_packages(command), command)
+        for prefix, minimum in ENGINE_GUARDS.values():
+          self.assertIn(f"==> {prefix}: {minimum} selected, 0 ignored (minimum {minimum})",
+                        result.stdout)
+        self.assert_selects_the_engine_pr_crates(commands, openapi=True)
+    for contracts, counts in [
+      # Cloud main before the engine, which has the OpenAPI crate.
+      (("scim", "mcp", "automation_feed", "openapi"), {**managed, **feed}),
+      # An older Cloud ref with none of the guarded contracts and no OpenAPI crate.
+      ((), {}),
+    ]:
+      with self.subTest(contracts=contracts):
+        result, commands = self.run_member_packages(contracts=contracts, counts=counts)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(commands), 4 if contracts else 2, commands)
+        for command in commands:
+          self.assertNotIn("automation-engine", selected_packages(command), command)
+        for prefix, _ in ENGINE_GUARDS.values():
+          self.assertNotIn(f"==> {prefix}:", result.stdout)
+        self.assert_selects_the_engine_pr_crates(commands, openapi="openapi" in contracts)
+
+  def assert_selects_the_engine_pr_crates(self, commands, *, openapi):
+    """Every recorded cargo call selects appflowy-notification and appflowy-cloud-core, and
+    appflowy-openapi exactly when `openapi` is true."""
+    self.assertTrue(commands)
+    for command in commands:
+      packages = selected_packages(command)
+      self.assertIn("appflowy-notification", packages, command)
+      self.assertIn("appflowy-cloud-core", packages, command)
+      if openapi:
+        self.assertIn("appflowy-openapi", packages, command)
+      else:
+        self.assertNotIn("appflowy-openapi", packages, command)
+
+  def test_automation_engine_guards_reject_missing_or_ignored_cases(self):
+    """T-OPS-036 (no guarantee id; H02, H51).
+
+    Each engine guard stops the lane when its suite is missing or one test short, or has an
+    ignored test, whether at the minimum or above it: before the remaining targets are built
+    (`--no-run`) and before any test runs. Only the two inventory listings, which build the
+    members' library test binaries, come before it. A guarded prefix must have no ignored test,
+    which is why the engine's measurements stay outside every guarded module. A guard counts only
+    test paths that start with its prefix: decoys from a nested module of the same name neither
+    make up a short suite nor fail a full one. The exact minimums pass.
+    """
+    for suite, (prefix, minimum) in ENGINE_GUARDS.items():
+      for counts, ignored in [
+        ({suite: 0}, ()),
+        ({suite: minimum - 1}, ()),
+        ({suite: minimum}, (suite,)),
+        # A guard that counted only nonignored tests toward the minimum would pass this run.
+        ({suite: minimum + 1}, (suite,)),
+        ({suite: minimum - 1, f"{suite}_decoy": minimum}, ()),
+      ]:
+        with self.subTest(suite=suite, counts=counts, ignored=ignored):
+          result, commands = self.run_member_packages(
+            contracts=("automation_engine",), counts={**ENGINE_MINIMUMS, **counts},
+            ignored=ignored)
+          self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+          self.assertIn(f"{GUARD_ERROR}: {prefix}\n", result.stdout)
+          self.assertEqual(len(commands), 2, "Do not continue after a coverage guard fails")
+    # Exactly the minimums with nothing ignored, then beside one ignored decoy per suite.
+    for ignored in [(), tuple(ENGINE_DECOYS)]:
+      with self.subTest(ignored=ignored):
+        result, commands = self.run_member_packages(
+          contracts=("automation_engine",),
+          counts={**ENGINE_MINIMUMS, **dict.fromkeys(ignored, 1)}, ignored=ignored)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(commands), 4, commands)
+        for prefix, minimum in ENGINE_GUARDS.values():
+          self.assertIn(f"==> {prefix}: {minimum} selected, 0 ignored (minimum {minimum})",
+                        result.stdout)
+
+  def test_cloud_stack_enables_database_automations_after_copying_deploy_env(self):
+    """T-OPS-037 (no guarantee id; H48).
+
+    deploy.env ships the automations flag off. Running every step from the deploy.env copy
+    through "Replace values in .env" must leave .env with one definition of the flag, `true`, so
+    the automation end-to-end cases have a running engine: Compose interpolates a key that .env
+    defines twice with its last value, but dotenvy, which host-side tests load .env with, keeps
+    the first, so an appended second line would leave the two disagreeing. The steps turn the
+    flag on in place, append it only to a deploy.env without it (a Cloud source from before the
+    engine) and fail on a deploy.env that defines it twice. The test runs those steps on each of
+    the three deploy.env files for lanes with and without Ollama, so they and every step that sets
+    the flag must run in every lane (no `if:`), and no later step may touch .env before "Run
+    Docker-Compose" starts the stack.
+    docker-compose-ci.yml gives Worker the 21 connections the engine needs and 10 runs per
+    automation per minute through CI-only names. Neither the resolved .env nor any value the
+    workflow assigns may leave Worker fewer than 16 + APPFLOWY_DATABASE_AUTOMATION_PG_CONNECTIONS
+    + 1 connections, or set the rate to anything but the 10 that the end-to-end rate-limit case
+    counts on.
+    """
+    steps = self.job["steps"]
+    names = [step.get("name") for step in steps]
+    copy = names.index("Copy and rename deploy.env to .env")
+    replace = names.index("Replace values in .env")
+    compose = names.index("Run Docker-Compose")
+    self.assertIn("cp deploy.env .env", steps[copy]["run"].splitlines())
+    self.assertLess(copy, replace)
+    self.assertLess(replace, compose)
+    writers = [index for index, step in enumerate(steps)
+               if AUTOMATIONS_FLAG in step_commands(step)]
+    self.assertTrue(writers, f"No step sets {AUTOMATIONS_FLAG}")
+    self.assertGreater(min(writers), copy, "The flag must be set after deploy.env is copied")
+    # The test runs these steps whatever a condition would say. CI must run them too, or a lane
+    # could start the stack with deploy.env's false.
+    for index in sorted({*range(copy, replace + 1), *writers}):
+      self.assertNotIn("if", steps[index], f"{names[index]} must run in every lane")
+      self.assertIn("run", steps[index], f"{names[index]} must be a script this test can run")
+    # Compose reads .env as the steps above leave it, so a later change would go unchecked.
+    for step in steps[replace + 1:compose + 1]:
+      self.assertNotRegex(step_commands(step), r"\.env\b",
+                          f"{step.get('name')}: change .env in \"Replace values in .env\"")
+    workflow = WORKFLOW.read_text()
+    self.assertEqual(set(workflow_assignments(workflow, AUTOMATIONS_FLAG)), {"true"})
+    prepare = steps[copy:replace + 1]
+    for ai_on_ollama in ("false", "true"):
+      with self.subTest(deploy_env="with the flag off", AI_ON_OLLAMA=ai_on_ollama):
+        failed, env = self.run_env_steps(prepare, ai_on_ollama, f"{AUTOMATIONS_FLAG}=false\n")
+        self.assertIsNone(failed, env)
+        self.assertEqual(dotenv_definitions(env, AUTOMATIONS_FLAG), ["true"],
+                         f".env must define {AUTOMATIONS_FLAG} once, as true")
+        dotenv = compose_dotenv(env)
+        # Compose takes the job's environment over .env, so every value the workflow assigns
+        # is a candidate beside the one the resolved .env gives docker-compose-ci.yml.
+        candidates = {
+          name: [dotenv.get(name) or default, *workflow_assignments(workflow, name)]
+          for name, default in CI_COMPOSE_DEFAULTS.items()
+        }
+        for name in (WORKER_BUDGET, ENGINE_POOL):
+          for value in candidates[name]:
+            self.assertTrue(value.isdigit(), f"{name} must be a literal integer, not {value!r}")
+        needed = WORKER_BASE_CONNECTIONS + max(map(int, candidates[ENGINE_POOL])) + 1
+        self.assertGreaterEqual(
+          min(map(int, candidates[WORKER_BUDGET])), needed,
+          f"{WORKER_BUDGET} must cover {WORKER_BASE_CONNECTIONS} + {ENGINE_POOL} + 1")
+        for rate in candidates[WORKER_RATE]:
+          self.assertEqual(rate, "10", f"{WORKER_RATE} must stay 10 for the rate-limit e2e case")
+      # The workflow also runs Cloud sources from before the engine, whose deploy.env has no
+      # flag, in lanes with and without Ollama.
+      with self.subTest(deploy_env="without the flag", AI_ON_OLLAMA=ai_on_ollama):
+        failed, env = self.run_env_steps(prepare, ai_on_ollama, "")
+        self.assertIsNone(failed, env)
+        self.assertEqual(dotenv_definitions(env, AUTOMATIONS_FLAG), ["true"],
+                         f".env must define {AUTOMATIONS_FLAG} once, as true")
+      # Turning both lines on would hide the second definition, so the steps must stop.
+      with self.subTest(deploy_env="with the flag twice", AI_ON_OLLAMA=ai_on_ollama):
+        failed, output = self.run_env_steps(
+          prepare, ai_on_ollama, f"{AUTOMATIONS_FLAG}=false\n" * 2)
+        self.assertEqual(failed, "Replace values in .env",
+                         f"A second definition of {AUTOMATIONS_FLAG} must fail the step: {output}")
+
+  def run_env_steps(self, steps, ai_on_ollama, flag_lines):
+    """Runs the given workflow steps on a deploy.env with Cloud's engine values and the given
+    flag lines. Returns (None, the .env they leave), or the first failing step's name and
+    output."""
+    with tempfile.TemporaryDirectory() as directory:
+      # Cloud's deploy.env sizes the engine's pool and sets the production names of Worker's
+      # budget and rate, which docker-compose-ci.yml does not read.
+      Path(directory, "deploy.env").write_text(
+        flag_lines
+        + f"{ENGINE_POOL}=4\n"
+        "APPFLOWY_WORKER_DATABASE_MAX_CONNECTIONS=16\n"
+        "APPFLOWY_DATABASE_AUTOMATION_RUNS_PER_MINUTE=60\n"
+      )
+      for step in steps:
+        # Secrets are empty outside Actions.
+        run = re.sub(r"\$\{\{.*?\}\}", "", step["run"])
+        result = subprocess.run(
+          ["bash", "-e", "-o", "pipefail", "-c", run], cwd=directory,
+          env={**os.environ, "AI_ON_OLLAMA": ai_on_ollama},
+          capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode != 0:
+          return step["name"], f"{result.stdout}{result.stderr}"
+      return None, Path(directory, ".env").read_text()
 
   def test_self_host_status_guard_requires_the_real_audit_case_and_no_ignored_cases(self):
     for options in [

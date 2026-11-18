@@ -21,6 +21,7 @@ PACKAGES = [
     "collab-indexing", "collab-snapshot", "collab-history", "collab-realtime",
     "collab-realtime-server", "indexer", "collab-stream", "database", "server-infra",
     "workspace-permission", "pdf-exporter", "collab", "collab-rt-entity", "appflowy-proto",
+    "appflowy-notification", "appflowy-cloud-core",
     "appflowy-cloud-forms", "appflowy-cloud-workspace-support", "appflowy-cloud-workspace",
     "appflowy-cloud-admin", "appflowy-cloud-collab", "appflowy-cloud-workspace-access",
     "appflowy-cloud-pages", "appflowy-cloud-publishing", "appflowy-cloud-database-api",
