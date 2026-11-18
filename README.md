@@ -264,9 +264,11 @@ The lane also runs `appflowy-notification` and `appflowy-cloud-core`, and `appfl
 the Cloud revision has `libs/appflowy-openapi/Cargo.toml` (`release/0.19.0` does not). No other
 lane runs the engine's tests in these crates, which cover the notification gate, routing and
 delivery worker, push text and the HTTP API contract, or most of their other tests: **Permission
-contracts** runs only about 30 named `appflowy-cloud-core` tests. Their ignored tests
-(measurements, and fixtures that need an owned PostgreSQL, Redis or MinIO) do not run in this
-lane. A guard counts the test paths that start with its prefix.
+contracts** runs only about 30 named `appflowy-cloud-core` tests. Cloud sources carrying the
+dispatch checkout measurement also run it and the transactional notification recorder test on the
+member lane’s disposable PostgreSQL. An exact pass record is required for each. Other opt-in
+component measurements keep their own fixtures. A guard counts the test paths that start with
+its prefix.
 `cargo test --list` prints no crate name, so a top-level module of the same name in another member
 crate would count too; none exists today. Each guard is gated on its crate, so older Cloud
 revisions still pass. The

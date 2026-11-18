@@ -32,9 +32,15 @@ GROUP_POLICY = "biz::directory::group::tests::scim_group_members_can_exceed_the_
 
 class CloudMemberPreparationTest(unittest.TestCase):
     def invoke(self, mode, *, contracts=True, ignored=False, compile_exit=0, test_exit=0,
-               inventory_exit=0, extra_args=()):
+               inventory_exit=0, extra_args=(), automation_results=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            if automation_results is not None:
+                path = root / "libs/automation-engine/src/dispatcher/checkout_measurement.rs"
+                path.parent.mkdir(parents=True)
+                path.touch()
+                (root / "libs/automation-engine/Cargo.toml").touch()
+                (root / "postgres-results").write_text(automation_results)
             if contracts:
                 for relative in ["libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs",
                                  "libs/appflowy-mcp-core/src/workspace_token.rs"]:
@@ -56,6 +62,9 @@ args = sys.argv[1:]
 with open("calls.jsonl", "a") as output:
     output.write(json.dumps({"args": args, "RUST_LOG": os.getenv("RUST_LOG"),
                             "DISABLE_CI_TEST_LOG": os.getenv("DISABLE_CI_TEST_LOG")}) + "\\n")
+if "--ignored" in args and "--exact" in args:
+    assert os.environ["NOTIFICATION_TEST_DATABASE_URL"] == os.environ["DATABASE_URL"]
+    print(pathlib.Path("postgres-results").read_text(), end="")
 if "--list" in args:
     print(pathlib.Path("ignored" if "--ignored" in args else "all").read_text(), end="")
     sys.exit(int(os.environ["INVENTORY_EXIT"]))
@@ -68,6 +77,7 @@ sys.exit(int(os.environ["TEST_EXIT"]))
                 ["bash", str(HELPER), mode, *extra_args], cwd=root,
                 env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
                      "RUST_LOG": "inherited", "DISABLE_CI_TEST_LOG": "false",
+                     "DATABASE_URL": "postgres://member-fixture/postgres",
                      "INVENTORY_EXIT": str(inventory_exit), "COMPILE_EXIT": str(compile_exit),
                      "TEST_EXIT": str(test_exit)},
                 text=True, capture_output=True, timeout=10, check=False,
@@ -123,6 +133,23 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         }])
         for selector in ("--lib", "--bins", "--tests", "--doc", "--ignore", "--skip"):
             self.assertNotIn(selector, calls[0]["args"])
+
+    def test_automation_requires_both_disposable_postgres_cases_to_execute(self):
+        recorder = "a_pool_free_recorder_records_what_the_service_records"
+        dispatch = "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold"
+        passed = [f"test {case} ... ok" for case in (recorder, dispatch)]
+        for lines, success in [(passed, True), (passed[:1], False),
+                               ([f"test {recorder} ... ignored", passed[1]], False),
+                               ([passed[0], f"test {dispatch}_other ... ok"], False)]:
+            with self.subTest(lines=lines):
+                result, calls = self.invoke("run", automation_results="\n".join(lines) + "\n")
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                self.assertEqual(len(calls), 2)
+                args = calls[1]["args"]
+                self.assertEqual(args[:args.index("--lib")], calls[0]["args"][:-2])
+                self.assertEqual(args[args.index("--lib"):],
+                                 ["--lib", "--test", "delivery", "--", "--exact", "--ignored",
+                                  recorder, dispatch, "--test-threads=1", "--show-output"])
 
     def test_invalid_mode_cannot_invoke_cargo(self):
         result, calls = self.invoke("invalid")

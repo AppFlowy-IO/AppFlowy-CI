@@ -176,6 +176,23 @@ else
   echo '==> Testing workspace member packages'
   RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
     "${member_packages[@]}" -- --test-threads=1
+  if [[ -f libs/automation-engine/src/dispatcher/checkout_measurement.rs ]]; then
+    # Use the same package graph and the member lane's disposable PostgreSQL. Libtest
+    # exits successfully on an empty exact selection, so require both success records.
+    pg_cases=(a_pool_free_recorder_records_what_the_service_records
+              dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold)
+    pg_results=$(mktemp)
+    trap 'rm -f "$pg_results"' EXIT
+    NOTIFICATION_TEST_DATABASE_URL="${DATABASE_URL:?member PostgreSQL is required}" \
+      cargo test --locked "${member_packages[@]}" --lib --test delivery -- \
+        --exact --ignored "${pg_cases[@]}" --test-threads=1 --show-output | tee "$pg_results"
+    for test_name in "${pg_cases[@]}"; do
+      if ! grep -Fxq "test $test_name ... ok" "$pg_results"; then
+        echo "::error::Missing PostgreSQL test result for $test_name"
+        exit 1
+      fi
+    done
+  fi
   if [[ -f "$outbound_contract" ]]; then
     # The integrations tests create temporary PostgreSQL tables, use only the dedicated
     # loopback Redis fixture, and receive provider traffic on their own loopback listeners.
