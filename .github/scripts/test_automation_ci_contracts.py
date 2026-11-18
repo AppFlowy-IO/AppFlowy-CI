@@ -9,6 +9,8 @@ import unittest
 
 import yaml
 
+from test_pr_cleanup_workflows import event_context, render_expression
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / ".github/scripts"
 MEMBERS = SCRIPTS / "cloud_member_tests.sh"
@@ -101,3 +103,24 @@ elif '--include-ignored' in args or '--ignored' in args:
         self.assertEqual(commercial["env"]["APPFLOWY_DATABASE_AUTOMATIONS_ENABLED"], "false")
         gate_steps = [step for step in commercial["jobs"]["test"]["steps"] if "commercial_automation_gate.sh" in step.get("run", "")]
         self.assertEqual([step["if"] for step in gate_steps], ["matrix.test_service == 'appflowy_cloud_commercial'"])
+
+    def test_manual_commercial_run_pins_source_and_isolates_branch_concurrency(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(set(triggers["workflow_dispatch"]["inputs"]), {"pr_ref", "pr_number"})
+        sha = "a" * 40
+        manual = event_context(workflow, event="workflow_dispatch", ref="refs/heads/stacked-ci",
+                               inputs={"pr_ref": sha, "pr_number": "123"})
+        auto = event_context(workflow, event="repository_dispatch",
+                             payload={"event_type": "pr_sync", "pr_ref": sha, "pr_number": "123"})
+        for context in (manual, auto):
+            self.assertIn("pr=123 ", render_expression(workflow["run-name"], context))
+            for job in workflow["jobs"].values():
+                checkout = next(step for step in job["steps"] if step.get("name") == "Checkout Private Repo")
+                self.assertEqual(render_expression(checkout["with"]["ref"], context), sha)
+        self.assertNotEqual(render_expression(workflow["concurrency"]["group"], auto),
+                            render_expression(workflow["concurrency"]["group"], manual))
+        guard = workflow["jobs"]["setup"]["steps"][0]["run"]
+        for ref, number, valid in [(sha, "123", True), ("main", "123", False), (sha, "0", False)]:
+            result = subprocess.run(["bash", "-euc", guard], env={"PR_REF": ref, "PR_NUMBER": number})
+            self.assertEqual(result.returncode == 0, valid)

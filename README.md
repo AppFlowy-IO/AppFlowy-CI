@@ -24,6 +24,9 @@ when changing build or runtime behavior. Ordinary private-source CI keeps its fu
 complete. Trusted default-branch tooling reads the current private PR source as data and
 reconciles newly added Rust test functions or changed test attributes against both workflows'
 libtest logs and native private test workflows for the same head (including SDK and Backup).
+The audit compares the exact head and merge-base Git trees. A shallow checkout fetches only
+the missing merge-base snapshot. The GitHub compare API can omit large patches and limits its
+file list to 300 entries, so the audit uses that response only to identify the merge-base.
 Public test jobs record `AF_TEST_SOURCE_SHA`; older/native jobs require a recorded private
 checkout or an API-verified GitHub PR test merge whose second parent is the requested head.
 Private workflow completion dispatches let the audit settle when those jobs finish last.
@@ -44,6 +47,13 @@ cases and duplicate function names are explicitly unverified; it does not infer 
 case inventories or every feature/platform configuration from source parsing. Reviewed manual
 exceptions use exact `path.rs::function` keys with explanatory values in the source's
 `script/ci/test_execution_exemptions.json`, and remain visible in the report.
+
+For commercial validation before a companion CI branch merges, run the existing commercial
+workflow on the CI branch and pass the full private Cloud head and PR number. For example,
+`gh workflow run cloud_commercial_integration_ci.yaml --ref CI_BRANCH -f pr_ref=CLOUD_SHA -f pr_number=PR`.
+This runs the self-hosted feature-off fixture once on Cloud revisions that contain it.
+Use `cloud_integration_ci.yaml` with the same inputs for the enabled Databases and member lanes.
+Manual runs on a CI branch have their own concurrency group.
 
 For an offline audit, `.github/scripts/cloud_test_execution_audit.py report` accepts `--source`,
 `--sha`, a GitHub compare JSON as `--changes`, and a directory of attested `.log` files as `--logs`.

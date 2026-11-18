@@ -25,6 +25,7 @@ SHA = re.compile(r"[a-f0-9]{40}")
 RAW = re.compile(r'(?:br|cr|r)(#{0,255})"')
 CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+GIT_HUNK = re.compile(rb"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@", re.M)
 FUNCTION = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+((?:r#)?[A-Za-z_][A-Za-z_0-9]*)\s*\(")
 CONTEXT = "CI test execution audit"
 WORKFLOWS = {"cloud_integration_ci.yaml", "cloud_commercial_integration_ci.yaml"}
@@ -128,7 +129,69 @@ def added_lines(patch):
     return lines
 
 
-def inventory(source, changes, all_tests=False):
+def compare_lines(changes):
+    """Offline JSON input must contain a complete patch for every surviving Rust file."""
+    touched = {}
+    for entry in changes["files"]:
+        if not entry["filename"].endswith(".rs") or entry.get("status") == "removed":
+            continue
+        lines = added_lines(entry["patch"]) if isinstance(entry.get("patch"), str) else None
+        if lines is None or ("additions" in entry and len(lines) != entry["additions"]):
+            raise ValueError("Missing/truncated Rust diff: " + entry["filename"])
+        touched[entry["filename"]] = lines
+    return touched
+
+
+def git_lines(source, base, head):
+    """Reconstruct a three-dot comparison from two pinned commit trees, including renames."""
+    if not all(isinstance(sha, str) and SHA.fullmatch(sha) for sha in (base, head)):
+        raise ValueError("Invalid comparison revision")
+    if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip() != head:
+        raise ValueError("Audit checkout differs from the requested source revision")
+    # actions/checkout only has the head snapshot. Fetch one exact merge-base snapshot using
+    # the runner's gh credential helper; keep the token out of arguments and git config.
+    if subprocess.run(["git", "cat-file", "-e", base + "^{commit}"], cwd=source,
+                      stderr=subprocess.DEVNULL).returncode:
+        subprocess.run(["git", "-c", "credential.helper=",
+                        "-c", "credential.https://github.com.helper=!gh auth git-credential",
+                        "fetch", "--no-tags", "--depth=1", "origin", base],
+                       cwd=source, check=True, timeout=120)
+    # Raw NUL records carry exact filenames and full blob IDs. Avoid pathspec expansion,
+    # GitHub's compare file/patch caps, and rename-only false positives.
+    records = iter(subprocess.check_output([
+        "git", "diff", "--raw", "-z", "--no-abbrev", "--find-renames", "--diff-filter=AMRT",
+        "--no-ext-diff", "--no-textconv", base, head, "--"], cwd=source).decode().split("\0"))
+    touched = {}
+    for header in records:
+        if not header:
+            break
+        old_mode, new_mode, old_blob, new_blob, status = header.split()
+        old_path = next(records)
+        path = next(records) if status.startswith("R") else old_path
+        if not path.endswith(".rs"):
+            continue
+        if new_mode not in {"100644", "100755"}:
+            raise ValueError("Changed Rust source is not a regular file: " + path)
+        if status == "A" or not old_path.endswith(".rs") or old_mode[1:] not in {"100644", "100755"}:
+            touched[path] = range(1, sys.maxsize)
+        elif old_blob != new_blob:
+            diff = subprocess.check_output([
+                "git", "diff", "--text", "--no-color", "--no-ext-diff", "--no-textconv",
+                "--unified=0", "--inter-hunk-context=0", old_blob, new_blob], cwd=source)
+            # Only the hunk coordinates matter. Avoid decoding removed content or storing the
+            # patch beyond this file. With zero context every destination hunk line is new.
+            lines = set()
+            hunks = GIT_HUNK.findall(diff)
+            if not hunks:
+                raise ValueError("Missing Git diff hunks for changed Rust source: " + path)
+            for offset, size in hunks:
+                start, count = int(offset), int(size or 1)
+                lines.update(range(start, start + count))
+            touched[path] = lines
+    return touched
+
+
+def inventory(source, touched, all_tests=False):
     files = subprocess.check_output(["git", "ls-files", "-z", "--", "*.rs"], cwd=source)
     declared = []
     for filename in files.decode().split("\0"):
@@ -140,12 +203,6 @@ def inventory(source, changes, all_tests=False):
         if path.is_file():
             declared.extend(functions(path.read_text(), filename))
     counts = Counter(case["name"] for case in declared)
-    touched = {}
-    for entry in changes.get("files", []):
-        if entry["filename"].endswith(".rs") and entry.get("status") != "removed":
-            if "patch" not in entry:
-                raise ValueError("Missing/truncated Rust diff: " + entry["filename"])
-            touched[entry["filename"]] = added_lines(entry["patch"])
     selected = [case for case in declared if all_tests or any(
         line in touched.get(case["file"], ())
         for line in range(case["attribute_line"], case["line"] + 1))]
@@ -200,10 +257,10 @@ def executions(log, sha):
     return observed, issues
 
 
-def audit(source, changes, logs, sha, *, all_tests=False):
+def audit(source, touched, logs, sha, *, all_tests=False):
     if not SHA.fullmatch(sha):
         raise ValueError("An immutable source SHA is required")
-    cases = inventory(source, changes, all_tests)
+    cases = inventory(source, touched, all_tests)
     evidence = {}
     issues = []
     for label, log in (logs.items() if isinstance(logs, dict) else logs):
@@ -358,12 +415,11 @@ def github_report(source, pr_number, sha, output, publish_status=False):
     if pr["state"] != "open" or pr["head"]["sha"] != sha:
         print("PR closed or advanced; this audit is superseded")
         return 0
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
-    if actual != sha:
-        raise ValueError("Audit checkout differs from the requested source revision")
-    changes = api(f"repos/{CLOUD_REPO}/compare/{pr['base']['sha']}...{sha}")
-    if len(changes.get("files", [])) >= 300:
-        raise ValueError("Changed-file inventory may exceed GitHub's 300-file bound")
+    # GitHub's comparison identifies the merge-base even when it omits individual patches
+    # or caps the changed-file list. Inventory every Rust change from the actual Git trees.
+    comparison = api(f"repos/{CLOUD_REPO}/compare/{pr['base']['sha']}...{sha}?per_page=1")
+    merge_base = comparison["merge_base_commit"]["sha"]
+    touched = git_lines(source, merge_base, sha)
     runs = [dict(run, audit_repository=CI_REPO) for run in related_runs(pr_number)]
     private = api(f"repos/{CLOUD_REPO}/actions/runs?head_sha={sha}&per_page=100")
     if private["total_count"] > 100:
@@ -395,7 +451,8 @@ def github_report(source, pr_number, sha, output, publish_status=False):
                         yield job["html_url"], text
                 if len(batch["jobs"]) < 100:
                     break
-    report = audit(source, changes, logs(), sha)
+    report = audit(source, touched, logs(), sha)
+    report["merge_base_sha"] = merge_base
     report["private_checkout_proofs"] = checkout_proofs
     report["ci_runs"] = [{"url": run["html_url"], "status": run["status"],
                           "workflow_sha": run["head_sha"], "attempt": run["run_attempt"]} for run in runs]
@@ -471,7 +528,7 @@ def main():
             for key, value in values.items():
                 output.write(f"{key}={value}\n")
         return 0
-    report = audit(args.source.resolve(), json.loads(args.changes.read_text()),
+    report = audit(args.source.resolve(), compare_lines(json.loads(args.changes.read_text())),
                    {path.name: path.read_text() for path in args.logs.glob("*.log")},
                    args.sha, all_tests=args.all_tests)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
