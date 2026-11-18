@@ -582,6 +582,16 @@ jobs:
             test_modules: ""
             cache_group: worker
             cache_writer: true
+          # Released desktop clients and a Yjs web participant share a workspace on this Cloud
+          # source. The crate (tests/legacy_client_smoke) is a Cargo workspace of its own, built
+          # from a released desktop's client libraries, so it compiles here and is not in the
+          # shared archive. Those libraries' dependency versions are outside the Cloud workspace
+          # graph: the lane saves no Cargo snapshot and reuses compiler outputs through sccache.
+          - test_service: "appflowy_cloud_legacy_client_smoke"
+            topic: "Released clients"
+            test_modules: ""
+            cache_group: legacy-client-smoke
+            timeout_minutes: 90
     steps:
       - name: Checkout Private Repo
         uses: actions/checkout@v4
@@ -1296,6 +1306,32 @@ jobs:
                 cargo test --locked -p appflowy-ai "${ai_cargo_args[@]}" -- "${ai_skips[@]}" --test-threads=1
             fi
           fi
+
+      # A Cloud source without the crate has nothing to run: its lane only starts the stack.
+      - name: Run the released-client smoke test
+        if: >-
+          matrix.test_service == 'appflowy_cloud_legacy_client_smoke' &&
+          hashFiles('tests/legacy_client_smoke/Cargo.toml') != ''
+        timeout-minutes: 60
+        env:
+          # The test waits for the server to snapshot the workspace and fails if it did not.
+          # Compose leaves the server's timer at its default: 60 s plus up to 60 s of jitter.
+          SMOKE_SNAPSHOT_WAIT_SECS: "135"
+        run: |
+          set -euo pipefail
+          # The billing projection a hosted server reads; the test gives its workspace a paid
+          # plan so that it takes a second member.
+          docker compose -f docker-compose-ci.yml exec -T postgres sh -c \
+            'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set ON_ERROR_STOP=1' \
+            < libs/client-api-test/test_fixtures/workspace_subscription.sql
+          cd tests/legacy_client_smoke
+          # Extracts the Cloud commit a released desktop's client libraries were synced from.
+          # The checkout is shallow, so the script fetches that one commit with the checkout's
+          # credentials.
+          ./checkout_legacy.sh
+          (cd web && npm ci)
+          # The lockfile is the released one plus this crate, so Cargo must be free to add it.
+          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
       # ordinary modules in this lane or another matrix job. Older Cloud refs lack the runner.

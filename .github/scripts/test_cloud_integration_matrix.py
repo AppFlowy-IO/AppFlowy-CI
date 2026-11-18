@@ -59,6 +59,40 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     run_tests = next(step for step in self.job["steps"] if step.get("name") == "Run Tests")
     self.assertEqual(run_tests["timeout-minutes"], 50)
 
+  def test_released_client_smoke_compiles_its_own_crate_and_skips_sources_without_it(self):
+    smoke = self.lane("appflowy_cloud_legacy_client_smoke")
+    self.assertEqual(smoke["topic"], "Released clients")
+    # A cache group makes the lane install Rust, protoc and sccache. The released client's
+    # dependency versions are outside the Cloud workspace graph, so it saves no Cargo snapshot.
+    self.assertEqual(smoke["cache_group"], "legacy-client-smoke")
+    self.assertNotIn("cache_writer", smoke)
+    # No root module: the shared test step selects nothing, and the crate has its own step.
+    self.assertEqual(smoke["test_modules"], "")
+
+    names = [step.get("name") for step in self.job["steps"]]
+    index = names.index("Run the released-client smoke test")
+    self.assertLess(names.index("Record Cloud test source"), index)
+    self.assertLess(names.index("Run Tests"), index)
+    self.assertLess(index, names.index("Final seeded account deletion"))
+    step = self.job["steps"][index]
+    # Every Cloud branch runs this workflow; most have no such crate yet.
+    self.assertEqual(
+      " ".join(step["if"].split()),
+      "matrix.test_service == 'appflowy_cloud_legacy_client_smoke' && "
+      "hashFiles('tests/legacy_client_smoke/Cargo.toml') != ''",
+    )
+    # The server's snapshot timer is 60 s plus up to 60 s of jitter unless Compose forwards
+    # another interval, and the test fails when no snapshot happened during its wait.
+    self.assertGreater(int(step["env"]["SMOKE_SNAPSHOT_WAIT_SECS"]), 120)
+    self.assertNotIn("APPFLOWY_WORKSPACE_ACTOR_SNAPSHOT_INTERVAL_SECS", step["run"])
+    run = step["run"]
+    self.assertLess(run.index("./checkout_legacy.sh"), run.index("cargo test"))
+    self.assertLess(run.index("npm ci"), run.index("cargo test"))
+    # The copied lockfile is the released one; Cargo adds this crate to it.
+    self.assertNotIn("--locked", run)
+    # The audit credits a test only from libtest's own result lines for the recorded source.
+    self.assertNotIn("--quiet", run)
+
   def test_auth_is_one_serial_topic_with_both_profiles(self):
     auth = self.lane("appflowy_cloud_auth")
     self.assertEqual(auth["topic"], "Auth")
