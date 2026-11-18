@@ -309,8 +309,12 @@ fn spawns() {
                     if "/actions/runs?head_sha=" in path:
                         return {"total_count": 0, "workflow_runs": []}
                     if "/jobs?" in path:
-                        return {"total_count": 1, "jobs": [{"id": 12, "html_url": "job-url",
-                                "status": "completed", "conclusion": "success"}]}
+                        return {"total_count": 3, "jobs": [
+                            {"id": 11, "html_url": "never-started-url", "status": "completed",
+                             "conclusion": "cancelled", "runner_id": 0, "steps": []},
+                            {"id": 12, "html_url": "job-url", "status": "completed", "conclusion": "success"},
+                            {"id": 13, "html_url": "started-url", "status": "completed", "conclusion": "cancelled",
+                             "runner_id": 53, "steps": [{"status": "completed"}]}]}
                     self.fail("Unexpected API route: " + path)
 
                 runs = [{"id": 10, "html_url": "run-url", "status": "in_progress" if pending else "completed",
@@ -318,16 +322,18 @@ fn spawns() {
                 text = log({"tests::added_case": "ok"}) if executed else "cargo clippy compiled test code"
                 with patch.object(audit, "api", side_effect=api), \
                         patch.object(audit, "related_runs", return_value=runs), \
-                        patch.object(audit, "job_log", return_value=text), \
+                        patch.object(audit, "job_log", side_effect=lambda job_id, _: text if job_id == 12 else "") as fetch_log, \
                         patch.object(audit, "git_lines", return_value=audit.compare_lines(changes)) as git_diff, \
                         patch.object(audit, "publish") as publish, redirect_stdout(io.StringIO()):
                     result = audit.github_report(root, 1583, SHA, root / "audit.json", publish_status=True)
+                self.assertEqual([call.args[0] for call in fetch_log.call_args_list], [12, 13])
                 git_diff.assert_called_once_with(root, "c" * 40, SHA)
                 state = "pending" if pending else "success" if executed else "failure"
                 self.assertEqual(publish.call_args.args[2], state)
                 self.assertEqual(result, int(state == "failure"))
                 report = json.loads((root / "audit.json").read_text())
                 self.assertEqual((report["source_sha"], report["merge_base_sha"]), (SHA, "c" * 40))
+                self.assertEqual(report["cancelled_before_start"], ["never-started-url"])
 
     def test_workflow_uses_trusted_tooling_and_pins_the_private_source(self):
         root = Path(__file__).resolve().parents[2]

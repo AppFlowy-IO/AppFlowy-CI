@@ -427,6 +427,7 @@ def github_report(source, pr_number, sha, output, publish_status=False):
     runs.extend(dict(run, audit_repository=CLOUD_REPO) for run in private["workflow_runs"]
                 if run["head_sha"] == sha)
     checkout_proofs, merges = [], {}
+    cancelled_before_start = []
 
     def logs():
         total = 0
@@ -436,6 +437,12 @@ def github_report(source, pr_number, sha, output, publish_status=False):
                 if batch["total_count"] > 300:
                     raise ValueError("CI job inventory exceeded the 300-job bound")
                 for job in batch["jobs"]:
+                    # GitHub returns 404 for logs when a queued job was cancelled without
+                    # ever receiving a runner. It executed no test and supplies no evidence.
+                    if (job["status"] == "completed" and job["conclusion"] == "cancelled"
+                            and job.get("runner_id") == 0 and job.get("steps") == []):
+                        cancelled_before_start.append(job["html_url"])
+                        continue
                     if job["status"] == "completed" and job["conclusion"] != "skipped":
                         try:
                             text = job_log(job["id"], run["audit_repository"])
@@ -453,6 +460,7 @@ def github_report(source, pr_number, sha, output, publish_status=False):
                     break
     report = audit(source, touched, logs(), sha)
     report["merge_base_sha"] = merge_base
+    report["cancelled_before_start"] = cancelled_before_start
     report["private_checkout_proofs"] = checkout_proofs
     report["ci_runs"] = [{"url": run["html_url"], "status": run["status"],
                           "workflow_sha": run["head_sha"], "attempt": run["run_attempt"]} for run in runs]

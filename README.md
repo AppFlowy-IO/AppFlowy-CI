@@ -41,6 +41,8 @@ annotations and a JSON artifact. A closed or advanced PR cannot receive a stale 
 code is imported/executed by the privileged audit job, and repository credentials are never
 forwarded to signed log-download hosts. Collection is bounded to 300 jobs per related run,
 32 MiB per log and 256 MiB total; unavailable or truncated evidence fails verification.
+GitHub supplies no log for a queued job cancelled before runner assignment. The report lists
+those jobs under `cancelled_before_start` and credits them with zero test executions.
 
 The initial notification gate covers PR-added standard Rust test functions. Generated/conditional
 cases and duplicate function names are explicitly unverified; it does not infer complete runtime
