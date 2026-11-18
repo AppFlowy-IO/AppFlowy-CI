@@ -20,6 +20,8 @@ env:
   APPFLOWY_AI_REDIS_URL: redis://redis:6379
   LOCALHOST_GOTRUE: http://localhost/gotrue
   POSTGRES_PASSWORD: password
+  # Both Compose interpolation and the real HTTP test use the disabled deployment setting.
+  APPFLOWY_DATABASE_AUTOMATIONS_ENABLED: "false"
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.98.1"
@@ -303,6 +305,10 @@ jobs:
       - name: Run SCIM identity recovery contracts
         if: matrix.test_service == 'appflowy_cloud_commercial'
         run: python3 -B ci-tools/.github/scripts/commercial_scim_runner.py --source "$GITHUB_WORKSPACE"
+
+      - name: Verify all disabled database automation routes over HTTP
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        run: bash ci-tools/.github/scripts/commercial_automation_gate.sh
 
       - name: Run Tests
         env:

@@ -137,6 +137,13 @@ their unit tests in the service-backed lane. The quoted package pattern also sup
 revisions with only the original process package. The test matrix and serial test execution stay
 the same; Cargo, rather than the shell, expands the package names.
 
+Cloud revisions that include outbound automation actions run the integrations crate in the member
+lane with its PostgreSQL and dedicated Redis fixtures. Its SMTP, Slack, Gmail and webhook tests use
+local receivers. The Databases lane selects all enabled `automation::` HTTP cases. The commercial
+self-host lane runs the exact disabled-route HTTP test once against a server started with
+`APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=false`. Older Cloud checkouts skip the corresponding tests
+when their sources are absent.
+
 Release and integration builds have separate workflow queues and image caches. The laptop's
 current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
 Cloud's CI image enables test features, and CI images use the `latest-amd64` artifact tags.

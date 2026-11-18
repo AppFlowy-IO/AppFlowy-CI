@@ -67,6 +67,11 @@ if [[ -f "$openapi_crate" ]]; then
   member_packages+=(-p appflowy-openapi)
 fi
 
+# Roadmap sources include the native outbound adapters; earlier Cloud refs do not.
+# Run this crate separately so its explicitly service-backed ignored fixtures execute once.
+outbound_contract=libs/appflowy-cloud-integrations/src/biz/automation_delivery.rs
+provider_tests=(cargo test --locked -p appflowy-cloud-integrations --lib)
+
 require_tests() {
   local prefix="$1" minimum="$2" inventory="$3" selected ignored
   # Namespace selectors end in ::; named tests must match exactly.
@@ -125,6 +130,20 @@ if [[ "$mode" == prepare ]]; then
     echo "==> Older Cloud source: running package tests without managed-user count guards"
   fi
 
+  if [[ -f "$outbound_contract" ]]; then
+    provider_inventory=$("${provider_tests[@]}" -- --list)
+    for required in \
+      biz::automation_delivery::tests::webhook_signing_keys_are_encrypted_rotatable_and_workspace_scoped \
+      biz::automation_delivery::tests::smtp_accepts_plain_text_with_the_stable_delivery_id \
+      biz::integrations::native::runtime_tests::slack_delivery_requires_the_owner_workspace_and_a_current_write_grant \
+      biz::integrations::native::runtime_tests::gmail_delivery_requires_the_owner_scope_and_verified_sender_identity; do
+      if ! grep -Fxq "$required: test" <<<"$provider_inventory"; then
+        echo "::error::Missing native automation provider fixture $required"
+        exit 1
+      fi
+    done
+  fi
+
   # Inventory uses --lib as before; also prepare binary and integration targets before the
   # separate execution deadline. Cargo still owns execution and doctest discovery below.
   RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked "${member_packages[@]}" --no-run
@@ -132,4 +151,11 @@ else
   echo '==> Testing workspace member packages'
   RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
     "${member_packages[@]}" -- --test-threads=1
+  if [[ -f "$outbound_contract" ]]; then
+    # The integrations tests create temporary PostgreSQL tables, use only the dedicated
+    # loopback Redis fixture, and receive provider traffic on their own loopback listeners.
+    INTEGRATIONS_TEST_DATABASE_URL="${DATABASE_URL:?member PostgreSQL is required}" \
+      INTEGRATIONS_TEST_REDIS_URL="${APPFLOWY_TEST_REDIS_URL:?member Redis is required}" \
+      "${provider_tests[@]}" -- --include-ignored --test-threads=1
+  fi
 fi
