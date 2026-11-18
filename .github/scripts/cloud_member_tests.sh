@@ -58,6 +58,10 @@ automation_engine_crate=libs/automation-engine/Cargo.toml
 if [[ -f "$automation_engine_crate" ]]; then
   member_packages+=(-p automation-engine)
 fi
+# Cargo only runs a dependency's own unit and integration tests when its package is selected.
+if [[ -f libs/flowy-formula/Cargo.toml ]]; then
+  member_packages+=(-p flowy-formula)
+fi
 # The public HTTP API contract's crate, gated the same way because release/0.19.0 predates it.
 # No other lane runs the engine PR's tests in it, appflowy-notification or appflowy-cloud-core
 # above, or most of their other tests: the Permission contracts job runs only about 30 named

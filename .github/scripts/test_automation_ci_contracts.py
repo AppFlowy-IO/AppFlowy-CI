@@ -36,6 +36,24 @@ GATE_SOURCE = "tests/automation/feature_gate_test.rs"
 
 
 class AutomationCiContracts(unittest.TestCase):
+    def test_formula_package_prepares_and_runs_unit_and_integration_targets_when_present(self):
+        for mode, suffix in [("prepare", ["--no-run"]), ("run", ["--", "--test-threads=1"])]:
+            with self.subTest(mode=mode):
+                legacy, old_calls = self.run_script([MEMBERS, mode])
+                roadmap, new_calls = self.run_script([MEMBERS, mode], ["libs/flowy-formula/Cargo.toml"])
+                self.assertEqual(legacy.returncode, 0, legacy.stderr)
+                self.assertEqual(roadmap.returncode, 0, roadmap.stderr)
+                self.assertEqual(len(old_calls), 1)
+                self.assertEqual(len(new_calls), 1)
+                old, new = old_calls[0][0], new_calls[0][0]
+                self.assertNotIn("flowy-formula", old)
+                # No Rust target or test-name filter: Cargo's default includes both the library
+                # and tests/ binaries, including the formula compatibility and allocation suites.
+                self.assertEqual(old[-len(suffix):], suffix)
+                self.assertNotIn("--lib", old)
+                self.assertNotIn("--test", old)
+                self.assertEqual(new, [*old[:-len(suffix)], "-p", "flowy-formula", *suffix])
+
     def run_script(self, command, sources=(), names=(), environment=None):
         with tempfile.TemporaryDirectory() as directory:
             cwd = Path(directory)
