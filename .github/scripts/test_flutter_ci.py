@@ -49,7 +49,31 @@ class FlutterPrerequisitesWorkflowTest(unittest.TestCase):
                 )
                 self.assertLess(steps.index(checkout), steps.index(configure))
                 self.assertLess(steps.index(configure), steps.index(install))
-                self.assertEqual(install["timeout-minutes"], 10)
+                self.assertEqual(install["timeout-minutes"], 20 if name == "prepare-linux" else 10)
+
+    def test_all_test_shards_receive_packages_from_their_own_preparation(self):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        prepare = jobs["prepare-linux"]
+        upload = next(step for step in prepare["steps"] if step.get("id") == "apt-archives")
+        self.assertEqual(upload["with"]["path"], "/var/cache/appflowy-flutter-apt/*.deb")
+        self.assertEqual(upload["with"]["retention-days"], 1)
+        self.assertEqual(prepare["outputs"]["linux_apt_artifact"], "${{ steps.apt-archives.outputs.artifact-id }}")
+        for name in ("unit_test", "pdf_export_ui", "cloud_integration_test", "integration_test"):
+            with self.subTest(job=name):
+                steps = jobs[name]["steps"]
+                download = next(step for step in steps if step.get("name") == "Download prepared Ubuntu packages")
+                install = next(step for step in steps if step.get("name") == "Install prerequisites")
+                self.assertIn("prepare-linux", jobs[name]["needs"])
+                self.assertIn("needs.prepare-linux.outputs.linux_apt_artifact != ''", download["if"])
+                if name == "pdf_export_ui":
+                    self.assertIn("steps.pdf-ui-source.outputs.enabled == 'true'", download["if"])
+                self.assertEqual(download["with"]["artifact-ids"], "${{ needs.prepare-linux.outputs.linux_apt_artifact }}")
+                self.assertEqual(download["with"]["path"], "${{ runner.temp }}/flutter-apt-packages")
+                self.assertTrue(download["with"]["merge-multiple"])
+                self.assertTrue(download["continue-on-error"])
+                self.assertLess(steps.index(download), steps.index(install))
+                self.assertLess(install["run"].index("apt-get update"), install["run"].index("--restore"))
+                self.assertLess(install["run"].index("--restore"), install["run"].index("apt-get install"))
 
 
 class DesktopRunnerWorkflowTest(unittest.TestCase):

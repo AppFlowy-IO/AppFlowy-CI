@@ -37,6 +37,9 @@ class DesktopLinuxOnlyTest(unittest.TestCase):
                     self.assertIn(dependency, self.jobs)
                 for step in job.get("steps", []):
                     if step.get("uses", "").startswith("actions/download-artifact@"):
+                        if "artifact-ids" in step["with"]:
+                            self.assertEqual(step["with"]["artifact-ids"], "${{ needs.prepare-linux.outputs.linux_apt_artifact }}")
+                            continue
                         artifact = step["with"]["name"]
                         self.assertNotRegex(artifact.lower(), r"windows|macos")
                         self.assertIn("${{ github.run_id }}", artifact)
@@ -45,7 +48,8 @@ class DesktopLinuxOnlyTest(unittest.TestCase):
                         else:
                             self.assertEqual(artifact, "${{ github.run_id }}-ubuntu-latest")
         prepare = self.jobs["prepare-linux"]["steps"]
-        upload = next(step for step in prepare if step.get("uses", "").startswith("actions/upload-artifact@"))
+        upload = next(step for step in prepare if step.get("with", {}).get("path") == "appflowy_flutter.tar.gz")
+        self.assertEqual(upload["uses"], "actions/upload-artifact@v4")
         self.assertEqual(upload["with"]["name"], "${{ github.run_id }}-${{ matrix.os }}")
 
     def test_pdf_gate_uses_native_linux_ffi_pdfium_and_a_virtual_display(self):

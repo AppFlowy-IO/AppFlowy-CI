@@ -94,6 +94,8 @@ The status bridge requires an immutable `pr_ref`, a matching checkout and curren
 private PR head, and a passing current gate step. Legacy refs with no PDF tests or
 contract receive an explicit not-applicable status; removing the contract or tests
 in a PR cannot use that fallback. Test execution does not receive the bridge's token.
+The status bridge logs the GitHub error and request ID on a rejected API call. It
+honors an explicit rate limit once when the requested wait fits within three minutes.
 To validate a CI branch's statuses, dispatch Rust and Flutter with both `pr_ref=<SHA>`
 and `pr_number=<private-PR>`. Merge the workflow and Desktop contract changes and verify
 the same Desktop SHA before making these statuses required in repository rules.
@@ -109,8 +111,14 @@ Azure mirror entries and for the us-east-2 EC2 mirror. Shards using that EC2
 mirror reached the setup deadline while still fetching media libraries on Ubuntu
 26.04. APT allows one retry and 20 seconds of HTTP/HTTPS inactivity.
 [Flutter CI package download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44434891696/job/135273883423)
-Prerequisite installation has a separate 10-minute deadline. The test matrix,
-45-minute test limits, package signatures, and repository suites stay intact.
+The preparation job has up to 20 minutes for a cold installation. It shares its
+downloaded Ubuntu packages with the test shards for one day. Each shard checks
+the filenames, sizes and SHA-256 digests against its own updated APT index before
+using those packages. Missing or outdated packages come from its normal
+repositories. Shards have 10 minutes to install prerequisites and 45 minutes for
+tests. A shard previously spent over three minutes fetching 38 MB from the
+primary archive before its next 100 MB download exhausted the setup deadline.
+[Flutter shard download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44464921477/job/135372217705)
 The configuration script refuses to run outside a GitHub Linux runner; its
 local tests use temporary files without root or network access.
 

@@ -10,8 +10,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
+from request_image_build import GitHubAPIError
 from run_desktop_pdf_tests import CONTRACT, TEST_SOURCE
 
 
@@ -33,10 +36,27 @@ def github_json(method: str, path: str, data: dict | None = None):
                  "Accept": "application/vnd.github+json", "Content-Type": "application/json",
                  "X-GitHub-Api-Version": "2022-11-28"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        if response.status != (201 if method == "POST" else 200):
-            raise ValueError(f"Unexpected GitHub API response: {response.status}")
-        return json.load(response)
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.status != (201 if method == "POST" else 200):
+                    raise ValueError(f"Unexpected GitHub API response: {response.status}")
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            with error:
+                try:
+                    message = json.loads(error.read(4096)).get("message", "")
+                except (ValueError, AttributeError):
+                    message = ""
+                failure = GitHubAPIError(method, path, status=error.code, headers=error.headers,
+                                         message=message)
+            # Only an explicit quota rejection establishes that a status POST
+            # did not take effect. Leave ambiguous transport errors to the caller.
+            delay = failure.retry_delay(attempt, time.time())
+            if attempt or not failure.rate_limited or delay > 180:
+                raise failure from error
+            print(f"GitHub requested a {delay:.0f}s pause before retrying. {failure}", flush=True)
+            time.sleep(delay)
 
 
 def removed_contract_files(pr_number: str) -> set[str]:
@@ -137,7 +157,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return publish(args.workspace, args.state, args.gate_result, args.kind, args.job_status, args.gate_outcome)
-    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
+    except (ValueError, OSError, KeyError, GitHubAPIError, subprocess.SubprocessError) as error:
         print(f"PDF status reporting failed: {error}", file=sys.stderr)
         return 1
 
