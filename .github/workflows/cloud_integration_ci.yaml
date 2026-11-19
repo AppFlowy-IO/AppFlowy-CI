@@ -1325,13 +1325,23 @@ jobs:
             'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set ON_ERROR_STOP=1' \
             < libs/client-api-test/test_fixtures/workspace_subscription.sql
           cd tests/legacy_client_smoke
-          # Extracts the Cloud commit a released desktop's client libraries were synced from.
-          # The checkout is shallow, so the script fetches that one commit with the checkout's
-          # credentials.
-          ./checkout_legacy.sh
           (cd web && npm ci)
-          # The lockfile is the released one plus this crate, so Cargo must be free to add it.
-          RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test
+          # One run per released desktop. The script extracts the Cloud commit that release's
+          # client libraries were synced from, replacing the previous release's tree and
+          # lockfile. The checkout is shallow, so it fetches that one commit with the checkout's
+          # credentials. A failure with one release does not skip the next.
+          failed=()
+          for release in 0.15.1 0.14.11; do
+            echo "::group::Desktop $release"
+            ./checkout_legacy.sh "$release"
+            # The lockfile is the released one plus this crate, so Cargo must be free to add it.
+            RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test || failed+=("$release")
+            echo "::endgroup::"
+          done
+          if (( ${#failed[@]} )); then
+            echo "The smoke test failed with the client of desktop ${failed[*]}"
+            exit 1
+          fi
 
       # Each root integration lane restores its own snapshot. Deleting Eva here cannot race the
       # ordinary modules in this lane or another matrix job. Older Cloud refs lack the runner.

@@ -86,7 +86,11 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertGreater(int(step["env"]["SMOKE_SNAPSHOT_WAIT_SECS"]), 120)
     self.assertNotIn("APPFLOWY_WORKSPACE_ACTOR_SNAPSHOT_INTERVAL_SECS", step["run"])
     run = step["run"]
-    self.assertLess(run.index("./checkout_legacy.sh"), run.index("cargo test"))
+    # Both released desktops run, each from its own client libraries, and one failing does not
+    # skip the other.
+    self.assertIn("for release in 0.15.1 0.14.11; do", run)
+    self.assertLess(run.index('./checkout_legacy.sh "$release"'), run.index("cargo test"))
+    self.assertIn('cargo test || failed+=("$release")', run)
     self.assertLess(run.index("npm ci"), run.index("cargo test"))
     # The copied lockfile is the released one; Cargo adds this crate to it.
     self.assertNotIn("--locked", run)

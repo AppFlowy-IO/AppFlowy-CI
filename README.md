@@ -277,7 +277,7 @@ The integration matrix has 17 jobs, with `max-parallel: 15`. Actions displays ea
 | Auth | SCIM tests with Authentik and LDAP tests with OpenLDAP |
 | Standalone HTTP targets | Generic non-`main` Cloud Cargo integration targets; presentation acceptance uses its dedicated fixture job |
 | Worker service | Worker package tests |
-| Released clients | `tests/legacy_client_smoke`: two desktops built from a released desktop's client libraries and a Yjs web participant share a workspace on this Cloud source |
+| Released clients | `tests/legacy_client_smoke`: two desktops built from a released desktop's client libraries and a Yjs web participant share a workspace on this Cloud source, once for desktop 0.15.1 and once for 0.14.11 |
 
 Each topic has its own Docker stack. Modules and tests run serially within it; root integration
 topics finish with seeded account deletion. Database history and restore-search run on the Search
@@ -289,9 +289,10 @@ new target to be selected explicitly or by `test_targets: "*"`. Presentation acc
 room for workflow setup, coverage and cache-contract jobs.
 
 The **Released clients** topic compiles its crate in the lane: it is a Cargo workspace of its own
-and is not in the shared test archive. Its script extracts the Cloud commit that a released
-desktop's client libraries were synced from, fetching that one commit into the shallow checkout
-with the checkout's credentials. The released libraries' dependency versions are outside the Cloud
+and is not in the shared test archive. It runs the test once per released desktop in its list
+(0.15.1 and 0.14.11), and a failure with one does not skip the other. For each, its script
+extracts the Cloud commit that the desktop's client libraries were synced from, fetching that one
+commit into the shallow checkout with the checkout's credentials. The released libraries' dependency versions are outside the Cloud
 workspace graph, so the lane saves no Cargo snapshot and reuses compiler outputs through `sccache`.
 The test waits for the server to snapshot the workspace between its rounds and fails if no
 snapshot happened; Compose leaves that timer at its default (60 s plus up to 60 s of jitter), so
