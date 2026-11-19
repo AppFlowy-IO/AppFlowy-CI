@@ -113,6 +113,19 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                 self.assertEqual(path.read_text(), expected)
             self.assertEqual(configure_apt(root), 0)
 
+    def test_network_only_uses_the_primary_archive_with_the_runners_package_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            mirrors.write_text("http://azure.archive.ubuntu.com/ubuntu\n")
+            self.assertEqual(configure_apt(root, keep_archives=False), 1)
+            self.assertEqual(mirrors.read_text(), "https://archive.ubuntu.com/ubuntu\n")
+            config = (root / "apt.conf.d/99zz-appflowy-network").read_text()
+            self.assertIn('Acquire::Retries "1"', config)
+            self.assertIn('Acquire::https::Timeout "20"', config)
+            self.assertNotIn("Dir::Cache::archives", config)
+            self.assertNotIn("Keep-Downloaded-Packages", config)
+
     def test_network_limits_are_applied_even_when_primary_archive_is_already_selected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

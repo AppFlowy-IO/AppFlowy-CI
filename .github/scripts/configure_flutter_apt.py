@@ -15,16 +15,17 @@ SLOW_RUNNER_ARCHIVE = re.compile(
 # Use a dedicated archive directory so image cleanup hooks for the system
 # cache cannot discard the packages before the preparation job uploads them.
 ARCHIVES = Path("/var/cache/appflowy-flutter-apt")
-NETWORK_CONFIG = """// Avoid spending the Flutter test budget retrying package downloads.
+NETWORK_CONFIG = """// Bound package downloads on GitHub-hosted runners.
 Acquire::Retries "1";
 Acquire::http::Timeout "20";
 Acquire::https::Timeout "20";
-""" + f'Dir::Cache::archives "{ARCHIVES}";\nAPT::Keep-Downloaded-Packages "true";\n'
+"""
+ARCHIVE_CONFIG = f'Dir::Cache::archives "{ARCHIVES}";\nAPT::Keep-Downloaded-Packages "true";\n'
 
 
-def configure_apt(apt_root: Path) -> int:
+def configure_apt(apt_root: Path, *, keep_archives: bool = True) -> int:
     # Keep suites, components, signatures and third-party repositories intact.
-    # Both Azure and the us-east-2 EC2 mirror have exhausted the Flutter setup
+    # Both Azure and the us-east-2 EC2 mirror have exhausted the runner setup
     # deadline during package downloads. New runner images select their preferred
     # archive via mirror+file, while older images embed it in the APT source.
     sources = [apt_root / "sources.list", apt_root / "apt-mirrors.txt"]
@@ -43,7 +44,7 @@ def configure_apt(apt_root: Path) -> int:
 
     config = apt_root / "apt.conf.d/99zz-appflowy-network"
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(NETWORK_CONFIG)
+    config.write_text(NETWORK_CONFIG + (ARCHIVE_CONFIG if keep_archives else ""))
     return changed
 
 
@@ -103,13 +104,16 @@ if __name__ == "__main__":
     # This script owns only an ephemeral CI runner's settings. Local tests call
     # configure_apt with a temporary directory instead of modifying /etc/apt.
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux":
-        raise SystemExit("Flutter APT configuration is only for GitHub Linux runners")
+        raise SystemExit("APT configuration is only for GitHub Linux runners")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--restore", type=Path, metavar="DIRECTORY")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--network-only", action="store_true", help="Use the runner's existing package cache")
+    mode.add_argument("--restore", type=Path, metavar="DIRECTORY")
     args = parser.parse_args()
-    ARCHIVES.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if not args.network_only:
+        ARCHIVES.mkdir(mode=0o755, parents=True, exist_ok=True)
     if args.restore is None:
-        changed = configure_apt(Path("/etc/apt"))
+        changed = configure_apt(Path("/etc/apt"), keep_archives=not args.network_only)
         print(f"Configured APT downloads and switched {changed} source files to Ubuntu's primary archive")
     else:
         print(f"Reused {restore_archives(args.restore, ARCHIVES)} verified Ubuntu packages")

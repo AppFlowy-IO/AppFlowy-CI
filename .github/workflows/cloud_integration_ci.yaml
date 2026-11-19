@@ -1465,7 +1465,9 @@ jobs:
       - name: Free presentation compiler space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Install presentation test prerequisites
+        timeout-minutes: 20
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/ci-tools/.github/scripts/configure_flutter_apt.py" --network-only
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8
@@ -1553,7 +1555,9 @@ jobs:
       - name: Free presentation compiler space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Install presentation test prerequisites
+        timeout-minutes: 20
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/ci-tools/.github/scripts/configure_flutter_apt.py" --network-only
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8
