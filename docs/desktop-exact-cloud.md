@@ -71,6 +71,18 @@ pair unchanged; it neither starts nor waits for a new build. An image run ID
 without a source SHA, malformed values, or a non-immutable Desktop ref fails.
 The child workflows also reject a partial pair instead of falling back.
 
+Use `build_ci_images_self_hosted.yml` on Server `main` with the desired
+`source_sha` to produce trusted images. A workflow defined on a topic branch
+does not qualify for paired Desktop CI.
+
+For a paired database automation release, dispatch `flutter_ci.yaml` with
+`automation_editor_only=true`, an immutable Desktop `pr_ref`, the Cloud source
+SHA and the private image run ID. This runs the `database_automations` suite
+with automation enabled in Cloud and Worker. The test signs in, opens the
+editor, saves a row-scoped notification, invokes it and checks its Worker
+receipt. The ordinary matrix continues to use the manifest from the tested
+Desktop revision and accepts a hidden editor when using an older registry image.
+
 Each exact runtime verifies:
 
 - The immutable Desktop and Cloud checkouts, all four shared Rust pins and their
@@ -104,6 +116,11 @@ feature branch does not activate the receiver change. Workflow-dispatch can
 validate a CI branch before merge with an immutable Desktop `pr_ref`; omit the
 Cloud pair for the default registry mode and supply `timeline_cloud_image` for
 Flutter.
+
+The row automation suite checks the Flutter transcript for the assertion result.
+The enabled run must create and execute the rule. A registry run accepts the
+feature-off result after the editor confirms the menu is hidden. A nested
+Flutter test exception fails the suite even if the Linux wrapper exits zero.
 
 Local checks:
 

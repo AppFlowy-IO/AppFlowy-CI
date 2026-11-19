@@ -585,7 +585,7 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertNotIn("prepare-windows", jobs)
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["needs"], ["prepare-linux"])
-        self.assertEqual(job["if"], "always() && !cancelled()")
+        self.assertEqual(job["if"], "always() && !cancelled() && !inputs.automation_editor_only")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
@@ -624,8 +624,8 @@ class PdfWorkflowTest(unittest.TestCase):
                 condition = jobs[name]["if"]
                 # Python AST attribute names cannot contain GitHub job-ID hyphens.
                 condition = condition.replace("needs.prepare-linux", "needs.prepare_linux")
-                for cancelled, should_run in ((False, True), (True, False)):
-                    context = {"cancelled": cancelled, "needs": {
+                for cancelled, focused, should_run in ((False, False, True), (True, False, False), (False, True, False)):
+                    context = {"cancelled": cancelled, "inputs": {"automation_editor_only": focused}, "needs": {
                         "prepare_linux": {"result": "cancelled" if cancelled else "failure", "outputs": {}},
                     }}
                     self.assertEqual(evaluate_expression(condition, context), should_run)

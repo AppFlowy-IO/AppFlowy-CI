@@ -27,6 +27,11 @@ on:
         description: "Successful private image build for cloud_source_sha (manual premerge validation)"
         required: false
         type: string
+      automation_editor_only:
+        description: "Run only the live database automation editor against the exact Desktop and Cloud inputs"
+        required: false
+        type: boolean
+        default: false
       timeline_cloud_image:
         description: "Optional self-hosted image override; defaults to public appflowy_cloud:latest-amd64"
         required: false
@@ -122,6 +127,11 @@ jobs:
 
       - name: Select cloud test suites from the tested revision
         id: cloud-test-suites
+        env:
+          AUTOMATION_EDITOR_ONLY: ${{ inputs.automation_editor_only }}
+          DESKTOP_REF: ${{ inputs.pr_ref }}
+          CLOUD_SOURCE_SHA: ${{ inputs.cloud_source_sha }}
+          IMAGE_RUN_ID: ${{ inputs.cloud_image_run_id }}
         shell: bash
         run: |
           manifest=frontend/appflowy_flutter/integration_test/desktop/cloud/ci_suites.json
@@ -135,6 +145,14 @@ jobs:
           else
             # Older AppFlowy branches do not understand the split suite names.
             suites='["core_workspace","sidebar","database","document"]'
+          fi
+          if [[ "$AUTOMATION_EDITOR_ONLY" == true ]]; then
+            if ! [[ "$DESKTOP_REF" =~ ^[0-9a-f]{40}$ && "$CLOUD_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "The automation editor suite requires immutable Desktop and Cloud revisions and a private image run ID." >&2
+              exit 1
+            fi
+            suites=$(jq -ce 'if index("database_automations") != null then ["database_automations"]
+              else error("The tested Desktop revision has no database_automations cloud suite") end' <<< "$suites")
           fi
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
           echo "Cloud integration suites: $suites"
@@ -332,7 +350,7 @@ jobs:
     name: PDF export regression (Linux)
     needs: [prepare-linux]
     # A failed preparation must produce a failing private status, not a missing success.
-    if: always() && !cancelled()
+    if: always() && !cancelled() && !inputs.automation_editor_only
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -493,6 +511,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-ui-regression/gate-result.json"
 
   unit_test:
+    if: ${{ !inputs.automation_editor_only }}
     name: Unit tests (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: [prepare-linux]
     strategy:
@@ -688,7 +707,7 @@ jobs:
     needs: [prepare-linux]
     # Legacy heads need an explicit NA status. A current contract without its
     # matrix suite must fail instead of silently losing the required check.
-    if: always() && !cancelled() && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
+    if: always() && !cancelled() && !inputs.automation_editor_only && !contains(fromJSON(needs.prepare-linux.outputs.cloud_test_suites || '[]'), 'pdf_export')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -860,6 +879,16 @@ jobs:
           docker container prune -f || true
           docker volume prune -f || true
           sudo rm -rf /tmp/minio-data || true
+
+      - name: Enable row automations in the editor test services
+        if: matrix.cloud_test_suite == 'database_automations'
+        env:
+          CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+        run: |
+          echo "APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true" >> "$GITHUB_ENV"
+          if [[ -n "$CLOUD_SOURCE_SHA" ]]; then
+            echo "APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Start the verified exact Cloud runtime
         id: exact-cloud
@@ -1073,6 +1102,23 @@ jobs:
 
           exit $TEST_EXIT
 
+      - name: Verify the row automation editor ran
+        if: matrix.cloud_test_suite == 'database_automations'
+        shell: bash
+        run: |
+          # The Linux integration wrapper can exit successfully after its embedded
+          # widget test threw. Require the result printed after the UI assertions.
+          if grep -Eq 'EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK|Test failed[.] See exception logs above[.]' /tmp/test_output.txt; then
+            echo "::error::Flutter reported a row automation editor test failure"
+            exit 1
+          fi
+          mode='enabled|disabled'
+          if [ "${APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS:-}" = true ]; then mode=enabled; fi
+          if ! grep -Eq "Verified row automation editor: ($mode)([[:space:]]|$)" /tmp/test_output.txt; then
+            echo "::error::The row automation editor did not verify the expected server capability"
+            exit 1
+          fi
+
       - name: Upload exact Cloud runtime manifest
         if: always()
         uses: actions/upload-artifact@v4
@@ -1143,6 +1189,7 @@ jobs:
             --gate-result "$RUNNER_TEMP/pdf-cloud-ui-regression/gate-result.json"
 
   integration_test:
+    if: ${{ !inputs.automation_editor_only }}
     needs: [prepare-linux]
     strategy:
       fail-fast: false
