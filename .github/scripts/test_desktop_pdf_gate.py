@@ -1,5 +1,6 @@
 """Exercise the complete PDF target selection and its cross-repository status boundary."""
 
+import io
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,52 @@ from test_pr_cleanup_workflows import evaluate_expression
 WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
 NAMES = ["wide_pdf_repeats_the_name_column_on_readable_pages",
          "af_cloud_incomplete_rows_refuse_export"]
+
+
+class PdfStatusHTTPTest(unittest.TestCase):
+    @staticmethod
+    def rejected(code, headers, message):
+        return status.urllib.error.HTTPError(
+            "https://api.github.com/example", code, "Rejected", headers,
+            io.BytesIO(json.dumps({"message": message}).encode()),
+        )
+
+    def test_explicit_quota_rejection_can_retry_the_same_status_once(self):
+        rejection = self.rejected(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1070"},
+                                  "API rate limit exceeded")
+        accepted = io.BytesIO(b'{"state":"pending"}')
+        accepted.status = 201
+        with patch.dict(os.environ, GH_TOKEN="fixture"), \
+             patch.object(status.time, "time", return_value=1000), \
+             patch.object(status.time, "sleep") as wait, \
+             patch.object(status.urllib.request, "urlopen", side_effect=[rejection, accepted]) as send:
+            self.assertEqual(status.github_json("POST", "statuses/test", {"state": "pending"}),
+                             {"state": "pending"})
+        wait.assert_called_once_with(71)
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual(send.call_args_list[0], send.call_args_list[1])
+
+    def test_permissions_oversized_rate_waits_and_ambiguous_posts_fail_promptly(self):
+        for rejection in (self.rejected(403, {"X-GitHub-Request-Id": "abc"}, "Resource not accessible"),
+                          self.rejected(429, {"Retry-After": "999"}, "rate limit"),
+                          self.rejected(502, {}, "gateway error")):
+            with self.subTest(code=rejection.code), patch.dict(os.environ, GH_TOKEN="fixture"), \
+                 patch.object(status.time, "sleep") as wait, \
+                 patch.object(status.urllib.request, "urlopen", side_effect=rejection) as send:
+                with self.assertRaisesRegex(status.GitHubAPIError, f"HTTP {rejection.code}") as error:
+                    status.github_json("POST", "statuses/test", {"state": "failure"})
+                if rejection.code == 403:
+                    self.assertIn("x-github-request-id=abc", str(error.exception))
+                wait.assert_not_called()
+                send.assert_called_once()
+
+    def test_second_quota_rejection_stops_after_one_wait(self):
+        errors = [self.rejected(429, {"Retry-After": "4"}, "rate limit") for _ in range(2)]
+        with patch.dict(os.environ, GH_TOKEN="fixture"), patch.object(status.time, "sleep") as wait, \
+             patch.object(status.urllib.request, "urlopen", side_effect=errors):
+            with self.assertRaisesRegex(status.GitHubAPIError, "HTTP 429"):
+                status.github_json("GET", "pulls/1")
+        wait.assert_called_once_with(4)
 
 
 class PdfGateTest(unittest.TestCase):
@@ -585,7 +632,7 @@ class PdfWorkflowTest(unittest.TestCase):
         self.assertNotIn("prepare-windows", jobs)
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["needs"], ["prepare-linux"])
-        self.assertEqual(job["if"], "always() && !cancelled()")
+        self.assertEqual(job["if"], "always() && !cancelled() && !inputs.automation_editor_only")
         steps = job["steps"]
         checkout = next(step for step in steps if step.get("name") == "Checkout private repository")
         self.assertFalse(checkout["with"]["persist-credentials"])
@@ -597,7 +644,8 @@ class PdfWorkflowTest(unittest.TestCase):
         prepare_names = [step.get("name") for step in prepare["steps"]]
         self.assertLess(prepare_names.index("Build AppFlowy"),
                         prepare_names.index("Clean cargo build artifacts"))
-        download = next(step for step in steps if step.get("uses") == "actions/download-artifact@v4")
+        download = next(step for step in steps if step.get("uses") == "actions/download-artifact@v4"
+                        and "name" in step["with"])
         self.assertEqual(download["with"]["name"], "${{ github.run_id }}-ubuntu-latest")
         upload = next(step for step in steps if step.get("name") == "Upload PDF UI regression evidence")
         self.assertEqual(upload["if"], "always()")
@@ -624,8 +672,8 @@ class PdfWorkflowTest(unittest.TestCase):
                 condition = jobs[name]["if"]
                 # Python AST attribute names cannot contain GitHub job-ID hyphens.
                 condition = condition.replace("needs.prepare-linux", "needs.prepare_linux")
-                for cancelled, should_run in ((False, True), (True, False)):
-                    context = {"cancelled": cancelled, "needs": {
+                for cancelled, focused, should_run in ((False, False, True), (True, False, False), (False, True, False)):
+                    context = {"cancelled": cancelled, "inputs": {"automation_editor_only": focused}, "needs": {
                         "prepare_linux": {"result": "cancelled" if cancelled else "failure", "outputs": {}},
                     }}
                     self.assertEqual(evaluate_expression(condition, context), should_run)

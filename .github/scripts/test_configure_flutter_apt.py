@@ -1,12 +1,14 @@
 """Exercise APT configuration against disposable files, without root or network."""
 
+import hashlib
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from configure_flutter_apt import configure_apt
+from configure_flutter_apt import ARCHIVES, configure_apt, restore_archives
 
 
 class FlutterAptConfigurationTest(unittest.TestCase):
@@ -54,6 +56,22 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                 self.assertEqual(backup.read_text(), mirrorlist)
                 self.assertEqual(configure_apt(root), 0)
 
+    def test_resolute_runner_skips_the_slow_ec2_mirror(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            mirror = "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/"
+            others = (
+                "https://security.ubuntu.com/ubuntu/\tpriority:2\n"
+                "https://us-west-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:3\n"
+            )
+            mirrors.write_text(f"{mirror}\tpriority:1\n{others}")
+            self.assertEqual(configure_apt(root), 1)
+            self.assertEqual(
+                mirrors.read_text(), f"https://archive.ubuntu.com/ubuntu/\tpriority:1\n{others}"
+            )
+            self.assertEqual(configure_apt(root), 0)
+
     def test_legacy_and_deb822_sources_preserve_security_and_vendor_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -95,6 +113,19 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                 self.assertEqual(path.read_text(), expected)
             self.assertEqual(configure_apt(root), 0)
 
+    def test_network_only_uses_the_primary_archive_with_the_runners_package_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            mirrors.write_text("http://azure.archive.ubuntu.com/ubuntu\n")
+            self.assertEqual(configure_apt(root, keep_archives=False), 1)
+            self.assertEqual(mirrors.read_text(), "https://archive.ubuntu.com/ubuntu\n")
+            config = (root / "apt.conf.d/99zz-appflowy-network").read_text()
+            self.assertIn('Acquire::Retries "1"', config)
+            self.assertIn('Acquire::https::Timeout "20"', config)
+            self.assertNotIn("Dir::Cache::archives", config)
+            self.assertNotIn("Keep-Downloaded-Packages", config)
+
     def test_network_limits_are_applied_even_when_primary_archive_is_already_selected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -108,9 +139,51 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                 'Acquire::Retries "1";',
                 'Acquire::http::Timeout "20";',
                 'Acquire::https::Timeout "20";',
+                f'Dir::Cache::archives "{ARCHIVES}";',
+                'APT::Keep-Downloaded-Packages "true";',
             ):
                 self.assertIn(option, limits)
             self.assertEqual(existing.read_text(), 'Acquire::Languages "none";\n')
+
+    def test_restore_uses_current_index_hash_and_name_for_each_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed, target = root / "seed", root / "apt"
+            seed.mkdir()
+            target.mkdir()
+            contents = b"published package"
+            checksum = hashlib.sha256(contents).hexdigest()
+            current = "media_2%3a1.0+dfsg_amd64.deb"
+            stale = "dependency_1_all.deb"
+            corrupt = "audio_1_amd64.deb"
+            link = "alias_1_all.deb"
+            (seed / current).write_bytes(contents)
+            (seed / stale).write_bytes(contents)
+            (seed / corrupt).write_bytes(b"X" * len(contents))
+            (seed / link).symlink_to(seed / current)
+            (seed / "-option_1_all.deb").write_bytes(contents)
+            records = [f"'https://archive.example/pkg' {name} {len(contents)} SHA256:{checksum}"
+                       for name in (current, "dependency_2_all.deb", corrupt, link, "../outside.deb")]
+            with patch("configure_flutter_apt.subprocess.run") as apt:
+                apt.return_value = subprocess.CompletedProcess([], 0, "\n".join(records))
+                self.assertEqual(restore_archives(seed, target), 1)
+                cmd = apt.call_args.args[0]
+                self.assertEqual(cmd[-3:], ["audio:amd64", "dependency:all", "media:amd64"])
+                self.assertIn("--print-uris", cmd)
+                self.assertIn("Acquire::ForceHash=SHA256", cmd)
+            self.assertEqual(list(target.iterdir()), [target / current])
+            self.assertEqual((target / current).read_bytes(), contents)
+            self.assertFalse((root / "outside.deb").exists())
+
+    def test_empty_seed_and_changed_distribution_fall_back_to_normal_apt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("configure_flutter_apt.subprocess.run") as apt:
+                self.assertEqual(restore_archives(root / "missing", root), 0)
+                apt.assert_not_called()
+                (root / "removed_1_amd64.deb").write_bytes(b"old")
+                apt.return_value = subprocess.CompletedProcess([], 100, "")
+                self.assertEqual(restore_archives(root, root), 0)
 
     def test_command_refuses_to_change_a_local_development_environment(self):
         script = Path(__file__).with_name("configure_flutter_apt.py")

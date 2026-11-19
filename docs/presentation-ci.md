@@ -6,6 +6,10 @@ same immutable Cloud SHA as the image build and pinned CI tools from the public 
 for the image build gate. They do not change the existing Shared libraries feature graph or
 root binary archive, and they report failures through the existing integration aggregate.
 
+The package setup step has a 20-minute limit. It selects Ubuntu's primary archive on runners
+configured with the Azure or US East 2 EC2 mirror and bounds retries before installing the
+test tools. These jobs use the runner's standard package cache.
+
 On 2026-10-30, fetched AppFlowy-CI `origin/main` was
 `5702dcbb32252bbf466b6d9a660d2aa2be165519`. It already runs the `appflowy-ai` service package in
 **AI and authentication**, with source-image, Ollama/provider and commercial exclusions. It

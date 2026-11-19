@@ -1,15 +1,25 @@
 name: AppFlowy-Cloud Commercial Integrations
 run-name: >-
   [ci-v2 source=${{ github.event_name == 'pull_request' && github.repository || 'AppFlowy-IO/AppFlowy-Cloud-Premium' }}
-  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
+  pr=${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'workflow_dispatch' && inputs.pr_number || (github.event.client_payload.event_type == 'pr_opened' || github.event.client_payload.event_type == 'pr_sync') && github.event.client_payload.pr_number || 'none' }}
   parent=none]
   ${{ github.workflow }}
 on:
   repository_dispatch:
     types: [commercial-cloud-integration-ci]
+  workflow_dispatch:
+    inputs:
+      pr_ref:
+        description: Exact private Cloud commit SHA
+        required: true
+        type: string
+      pr_number:
+        description: Private Cloud PR number for run discovery and concurrency
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && format('manual-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -20,6 +30,8 @@ env:
   APPFLOWY_AI_REDIS_URL: redis://redis:6379
   LOCALHOST_GOTRUE: http://localhost/gotrue
   POSTGRES_PASSWORD: password
+  # Both Compose interpolation and the real HTTP test use the disabled deployment setting.
+  APPFLOWY_DATABASE_AUTOMATIONS_ENABLED: "false"
   DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
   SQLX_OFFLINE: true
   RUST_TOOLCHAIN: "1.98.1"
@@ -39,12 +51,20 @@ jobs:
     name: Setup Environment and Build Images
     runs-on: ubuntu-latest
     steps:
+      - name: Validate manual Cloud revision
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PR_REF: ${{ inputs.pr_ref }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          [[ "$PR_REF" =~ ^[a-f0-9]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+
       - name: Checkout Private Repo
         uses: actions/checkout@v4
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - name: Record Cloud test source
         run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
@@ -115,7 +135,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref }}
+          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - name: Record Cloud test source
         run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
@@ -303,6 +323,10 @@ jobs:
       - name: Run SCIM identity recovery contracts
         if: matrix.test_service == 'appflowy_cloud_commercial'
         run: python3 -B ci-tools/.github/scripts/commercial_scim_runner.py --source "$GITHUB_WORKSPACE"
+
+      - name: Verify all disabled database automation routes over HTTP
+        if: matrix.test_service == 'appflowy_cloud_commercial'
+        run: bash ci-tools/.github/scripts/commercial_automation_gate.sh
 
       - name: Run Tests
         env:

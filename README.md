@@ -24,6 +24,9 @@ when changing build or runtime behavior. Ordinary private-source CI keeps its fu
 complete. Trusted default-branch tooling reads the current private PR source as data and
 reconciles newly added Rust test functions or changed test attributes against both workflows'
 libtest logs and native private test workflows for the same head (including SDK and Backup).
+The audit compares the exact head and merge-base Git trees. A shallow checkout fetches only
+the missing merge-base snapshot. The GitHub compare API can omit large patches and limits its
+file list to 300 entries, so the audit uses that response only to identify the merge-base.
 Public test jobs record `AF_TEST_SOURCE_SHA`; older/native jobs require a recorded private
 checkout or an API-verified GitHub PR test merge whose second parent is the requested head.
 Private workflow completion dispatches let the audit settle when those jobs finish last.
@@ -38,12 +41,21 @@ annotations and a JSON artifact. A closed or advanced PR cannot receive a stale 
 code is imported/executed by the privileged audit job, and repository credentials are never
 forwarded to signed log-download hosts. Collection is bounded to 300 jobs per related run,
 32 MiB per log and 256 MiB total; unavailable or truncated evidence fails verification.
+GitHub supplies no log for a queued job cancelled before runner assignment. The report lists
+those jobs under `cancelled_before_start` and credits them with zero test executions.
 
 The initial notification gate covers PR-added standard Rust test functions. Generated/conditional
 cases and duplicate function names are explicitly unverified; it does not infer complete runtime
 case inventories or every feature/platform configuration from source parsing. Reviewed manual
 exceptions use exact `path.rs::function` keys with explanatory values in the source's
 `script/ci/test_execution_exemptions.json`, and remain visible in the report.
+
+For commercial validation before a companion CI branch merges, run the existing commercial
+workflow on the CI branch and pass the full private Cloud head and PR number. For example,
+`gh workflow run cloud_commercial_integration_ci.yaml --ref CI_BRANCH -f pr_ref=CLOUD_SHA -f pr_number=PR`.
+This runs the self-hosted feature-off fixture once on Cloud revisions that contain it.
+Use `cloud_integration_ci.yaml` with the same inputs for the enabled Databases and member lanes.
+Manual runs on a CI branch have their own concurrency group.
 
 For an offline audit, `.github/scripts/cloud_test_execution_audit.py report` accepts `--source`,
 `--sha`, a GitHub compare JSON as `--changes`, and a directory of attested `.log` files as `--logs`.
@@ -82,6 +94,8 @@ The status bridge requires an immutable `pr_ref`, a matching checkout and curren
 private PR head, and a passing current gate step. Legacy refs with no PDF tests or
 contract receive an explicit not-applicable status; removing the contract or tests
 in a PR cannot use that fallback. Test execution does not receive the bridge's token.
+The status bridge logs the GitHub error and request ID on a rejected API call. It
+honors an explicit rate limit once when the requested wait fits within three minutes.
 To validate a CI branch's statuses, dispatch Rust and Flutter with both `pr_ref=<SHA>`
 and `pr_number=<private-PR>`. Merge the workflow and Desktop contract changes and verify
 the same Desktop SHA before making these statuses required in repository rules.
@@ -93,9 +107,18 @@ Flutter's Linux jobs configure APT from the same CI revision as the workflow.
 Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent
 42–59 minutes downloading prerequisites; recent successful test steps took
 17–31 minutes. The disposable runners now use Ubuntu's primary archive for
-those mirror entries, with one retry and 20-second HTTP/HTTPS inactivity limits.
-Prerequisite installation has a separate 10-minute deadline. The test matrix,
-45-minute test limits, package signatures, and repository suites stay intact.
+Azure mirror entries and for the us-east-2 EC2 mirror. Shards using that EC2
+mirror reached the setup deadline while still fetching media libraries on Ubuntu
+26.04. APT allows one retry and 20 seconds of HTTP/HTTPS inactivity.
+[Flutter CI package download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44434891696/job/135273883423)
+The preparation job has up to 20 minutes for a cold installation. It shares its
+downloaded Ubuntu packages with the test shards for one day. Each shard checks
+the filenames, sizes and SHA-256 digests against its own updated APT index before
+using those packages. Missing or outdated packages come from its normal
+repositories. Shards have 10 minutes to install prerequisites and 45 minutes for
+tests. A shard previously spent over three minutes fetching 38 MB from the
+primary archive before its next 100 MB download exhausted the setup deadline.
+[Flutter shard download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44464921477/job/135372217705)
 The configuration script refuses to run outside a GitHub Linux runner; its
 local tests use temporary files without root or network access.
 
@@ -136,6 +159,16 @@ The Worker lane selects `-p 'appflowy-worker*'` through Cargo so extracted Worke
 their unit tests in the service-backed lane. The quoted package pattern also supports older Cloud
 revisions with only the original process package. The test matrix and serial test execution stay
 the same; Cargo, rather than the shell, expands the package names.
+
+Cloud revisions that include outbound automation actions run the integrations crate in the member
+lane with its PostgreSQL and dedicated Redis fixtures. Its SMTP, Slack, Gmail and webhook tests use
+local receivers. The authenticated three-receipt case runs in Cloud’s private provider-receipts
+workflow against its own Cloud, S3 and HTTPS receivers. The member guard verifies the exact
+registered case and its workflow owner before excluding it from the PostgreSQL/Redis run.
+The Databases lane selects all enabled `automation::` HTTP cases. The commercial
+self-host lane runs the exact disabled-route HTTP test once against a server started with
+`APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=false`. Older Cloud checkouts skip the corresponding tests
+when their sources are absent.
 
 Release and integration builds have separate workflow queues and image caches. The laptop's
 current build settings are documented in Cloud Premium's `doc/context/ci/self_hosted_runner_context.md`.
@@ -233,6 +266,32 @@ including SCIM protocol, group-status SQL and workspace-bound MCP token regressi
 managed-user production modules are present in the selected Cloud revision, inventory guards
 require at least 51 SCIM protocol tests plus the SCIM group-limit policy test (52 SCIM-related
 cases total), 11 default-feature group-status and 3 MCP token tests, with none ignored.
+When the Cloud revision has `libs/automation-feed/Cargo.toml`, the lane adds `-p automation-feed`
+and requires the detector's one-event race test and at least 4 `detector::race_tests::`. When it
+has `libs/automation-engine/Cargo.toml`, the lane adds `-p automation-engine` and requires at
+least 12 run-queue conformance tests (`automation::run_queue_tests::conformance::`, in
+`-p database`), 12 `dispatcher::tests::` and 10 `executor::race_tests::`, with none ignored.
+The lane also runs `appflowy-notification` and `appflowy-cloud-core`, and `appflowy-openapi` when
+the Cloud revision has `libs/appflowy-openapi/Cargo.toml` (`release/0.19.0` does not). No other
+lane runs the engine's tests in these crates, which cover the notification gate, routing and
+delivery worker, push text and the HTTP API contract, or most of their other tests: **Permission
+contracts** runs only about 30 named `appflowy-cloud-core` tests. Cloud sources carrying the
+dispatch checkout measurement also run it and the transactional notification recorder test on the
+member lane’s disposable PostgreSQL. An exact pass record is required for each. Other opt-in
+component measurements keep their own fixtures. A guard counts the test paths that start with
+its prefix.
+`cargo test --list` prints no crate name, so a top-level module of the same name in another member
+crate would count too; none exists today. Each guard is gated on its crate, so older Cloud
+revisions still pass. The
+integration stack turns `APPFLOWY_DATABASE_AUTOMATIONS_ENABLED` on in place in "Replace values in
+.env", which runs in every lane after `deploy.env` is copied: `sed -i` rewrites the copied line
+to `true`, a `deploy.env` without the line (a Cloud revision from before the engine) gets one
+appended, and the step fails unless `.env` then defines the flag exactly once, as `true`. A
+second line would split the stack, because Compose reads a key's last line but dotenvy, which
+host-side tests load `.env` with, keeps its first. No later step may touch `.env` before Compose
+starts. `docker-compose-ci.yml` gives Worker 21 connections (16 plus the engine's 4-connection
+pool and its control connection) and 10 runs per automation per minute, which this workflow does
+not override.
 The separate **Directory self-host contracts** runner compiles and runs the directory status
 suite with `self-host-af`, requiring all 12 status tests including the exact admin-audit rollback
 case in its nonignored inventory. Moving that feature graph to its own runner keeps its compilation
@@ -266,7 +325,7 @@ The integration matrix has 16 jobs, with `max-parallel: 15`. Actions displays ea
 | Permissions and spaces | Private-space migration, space ACLs, permission enforcement and sharing |
 | Permissions and spaces 2 | Structured-space lifecycle, custom/PRD spaces, group permissions and supporting access suites |
 | Import and publishing | Document/Notion imports, page views and publishing |
-| Databases | Database tests, excluding the index test |
+| Databases | Database tests and automation user cases, excluding the index test |
 | Realtime collaboration | Collab integration tests |
 | AI and authentication | AI, GoTrue, OIDC and user APIs |
 | SQL persistence | SQL core, permissions, collab and workspace persistence |
@@ -374,10 +433,10 @@ The dashboard job validates Prometheus queries and both CI Compose cache configu
 
 Cloud refs with `script/cache_test_phases.json` must advertise schema version 1 and exactly the
 `cache` and `permission` phases. CI runs them on separate runners with separate Cargo caches and
-the 180-minute limit per phase. The source runner owns each phase's selections and package
-feature graphs; this avoids the combined lane's observed two-hour compilation timeout without
-unifying Cargo features. Both matrix results feed the required `cache-contracts` result, and one
-failure does not cancel its sibling. Full-run completion within the bound still needs CI evidence.
+a 180-minute cache budget. Two cold permission builds were still compiling before their first
+assertions at 180 minutes, so the permission phase has a 300-minute budget. The source runner
+owns each phase's selections and package feature graphs. Both matrix results feed the required
+`cache-contracts` result, and one failure does not cancel its sibling. Full-run completion within the bound still needs CI evidence.
 Older refs without the manifest run their combined `all` gate once. An unsupported or incomplete
 manifest fails setup instead of skipping contracts or duplicating the full gate.
 

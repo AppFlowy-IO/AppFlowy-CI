@@ -21,6 +21,7 @@ PACKAGES = [
     "collab-indexing", "collab-snapshot", "collab-history", "collab-realtime",
     "collab-realtime-server", "indexer", "collab-stream", "database", "server-infra",
     "workspace-permission", "pdf-exporter", "collab", "collab-rt-entity", "appflowy-proto",
+    "appflowy-notification", "appflowy-cloud-core",
     "appflowy-cloud-forms", "appflowy-cloud-workspace-support", "appflowy-cloud-workspace",
     "appflowy-cloud-admin", "appflowy-cloud-collab", "appflowy-cloud-workspace-access",
     "appflowy-cloud-pages", "appflowy-cloud-publishing", "appflowy-cloud-database-api",
@@ -29,11 +30,26 @@ PACKAGES = [
 GROUP_POLICY = "biz::directory::group::tests::scim_group_members_can_exceed_the_manual_group_limit"
 
 
+EXPIRED_GROUP = "dispatcher::tests::measure_expired_property_group_dispatch_transaction"
+
+
 class CloudMemberPreparationTest(unittest.TestCase):
     def invoke(self, mode, *, contracts=True, ignored=False, compile_exit=0, test_exit=0,
-               inventory_exit=0, extra_args=()):
+               inventory_exit=0, extra_args=(), automation_results=None, expired_group=False,
+               compiled_group=True, ignored_group=True, dispatcher_count=12, other_ignored=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            if automation_results is not None:
+                path = root / "libs/automation-engine/src/dispatcher/checkout_measurement.rs"
+                path.parent.mkdir(parents=True)
+                path.touch()
+                (root / "libs/automation-engine/Cargo.toml").touch()
+                (root / "postgres-results").write_text(automation_results)
+            if expired_group:
+                path = root / "libs/automation-engine/src/dispatcher/tests.rs"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("async fn measure_expired_property_group_dispatch_transaction() {}")
+                (root / "libs/automation-engine/Cargo.toml").touch()
             if contracts:
                 for relative in ["libs/appflowy-cloud-directory/src/api/scim/user_attributes.rs",
                                  "libs/appflowy-mcp-core/src/workspace_token.rs"]:
@@ -45,8 +61,19 @@ class CloudMemberPreparationTest(unittest.TestCase):
                           for index in range(11)]
             inventory += [f"workspace_token::tests::case_{index}: test" for index in range(3)]
             inventory.append(f"{GROUP_POLICY}: test")
+            ignored_cases = [inventory[0]] if ignored else []
+            if expired_group:
+                for prefix, count in [("automation::run_queue_tests::conformance::", 12),
+                                      ("dispatcher::tests::", dispatcher_count), ("executor::race_tests::", 10)]:
+                    inventory.extend(f"{prefix}case_{n}: test" for n in range(count))
+                if compiled_group:
+                    inventory.append(f"{EXPIRED_GROUP}: test")
+                if ignored_group:
+                    ignored_cases.append(f"{EXPIRED_GROUP}: test")
+                if other_ignored:
+                    ignored_cases.append("dispatcher::tests::case_0: test")
             (root / "all").write_text("\n".join(inventory) + "\n")
-            (root / "ignored").write_text(inventory[0] + "\n" if ignored else "")
+            (root / "ignored").write_text("".join(line + "\n" for line in ignored_cases))
             binary = root / "bin"
             binary.mkdir()
             cargo = binary / "cargo"
@@ -55,6 +82,9 @@ args = sys.argv[1:]
 with open("calls.jsonl", "a") as output:
     output.write(json.dumps({"args": args, "RUST_LOG": os.getenv("RUST_LOG"),
                             "DISABLE_CI_TEST_LOG": os.getenv("DISABLE_CI_TEST_LOG")}) + "\\n")
+if "--ignored" in args and "--exact" in args:
+    assert os.environ["NOTIFICATION_TEST_DATABASE_URL"] == os.environ["DATABASE_URL"]
+    print(pathlib.Path("postgres-results").read_text(), end="")
 if "--list" in args:
     print(pathlib.Path("ignored" if "--ignored" in args else "all").read_text(), end="")
     sys.exit(int(os.environ["INVENTORY_EXIT"]))
@@ -67,6 +97,7 @@ sys.exit(int(os.environ["TEST_EXIT"]))
                 ["bash", str(HELPER), mode, *extra_args], cwd=root,
                 env={**os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
                      "RUST_LOG": "inherited", "DISABLE_CI_TEST_LOG": "false",
+                     "DATABASE_URL": "postgres://member-fixture/postgres",
                      "INVENTORY_EXIT": str(inventory_exit), "COMPILE_EXIT": str(compile_exit),
                      "TEST_EXIT": str(test_exit)},
                 text=True, capture_output=True, timeout=10, check=False,
@@ -122,6 +153,62 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         }])
         for selector in ("--lib", "--bins", "--tests", "--doc", "--ignore", "--skip"):
             self.assertNotIn(selector, calls[0]["args"])
+
+    def test_automation_requires_both_disposable_postgres_cases_to_execute(self):
+        recorder = "a_pool_free_recorder_records_what_the_service_records"
+        dispatch = "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold"
+        passed = [f"test {case} ... ok" for case in (recorder, dispatch)]
+        for lines, success in [(passed, True), (passed[:1], False),
+                               ([f"test {recorder} ... ignored", passed[1]], False),
+                               ([passed[0], f"test {dispatch}_other ... ok"], False)]:
+            with self.subTest(lines=lines):
+                result, calls = self.invoke("run", automation_results="\n".join(lines) + "\n")
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                self.assertEqual(len(calls), 2)
+                args = calls[1]["args"]
+                self.assertEqual(args[:args.index("--lib")], calls[0]["args"][:-2])
+                self.assertEqual(args[args.index("--lib"):],
+                                 ["--lib", "--test", "delivery", "--", "--exact", "--ignored",
+                                  recorder, dispatch, "--test-threads=1", "--show-output"])
+
+    def test_automation_sources_run_the_shared_entity_tests_for_workspace_settings(self):
+        for mode in ("prepare", "run"):
+            with self.subTest(mode=mode):
+                result, legacy = self.invoke(mode, contracts=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("appflowy-entity", legacy[0]["args"])
+                result, calls = self.invoke(mode, expired_group=True, automation_results="\n".join(
+                    f"test {name} ... ok" for name in (
+                        "a_pool_free_recorder_records_what_the_service_records",
+                        "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold",
+                        EXPIRED_GROUP,
+                    )))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                packages = calls[0]["args"]
+                self.assertIn(("-p", "appflowy-entity"), list(zip(packages, packages[1:])))
+
+    def test_dispatch_guard_requires_regular_cases_and_the_separate_measurement(self):
+        for options, success in [({}, True), ({"compiled_group": False}, False),
+                                 ({"ignored_group": False}, False), ({"dispatcher_count": 11}, False),
+                                 ({"other_ignored": True}, False)]:
+            with self.subTest(options=options):
+                result, calls = self.invoke("prepare", expired_group=True, **options)
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                self.assertEqual(len(calls), 3 if success else 2)
+
+    def test_group_measurement_must_have_its_own_passing_result(self):
+        other_cases = ("a_pool_free_recorder_records_what_the_service_records",
+                       "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold")
+        passed = "".join(f"test {name} ... ok\n" for name in other_cases)
+        for tail, success in [(f"test {EXPIRED_GROUP} ... ok\n", True), ("", False),
+                              (f"test {EXPIRED_GROUP} ... ignored\n", False),
+                              (f"test {EXPIRED_GROUP}_other ... ok\n", False)]:
+            with self.subTest(tail=tail):
+                result, calls = self.invoke("run", expired_group=True, automation_results=passed + tail)
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                args = calls[-1]["args"]
+                self.assertEqual(args[args.index("--ignored") + 1:args.index("--test-threads=1")],
+                                 [*other_cases, EXPIRED_GROUP])
 
     def test_invalid_mode_cannot_invoke_cargo(self):
         result, calls = self.invoke("invalid")

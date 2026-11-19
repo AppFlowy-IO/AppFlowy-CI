@@ -49,7 +49,31 @@ class FlutterPrerequisitesWorkflowTest(unittest.TestCase):
                 )
                 self.assertLess(steps.index(checkout), steps.index(configure))
                 self.assertLess(steps.index(configure), steps.index(install))
-                self.assertEqual(install["timeout-minutes"], 10)
+                self.assertEqual(install["timeout-minutes"], 20 if name == "prepare-linux" else 10)
+
+    def test_all_test_shards_receive_packages_from_their_own_preparation(self):
+        jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        prepare = jobs["prepare-linux"]
+        upload = next(step for step in prepare["steps"] if step.get("id") == "apt-archives")
+        self.assertEqual(upload["with"]["path"], "/var/cache/appflowy-flutter-apt/*.deb")
+        self.assertEqual(upload["with"]["retention-days"], 1)
+        self.assertEqual(prepare["outputs"]["linux_apt_artifact"], "${{ steps.apt-archives.outputs.artifact-id }}")
+        for name in ("unit_test", "pdf_export_ui", "cloud_integration_test", "integration_test"):
+            with self.subTest(job=name):
+                steps = jobs[name]["steps"]
+                download = next(step for step in steps if step.get("name") == "Download prepared Ubuntu packages")
+                install = next(step for step in steps if step.get("name") == "Install prerequisites")
+                self.assertIn("prepare-linux", jobs[name]["needs"])
+                self.assertIn("needs.prepare-linux.outputs.linux_apt_artifact != ''", download["if"])
+                if name == "pdf_export_ui":
+                    self.assertIn("steps.pdf-ui-source.outputs.enabled == 'true'", download["if"])
+                self.assertEqual(download["with"]["artifact-ids"], "${{ needs.prepare-linux.outputs.linux_apt_artifact }}")
+                self.assertEqual(download["with"]["path"], "${{ runner.temp }}/flutter-apt-packages")
+                self.assertTrue(download["with"]["merge-multiple"])
+                self.assertTrue(download["continue-on-error"])
+                self.assertLess(steps.index(download), steps.index(install))
+                self.assertLess(install["run"].index("apt-get update"), install["run"].index("--restore"))
+                self.assertLess(install["run"].index("--restore"), install["run"].index("apt-get install"))
 
 
 class DesktopRunnerWorkflowTest(unittest.TestCase):
@@ -279,7 +303,7 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             if step.get("name", "").startswith("Run Flutter integration tests")
         )
 
-    def select_suites(self, manifest=None):
+    def select_suites(self, manifest=None, **environment):
         with tempfile.TemporaryDirectory(prefix="cloud-ci-matrix-") as directory:
             root = Path(directory)
             if manifest is not None:
@@ -290,7 +314,7 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", self.selection["run"]],
                 cwd=root,
-                env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                env={**os.environ, **environment, "GITHUB_OUTPUT": str(output)},
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -307,6 +331,94 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         result, output = self.select_suites()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(output.removeprefix("suites=")), LEGACY_SUITES)
+
+    def test_paired_editor_requires_immutable_inputs_and_a_declared_suite(self):
+        pair = {"AUTOMATION_EDITOR_ONLY": "true", "DESKTOP_REF": "a" * 40,
+                "CLOUD_SOURCE_SHA": "b" * 40, "IMAGE_RUN_ID": "135"}
+        suites = ["database", "database_automations", "pdf_export"]
+        for manifest, overrides, expected in [
+            (suites, {}, ["database_automations"]),
+            (suites, {"AUTOMATION_EDITOR_ONLY": "false", "DESKTOP_REF": "main"}, suites),
+            (None, {}, None), (["database"], {}, None),
+            (suites, {"DESKTOP_REF": "main"}, None),
+            (suites, {"CLOUD_SOURCE_SHA": ""}, None),
+            (suites, {"IMAGE_RUN_ID": "0"}, None),
+        ]:
+            with self.subTest(manifest=manifest, overrides=overrides):
+                result, output = self.select_suites(manifest, **{**pair, **overrides})
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(output, "")
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(output.removeprefix("suites=")), expected)
+
+    def test_only_paired_editor_requires_row_automations(self):
+        steps = self.cloud["steps"]
+        feature = next(step for step in steps if step.get("name") == "Enable row automations in the editor test services")
+        self.assertEqual(feature["if"], "matrix.cloud_test_suite == 'database_automations'")
+        self.assertIn("inputs.cloud_source_sha", feature["env"]["CLOUD_SOURCE_SHA"])
+        self.assertLess(steps.index(feature), next(i for i, step in enumerate(steps) if step.get("id") == "exact-cloud"))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "env"
+            for source in ("", "a" * 40):
+                output.write_text("")
+                subprocess.run(["bash", "-e", "-c", feature["run"]], check=True,
+                               env={**os.environ, "CLOUD_SOURCE_SHA": source, "GITHUB_ENV": str(output)})
+                self.assertIn("APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true", output.read_text())
+                self.assertEqual("APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS=true" in output.read_text(), bool(source))
+        for job in ("pdf_export_ui", "pdf_cloud_ui_availability", "unit_test", "integration_test"):
+            self.assertIn("!inputs.automation_editor_only", self.jobs[job]["if"])
+
+    def test_workspace_webhook_policy_is_opt_in_and_checks_the_completed_switch_roundtrip(self):
+        options = {"AUTOMATION_EDITOR_ONLY": "true", "DESKTOP_REF": "a" * 40,
+                   "CLOUD_SOURCE_SHA": "b" * 40, "IMAGE_RUN_ID": "123", "REQUIRE_WEBHOOK_POLICY": "true"}
+        manifest = ["database", "database_automations"]
+        for focused, accepted in [("false", False), ("true", True)]:
+            result, output = self.select_suites(manifest, **{**options, "AUTOMATION_EDITOR_ONLY": focused})
+            self.assertEqual(result.returncode == 0, accepted)
+            if accepted:
+                self.assertEqual(json.loads(output.removeprefix("suites=")), ["database_automations"])
+        feature = next(s for s in self.cloud["steps"] if s.get("name") == "Enable row automations in the editor test services")
+        check = next(s for s in self.cloud["steps"] if s.get("name") == "Verify the row automation editor ran")
+        self.assertEqual(feature["env"]["REQUIRE_WEBHOOK_POLICY"], "${{ inputs.require_workspace_webhook_policy }}")
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "env"
+            log = Path(directory) / "output"
+            subprocess.run(["bash", "-e", "-c", feature["run"]], check=True,
+                           env={**os.environ, **options, "GITHUB_ENV": str(env_file)})
+            self.assertIn("APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY=true", env_file.read_text().splitlines())
+            command = check["run"].replace("/tmp/test_output.txt", str(log))
+            for marker, expected in [("", 1), ("false", 1), ("true", 0)]:
+                log.write_text(f"Verified owner workspace webhook setting: {marker}\nVerified row automation editor: enabled\n")
+                result = subprocess.run(["bash", "-eo", "pipefail", "-c", command], capture_output=True,
+                                        env={**os.environ, "APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS": "true",
+                                             "APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY": "true"})
+                self.assertEqual(result.returncode, expected, marker)
+
+    def test_automation_editor_needs_a_completed_ui_case_and_checks_nested_failures(self):
+        step = next(s for s in self.cloud["steps"] if s.get("name") == "Verify the row automation editor ran")
+        self.assertEqual(step["if"], "matrix.cloud_test_suite == 'database_automations'")
+        verified = "Verified row automation editor: "
+        nested = "EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK"
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "output"
+            script = step["run"].replace("/tmp/test_output.txt", str(log))
+            for strict, output, expected in [
+                (True, verified + "enabled", 0),
+                (True, verified + "disabled", 1),
+                (False, verified + "disabled", 0),
+                (False, verified + "enabled", 0),
+                (False, "00:00 +1: All tests passed!", 1),
+                (True, nested + "\n" + verified + "enabled\nAll tests passed!", 1),
+                (False, verified + "disabled\nTest failed. See exception logs above.", 1),
+            ]:
+                with self.subTest(strict=strict, output=output):
+                    log.write_text(output + "\n")
+                    result = subprocess.run(["bash", "-eo", "pipefail", "-c", script],
+                                            env={**os.environ, "APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS": str(strict).lower()},
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
     def test_invalid_manifest_fails_instead_of_omitting_tests(self):
         for manifest in [

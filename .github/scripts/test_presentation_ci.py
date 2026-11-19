@@ -421,6 +421,20 @@ fn presentation_gateway_contract_bridge() {
 
 
 class PresentationWorkflowTest(unittest.TestCase):
+    def test_prerequisites_configure_bounded_runner_downloads_before_using_apt(self):
+        for name in ("presentation-contracts", "presentation-acceptance"):
+            with self.subTest(job=name):
+                steps = WORKFLOW["jobs"][name]["steps"]
+                tools = next(step for step in steps if step.get("name") == "Checkout pinned CI tools")
+                install = next(step for step in steps if step.get("name") == "Install presentation test prerequisites")
+                self.assertEqual(tools["with"]["ref"], "${{ github.sha }}")
+                self.assertLess(steps.index(tools), steps.index(install))
+                script = tools["with"]["path"] + '/.github/scripts/configure_flutter_apt.py" --network-only'
+                self.assertLess(install["run"].index(script), install["run"].index("apt-get update"))
+                self.assertLess(install["run"].index("apt-get update"), install["run"].index("apt-get install"))
+                self.assertGreater(install["timeout-minutes"], 0)
+                self.assertLess(install["timeout-minutes"], WORKFLOW["jobs"][name]["timeout-minutes"])
+
     def test_ai_instruction_contracts_have_owned_bounded_redis_and_explicit_loopback_dsn(self):
         job = WORKFLOW["jobs"]["presentation-contracts"]
         redis = job["services"]["redis"]

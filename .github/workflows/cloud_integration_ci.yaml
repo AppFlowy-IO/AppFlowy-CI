@@ -246,10 +246,9 @@ jobs:
       fail-fast: false
       matrix:
         phase: ${{ fromJSON(needs.verify_test_module_coverage.outputs.encoded_cache_phases) }}
-    # Builds use two jobs on a 4-vCPU hosted runner and rarely restore a cache. The permission
-    # phase spends 77 to over 120 minutes building 12 owner crates before its contracts run; the
-    # cache phase has taken up to 119.
-    timeout-minutes: 180
+    # Two cold permission builds exhausted 180 minutes while compiling the Cloud graph.
+    # Keep the smaller cache phase and the legacy combined job at their existing bound.
+    timeout-minutes: ${{ matrix.phase == 'permission' && 300 || 180 }}
     env:
       DATABASE_URL: postgres://postgres:password@localhost:5432/postgres
       SQLX_OFFLINE: 'true'
@@ -840,6 +839,25 @@ jobs:
           # Cloud, Worker, MCP and the automation tests read this one value: the tests wait two
           # intervals for a new watch to reach every process, 1 s instead of the default 10 s.
           echo 'APPFLOWY_AUTOMATION_FEED_WATCHED_REFRESH_MS=500' >> .env
+          # The automation engine's end-to-end cases need Cloud and Worker to run automations.
+          # deploy.env ships the flag off, and its value would override docker-compose-ci.yml's
+          # default, so turn it on in place: with a second line, Compose would read the last one
+          # but dotenvy (host-side tests) the first. Cloud sources from before the engine have no
+          # such line and do not read the flag, so append it only there. Do this after the copy,
+          # in a step every lane runs, and make any other .env change in this step too.
+          # docker-compose-ci.yml gives Worker the 21 connections the engine needs (16 +
+          # APPFLOWY_DATABASE_AUTOMATION_PG_CONNECTIONS + 1) and the 10 runs per automation per
+          # minute the rate-limit case counts on, under CI-only names: never set
+          # APPFLOWY_CI_WORKER_DATABASE_MAX_CONNECTIONS below that sum, or
+          # APPFLOWY_CI_DATABASE_AUTOMATION_RUNS_PER_MINUTE to anything but 10.
+          sed -i 's|^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=.*|APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true|' .env
+          grep -q '^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=' .env ||
+            echo 'APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true' >> .env
+          if [[ "$(grep -c '^APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=' .env)" != 1 ]] ||
+            ! grep -qx 'APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true' .env; then
+            echo '::error::.env must define APPFLOWY_DATABASE_AUTOMATIONS_ENABLED once, as true'
+            exit 1
+          fi
 
           if [[ "$AI_ON_OLLAMA" == true ]]; then
             # Ollama, which "Point the AI at Ollama" configures, is this lane's only AI provider.
@@ -1447,7 +1465,9 @@ jobs:
       - name: Free presentation compiler space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Install presentation test prerequisites
+        timeout-minutes: 20
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/ci-tools/.github/scripts/configure_flutter_apt.py" --network-only
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8
@@ -1535,7 +1555,9 @@ jobs:
       - name: Free presentation compiler space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Install presentation test prerequisites
+        timeout-minutes: 20
         run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS python3 "$GITHUB_WORKSPACE/ci-tools/.github/scripts/configure_flutter_apt.py" --network-only
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8

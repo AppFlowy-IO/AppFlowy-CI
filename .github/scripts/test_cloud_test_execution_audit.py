@@ -147,7 +147,7 @@ fn spawns() {
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             changes = self.source(root, "#[test]\nfn ran() {}\n#[test]\n#[ignore]\nfn skipped() {}\n#[test]\nfn missing() {}\nfn helper() {}\n")
-            report = audit.audit(root, changes, {"job": log({"tests::ran": "ok", "tests::skipped": "ignored"})}, SHA)
+            report = audit.audit(root, audit.compare_lines(changes), {"job": log({"tests::ran": "ok", "tests::skipped": "ignored"})}, SHA)
             self.assertEqual(report["counts"], {"executed": 1, "ignored_only": 1, "not_observed": 1})
             output = io.StringIO()
             with redirect_stdout(output):
@@ -163,15 +163,15 @@ fn spawns() {
             root = Path(temporary)
             changes = self.source(root, "#[test]\nfn existing_helper() {}\n")
             changes["files"][0]["patch"] = "@@ -1 +1,2 @@\n+#[test]\n fn existing_helper() {}"
-            self.assertEqual(len(audit.inventory(root, changes)), 1)
+            self.assertEqual(len(audit.inventory(root, audit.compare_lines(changes))), 1)
             changes["files"][0]["patch"] = "@@ -2 +2 @@\n-fn existing_helper() {}\n+fn existing_helper() { changed_body(); }"
-            self.assertEqual(len(audit.inventory(root, changes)), 1)
+            self.assertEqual(len(audit.inventory(root, audit.compare_lines(changes))), 1)
 
     def test_ambiguous_names_and_generated_cases_are_unverified_not_false_passes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             changes = self.source(root, "mod a { #[test] fn same() {} }\nmod b { #[test] fn same() {} }\n#[rstest]\n#[case([1, 2])]\nfn generated() {}\n")
-            report = audit.audit(root, changes, {"job": log({"a::same": "ok", "generated": "ok"})}, SHA)
+            report = audit.audit(root, audit.compare_lines(changes), {"job": log({"a::same": "ok", "generated": "ok"})}, SHA)
             self.assertEqual(report["counts"], {"unverified_identity": 3})
 
     def test_exceptions_are_explicit_and_cannot_hide_a_case_without_a_reason(self):
@@ -181,11 +181,11 @@ fn spawns() {
             exceptions = root / "script/ci/test_execution_exemptions.json"
             exceptions.parent.mkdir(parents=True)
             exceptions.write_text(json.dumps({"src/lib.rs::paid_provider": "Requires a separately authorized paid provider run"}))
-            report = audit.audit(root, changes, {}, SHA)
+            report = audit.audit(root, audit.compare_lines(changes), {}, SHA)
             self.assertEqual(report["counts"], {"exempt": 1})
             exceptions.write_text(json.dumps({"src/lib.rs::paid_provider": "skip"}))
             with self.assertRaises(ValueError):
-                audit.audit(root, changes, {}, SHA)
+                audit.audit(root, audit.compare_lines(changes), {}, SHA)
 
     def test_missing_diff_and_escaping_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -193,7 +193,70 @@ fn spawns() {
             changes = self.source(root, "#[test]\nfn case() {}\n")
             del changes["files"][0]["patch"]
             with self.assertRaises(ValueError):
-                audit.inventory(root, changes)
+                audit.inventory(root, audit.compare_lines(changes))
+
+    def test_git_inventory_survives_missing_large_patches_and_the_300_file_cap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+            git("init", "--quiet")
+            git("config", "user.name", "CI")
+            git("config", "user.email", "ci@example.test")
+            original = "struct Row;\n" * 1000 + "#[test]\nfn unchanged() {}\n"
+            (root / "old.rs").write_text(original)
+            (root / "move.rs").write_text("#[test]\nfn rename_only() {}\n")
+            (root / "old.txt").write_text("#[test]\nfn became_rust() {}\n")
+            (root / "gone.rs").write_text("#[test]\nfn removed() {}\n")
+            git("add", ".")
+            git("commit", "-qm", "merge base")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-qc", "feature")
+            git("mv", "old.rs", "moved [with glob].rs")
+            git("mv", "move.rs", "pure rename.rs")
+            git("mv", "old.txt", "typed.rs")
+            git("rm", "-q", "gone.rs")
+            (root / "moved [with glob].rs").write_text(original + "#[test]\nfn added_at_end() {}\n")
+            (root / "new.rs").write_text("struct Added;\n" * 2000 + "#[test]\nfn added_file() {}\n")
+            for i in range(301):
+                (root / f"change-{i:03}.txt").touch()
+            git("add", ".")
+            git("commit", "-qm", "large feature")
+            head = git("rev-parse", "HEAD")
+
+            # Base moved independently. Comparing the two branch tips would spuriously
+            # inventory unchanged() when its declaration was removed only upstream.
+            git("switch", "-qc", "advanced-base", base)
+            (root / "old.rs").write_text("struct Row;\n" * 1000)
+            git("add", ".")
+            git("commit", "-qm", "upstream")
+            comparison_base = git("merge-base", "advanced-base", head)
+            self.assertEqual(comparison_base, base)
+            with self.assertRaisesRegex(ValueError, "differs"):
+                audit.git_lines(root, comparison_base, head)
+            git("checkout", "-q", head)
+
+            # A partial GitHub result has neither the complete file list nor a usable patch.
+            changes = {"files": [{"filename": "new.rs", "status": "added", "additions": 2002}]}
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                audit.compare_lines(changes)
+            changes["files"][0]["patch"] = "@@ -0,0 +1,2002 @@\n+struct Added;"
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                audit.compare_lines(changes)
+            touched = audit.git_lines(root, comparison_base, head)
+            report = audit.audit(root, touched, {"job": log({"added_file": "ok"}, sha=head)}, head)
+            self.assertEqual({case["name"]: case["status"] for case in report["cases"]},
+                             {"added_file": "executed", "added_at_end": "not_observed", "became_rust": "not_observed"})
+
+            # Reproduce checkout's actual depth-one state and verify the separate base fetch.
+            with tempfile.TemporaryDirectory() as checkout:
+                subprocess.run(["git", "clone", "-q", "--depth=1", "--no-tags", "--branch", "feature",
+                                root.as_uri(), checkout], check=True)
+                shallow = Path(checkout)
+                self.assertEqual(audit.git_lines(shallow, comparison_base, head), touched)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    audit.git_lines(shallow, "f" * 40, head)
 
     def test_advanced_pr_cannot_receive_a_stale_success_status(self):
         with patch.object(audit, "api", return_value={"state": "open", "head": {"sha": "b" * 40}}), \
@@ -238,21 +301,20 @@ fn spawns() {
             with self.subTest(pending=pending, executed=executed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 changes = self.source(root, "#[test]\nfn added_case() {}\n")
-                original_git = subprocess.check_output
-
-                def git(command, **kwargs):
-                    return SHA if command == ["git", "rev-parse", "HEAD"] else original_git(command, **kwargs)
-
                 def api(path):
                     if "/pulls/" in path:
                         return {"state": "open", "head": {"sha": SHA}, "base": {"sha": "b" * 40}}
                     if "/compare/" in path:
-                        return changes
+                        return {"merge_base_commit": {"sha": "c" * 40}}
                     if "/actions/runs?head_sha=" in path:
                         return {"total_count": 0, "workflow_runs": []}
                     if "/jobs?" in path:
-                        return {"total_count": 1, "jobs": [{"id": 12, "html_url": "job-url",
-                                "status": "completed", "conclusion": "success"}]}
+                        return {"total_count": 3, "jobs": [
+                            {"id": 11, "html_url": "never-started-url", "status": "completed",
+                             "conclusion": "cancelled", "runner_id": 0, "steps": []},
+                            {"id": 12, "html_url": "job-url", "status": "completed", "conclusion": "success"},
+                            {"id": 13, "html_url": "started-url", "status": "completed", "conclusion": "cancelled",
+                             "runner_id": 53, "steps": [{"status": "completed"}]}]}
                     self.fail("Unexpected API route: " + path)
 
                 runs = [{"id": 10, "html_url": "run-url", "status": "in_progress" if pending else "completed",
@@ -260,14 +322,18 @@ fn spawns() {
                 text = log({"tests::added_case": "ok"}) if executed else "cargo clippy compiled test code"
                 with patch.object(audit, "api", side_effect=api), \
                         patch.object(audit, "related_runs", return_value=runs), \
-                        patch.object(audit, "job_log", return_value=text), \
-                        patch.object(audit.subprocess, "check_output", side_effect=git), \
+                        patch.object(audit, "job_log", side_effect=lambda job_id, _: text if job_id == 12 else "") as fetch_log, \
+                        patch.object(audit, "git_lines", return_value=audit.compare_lines(changes)) as git_diff, \
                         patch.object(audit, "publish") as publish, redirect_stdout(io.StringIO()):
                     result = audit.github_report(root, 1583, SHA, root / "audit.json", publish_status=True)
+                self.assertEqual([call.args[0] for call in fetch_log.call_args_list], [12, 13])
+                git_diff.assert_called_once_with(root, "c" * 40, SHA)
                 state = "pending" if pending else "success" if executed else "failure"
                 self.assertEqual(publish.call_args.args[2], state)
                 self.assertEqual(result, int(state == "failure"))
-                self.assertEqual(json.loads((root / "audit.json").read_text())["source_sha"], SHA)
+                report = json.loads((root / "audit.json").read_text())
+                self.assertEqual((report["source_sha"], report["merge_base_sha"]), (SHA, "c" * 40))
+                self.assertEqual(report["cancelled_before_start"], ["never-started-url"])
 
     def test_workflow_uses_trusted_tooling_and_pins_the_private_source(self):
         root = Path(__file__).resolve().parents[2]
