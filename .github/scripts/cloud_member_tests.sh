@@ -90,6 +90,21 @@ if [[ -f "$receipt_source" || -f "$receipt_runner" ]]; then
   receipt_args=(--skip "$receipt_name")
 fi
 
+# These ignored measurements need the member lane's disposable PostgreSQL.
+pg_cases=()
+pg_targets=(--lib)
+if [[ -f libs/automation-engine/src/dispatcher/checkout_measurement.rs ]]; then
+  pg_cases+=(a_pool_free_recorder_records_what_the_service_records
+             dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold)
+  pg_targets+=(--test delivery)
+fi
+expired_measurement=''
+dispatch_source=libs/automation-engine/src/dispatcher/tests.rs
+if [[ -f "$dispatch_source" ]] && grep -Fq 'fn measure_expired_property_group_dispatch_transaction(' "$dispatch_source"; then
+  expired_measurement=dispatcher::tests::measure_expired_property_group_dispatch_transaction
+  pg_cases+=("$expired_measurement")
+fi
+
 require_tests() {
   local prefix="$1" minimum="$2" inventory="$3" selected ignored
   # Namespace selectors end in ::; named tests must match exactly.
@@ -141,6 +156,18 @@ if [[ "$mode" == prepare ]]; then
       # conformance suite is in -p database, which every Cloud ref has, so it is gated on the
       # engine crate too: otherwise it would fail every Cloud source that predates the engine.
       require_tests 'automation::run_queue_tests::conformance::' 12 "$test_inventory"
+      # This exact case runs below with --ignored. Remove it from both counts so it
+      # cannot satisfy the normal minimum or mask an ignored regression.
+      if [[ -n "$expired_measurement" ]]; then
+        for inventory in "$test_inventory/all" "$test_inventory/ignored"; do
+          if ! grep -Fxq "$expired_measurement: test" "$inventory"; then
+            echo "::error::Expected the compiled ignored PostgreSQL test $expired_measurement"
+            exit 1
+          fi
+          awk -v dedicated="$expired_measurement: test" '$0 != dedicated' "$inventory" > "$inventory.regular"
+          mv "$inventory.regular" "$inventory"
+        done
+      fi
       require_tests 'dispatcher::tests::' 12 "$test_inventory"
       require_tests 'executor::race_tests::' 10 "$test_inventory"
     fi
@@ -180,15 +207,12 @@ else
   echo '==> Testing workspace member packages'
   RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
     "${member_packages[@]}" -- --test-threads=1
-  if [[ -f libs/automation-engine/src/dispatcher/checkout_measurement.rs ]]; then
-    # Use the same package graph and the member lane's disposable PostgreSQL. Libtest
-    # exits successfully on an empty exact selection, so require both success records.
-    pg_cases=(a_pool_free_recorder_records_what_the_service_records
-              dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold)
+  if (( ${#pg_cases[@]} )); then
+    # Libtest exits successfully on an empty exact selection. Require every result.
     pg_results=$(mktemp)
     trap 'rm -f "$pg_results"' EXIT
     NOTIFICATION_TEST_DATABASE_URL="${DATABASE_URL:?member PostgreSQL is required}" \
-      cargo test --locked "${member_packages[@]}" --lib --test delivery -- \
+      cargo test --locked "${member_packages[@]}" "${pg_targets[@]}" -- \
         --exact --ignored "${pg_cases[@]}" --test-threads=1 --show-output | tee "$pg_results"
     for test_name in "${pg_cases[@]}"; do
       if ! grep -Fxq "test $test_name ... ok" "$pg_results"; then

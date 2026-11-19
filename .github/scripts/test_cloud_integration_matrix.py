@@ -441,7 +441,7 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     ignored test, whether at the minimum or above it: before the remaining targets are built
     (`--no-run`) and before any test runs. Only the two inventory listings, which build the
     members' library test binaries, come before it. A guarded prefix must have no ignored test,
-    which is why the engine's measurements stay outside every guarded module. A guard counts only
+    apart from the explicitly executed PostgreSQL case covered by test_cloud_member_tests. A guard counts only
     test paths that start with its prefix: decoys from a nested module of the same name neither
     make up a short suite nor fail a full one. The exact minimums pass.
     """
