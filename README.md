@@ -109,7 +109,10 @@ Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent
 17–31 minutes. The disposable runners now use Ubuntu's primary archive for
 Azure mirror entries and for the us-east-2 EC2 mirror. Shards using that EC2
 mirror reached the setup deadline while still fetching media libraries on Ubuntu
-26.04. APT allows one retry and 20 seconds of HTTP/HTTPS inactivity.
+26.04. On runners with an Ubuntu mirror list, APT can also fetch a missing
+index or package from the Linux Kernel Archives and Oregon State University.
+It verifies the Ubuntu signature and package hashes on every mirror. APT
+allows one retry and 20 seconds of HTTP/HTTPS inactivity.
 [Flutter CI package download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44434891696/job/135273883423)
 The preparation job has up to 20 minutes for a cold installation. It shares its
 downloaded Ubuntu packages with the test shards for one day. Each shard checks
@@ -384,6 +387,9 @@ separately and retain useful dependency snapshots when reclaiming disk space.
 
 The four package lanes use Cargo dependency snapshots and `sccache` with GitHub's cache v2 API.
 Each owns a snapshot and is its only writer.
+Cloud compilation uses Cargo's locked protobuf compiler when both protobuf-generating
+crates provide it. For older sources CI checks an installed `protoc` and installs
+the Ubuntu package when needed.
 Snapshots exclude installed Cargo tools and crates outside the workspace dependency graph. The
 workflow disables dev/test debug symbols and does not persist the root compiler's `target/`
 snapshot; `sccache` retains reusable compiler outputs instead. Keep the pinned Rust toolchain and
