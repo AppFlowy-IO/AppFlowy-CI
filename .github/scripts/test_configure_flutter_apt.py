@@ -54,6 +54,22 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                 self.assertEqual(backup.read_text(), mirrorlist)
                 self.assertEqual(configure_apt(root), 0)
 
+    def test_resolute_runner_skips_the_slow_ec2_mirror(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            mirror = "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/"
+            others = (
+                "https://security.ubuntu.com/ubuntu/\tpriority:2\n"
+                "https://us-west-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:3\n"
+            )
+            mirrors.write_text(f"{mirror}\tpriority:1\n{others}")
+            self.assertEqual(configure_apt(root), 1)
+            self.assertEqual(
+                mirrors.read_text(), f"https://archive.ubuntu.com/ubuntu/\tpriority:1\n{others}"
+            )
+            self.assertEqual(configure_apt(root), 0)
+
     def test_legacy_and_deb822_sources_preserve_security_and_vendor_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

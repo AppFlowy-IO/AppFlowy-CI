@@ -5,8 +5,8 @@ from pathlib import Path
 import re
 
 
-AZURE_ARCHIVE = re.compile(
-    r"https?://azure\.archive\.ubuntu\.com(?=/ubuntu(?:/|\s|$))"
+SLOW_RUNNER_ARCHIVE = re.compile(
+    r"https?://(?:azure|us-east-2\.ec2)\.archive\.ubuntu\.com(?=/ubuntu(?:/|\s|$))"
 )
 NETWORK_CONFIG = """// Avoid spending the Flutter test budget retrying package downloads.
 Acquire::Retries "1";
@@ -17,10 +17,9 @@ Acquire::https::Timeout "20";
 
 def configure_apt(apt_root: Path) -> int:
     # Keep suites, components, signatures and third-party repositories intact.
-    # The Azure mirror stalled for 42–59 minutes in run 39783354102; use
-    # Ubuntu's primary archive instead of retrying that mirror for every .deb.
-    # GitHub runner sources use mirror+file:/etc/apt/apt-mirrors.txt. Rewriting
-    # only .list/.sources files leaves its preferred Azure mirror unchanged.
+    # Both Azure and the us-east-2 EC2 mirror have exhausted the Flutter setup
+    # deadline during package downloads. New runner images select their preferred
+    # archive via mirror+file, while older images embed it in the APT source.
     sources = [apt_root / "sources.list", apt_root / "apt-mirrors.txt"]
     for extension in ("*.list", "*.sources"):
         sources.extend(sorted((apt_root / "sources.list.d").glob(extension)))
@@ -30,7 +29,7 @@ def configure_apt(apt_root: Path) -> int:
         if not source.is_file():
             continue
         original = source.read_text()
-        updated = AZURE_ARCHIVE.sub("https://archive.ubuntu.com", original)
+        updated = SLOW_RUNNER_ARCHIVE.sub("https://archive.ubuntu.com", original)
         if updated != original:
             source.write_text(updated)
             changed += 1

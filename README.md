@@ -105,7 +105,10 @@ Flutter's Linux jobs configure APT from the same CI revision as the workflow.
 Run `39783354102` lost four desktop jobs after the Azure Ubuntu mirror spent
 42–59 minutes downloading prerequisites; recent successful test steps took
 17–31 minutes. The disposable runners now use Ubuntu's primary archive for
-those mirror entries, with one retry and 20-second HTTP/HTTPS inactivity limits.
+Azure mirror entries and for the us-east-2 EC2 mirror. Shards using that EC2
+mirror reached the setup deadline while still fetching media libraries on Ubuntu
+26.04. APT allows one retry and 20 seconds of HTTP/HTTPS inactivity.
+[Flutter CI package download log](https://github.com/AppFlowy-IO/AppFlowy-CI/actions/runs/44434891696/job/135273883423)
 Prerequisite installation has a separate 10-minute deadline. The test matrix,
 45-minute test limits, package signatures, and repository suites stay intact.
 The configuration script refuses to run outside a GitHub Linux runner; its
