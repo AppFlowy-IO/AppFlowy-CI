@@ -370,6 +370,32 @@ class CloudRunnerWorkflowTest(unittest.TestCase):
         for job in ("pdf_export_ui", "pdf_cloud_ui_availability", "unit_test", "integration_test"):
             self.assertIn("!inputs.automation_editor_only", self.jobs[job]["if"])
 
+    def test_workspace_webhook_policy_is_opt_in_and_checks_the_completed_switch_roundtrip(self):
+        options = {"AUTOMATION_EDITOR_ONLY": "true", "DESKTOP_REF": "a" * 40,
+                   "CLOUD_SOURCE_SHA": "b" * 40, "IMAGE_RUN_ID": "123", "REQUIRE_WEBHOOK_POLICY": "true"}
+        manifest = ["database", "database_automations"]
+        for focused, accepted in [("false", False), ("true", True)]:
+            result, output = self.select_suites(manifest, **{**options, "AUTOMATION_EDITOR_ONLY": focused})
+            self.assertEqual(result.returncode == 0, accepted)
+            if accepted:
+                self.assertEqual(json.loads(output.removeprefix("suites=")), ["database_automations"])
+        feature = next(s for s in self.cloud["steps"] if s.get("name") == "Enable row automations in the editor test services")
+        check = next(s for s in self.cloud["steps"] if s.get("name") == "Verify the row automation editor ran")
+        self.assertEqual(feature["env"]["REQUIRE_WEBHOOK_POLICY"], "${{ inputs.require_workspace_webhook_policy }}")
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "env"
+            log = Path(directory) / "output"
+            subprocess.run(["bash", "-e", "-c", feature["run"]], check=True,
+                           env={**os.environ, **options, "GITHUB_ENV": str(env_file)})
+            self.assertIn("APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY=true", env_file.read_text().splitlines())
+            command = check["run"].replace("/tmp/test_output.txt", str(log))
+            for marker, expected in [("", 1), ("false", 1), ("true", 0)]:
+                log.write_text(f"Verified owner workspace webhook setting: {marker}\nVerified row automation editor: enabled\n")
+                result = subprocess.run(["bash", "-eo", "pipefail", "-c", command], capture_output=True,
+                                        env={**os.environ, "APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS": "true",
+                                             "APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY": "true"})
+                self.assertEqual(result.returncode, expected, marker)
+
     def test_automation_editor_needs_a_completed_ui_case_and_checks_nested_failures(self):
         step = next(s for s in self.cloud["steps"] if s.get("name") == "Verify the row automation editor ran")
         self.assertEqual(step["if"], "matrix.cloud_test_suite == 'database_automations'")

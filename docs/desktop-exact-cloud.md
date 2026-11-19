@@ -135,3 +135,5 @@ Timeline selection, and `--no-build` startup. Exact-image tests use real archive
 metadata and temporary Git checkouts. Existing Cloud binary archive fixtures
 require Linux AMD64 and run in `workflow_checks.yaml` on Ubuntu; they cannot be
 validated using a macOS compiler/runtime.
+
+For a release that includes the workspace webhook switch, set `require_workspace_webhook_policy=true` together with `automation_editor_only=true`. The Linux editor disables webhooks, reopens Manage Data, restores delivery and checks both changes against the paired Cloud API.

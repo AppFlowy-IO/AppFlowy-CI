@@ -32,6 +32,10 @@ on:
         required: false
         type: boolean
         default: false
+      require_workspace_webhook_policy:
+        description: "Require the paired automation editor to disable and restore outgoing workspace webhooks"
+        type: boolean
+        default: false
       timeline_cloud_image:
         description: "Optional self-hosted image override; defaults to public appflowy_cloud:latest-amd64"
         required: false
@@ -130,6 +134,7 @@ jobs:
         id: cloud-test-suites
         env:
           AUTOMATION_EDITOR_ONLY: ${{ inputs.automation_editor_only }}
+          REQUIRE_WEBHOOK_POLICY: ${{ inputs.require_workspace_webhook_policy }}
           DESKTOP_REF: ${{ inputs.pr_ref }}
           CLOUD_SOURCE_SHA: ${{ inputs.cloud_source_sha }}
           IMAGE_RUN_ID: ${{ inputs.cloud_image_run_id }}
@@ -146,6 +151,10 @@ jobs:
           else
             # Older AppFlowy branches do not understand the split suite names.
             suites='["core_workspace","sidebar","database","document"]'
+          fi
+          if [[ "${REQUIRE_WEBHOOK_POLICY:-}" == true && "$AUTOMATION_EDITOR_ONLY" != true ]]; then
+            echo "Workspace webhook verification requires the paired automation editor suite." >&2
+            exit 1
           fi
           if [[ "$AUTOMATION_EDITOR_ONLY" == true ]]; then
             if ! [[ "$DESKTOP_REF" =~ ^[0-9a-f]{40}$ && "$CLOUD_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
@@ -927,10 +936,14 @@ jobs:
         if: matrix.cloud_test_suite == 'database_automations'
         env:
           CLOUD_SOURCE_SHA: ${{ github.event.client_payload.cloud_source_sha || inputs.cloud_source_sha }}
+          REQUIRE_WEBHOOK_POLICY: ${{ inputs.require_workspace_webhook_policy }}
         run: |
           echo "APPFLOWY_DATABASE_AUTOMATIONS_ENABLED=true" >> "$GITHUB_ENV"
           if [[ -n "$CLOUD_SOURCE_SHA" ]]; then
             echo "APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS=true" >> "$GITHUB_ENV"
+          fi
+          if [[ "${REQUIRE_WEBHOOK_POLICY:-}" == true ]]; then
+            echo "APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY=true" >> "$GITHUB_ENV"
           fi
 
       - name: Start the verified exact Cloud runtime
@@ -1160,6 +1173,11 @@ jobs:
           if [ "${APPFLOWY_TEST_REQUIRE_ROW_AUTOMATIONS:-}" = true ]; then mode=enabled; fi
           if ! grep -Eq "Verified row automation editor: ($mode)([[:space:]]|$)" /tmp/test_output.txt; then
             echo "::error::The row automation editor did not verify the expected server capability"
+            exit 1
+          fi
+          if [[ "${APPFLOWY_TEST_REQUIRE_WORKSPACE_WEBHOOK_POLICY:-}" == true ]] &&
+              ! grep -Eq 'Verified owner workspace webhook setting: true([[:space:]]|$)' /tmp/test_output.txt; then
+            echo "::error::The workspace owner webhook switch did not complete the disable and re-enable test"
             exit 1
           fi
 
