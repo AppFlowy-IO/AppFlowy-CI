@@ -56,7 +56,8 @@ fi
 # The database automation engine's crate, gated the same way.
 automation_engine_crate=libs/automation-engine/Cargo.toml
 if [[ -f "$automation_engine_crate" ]]; then
-  member_packages+=(-p automation-engine)
+  # The workspace settings wire contract lives in appflowy-entity, outside the engine crate.
+  member_packages+=(-p automation-engine -p appflowy-entity)
 fi
 # Cargo only runs a dependency's own unit and integration tests when its package is selected.
 if [[ -f libs/flowy-formula/Cargo.toml ]]; then

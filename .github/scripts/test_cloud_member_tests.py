@@ -171,6 +171,22 @@ sys.exit(int(os.environ["TEST_EXIT"]))
                                  ["--lib", "--test", "delivery", "--", "--exact", "--ignored",
                                   recorder, dispatch, "--test-threads=1", "--show-output"])
 
+    def test_automation_sources_run_the_shared_entity_tests_for_workspace_settings(self):
+        for mode in ("prepare", "run"):
+            with self.subTest(mode=mode):
+                result, legacy = self.invoke(mode, contracts=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("appflowy-entity", legacy[0]["args"])
+                result, calls = self.invoke(mode, expired_group=True, automation_results="\n".join(
+                    f"test {name} ... ok" for name in (
+                        "a_pool_free_recorder_records_what_the_service_records",
+                        "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold",
+                        EXPIRED_GROUP,
+                    )))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                packages = calls[0]["args"]
+                self.assertIn(("-p", "appflowy-entity"), list(zip(packages, packages[1:])))
+
     def test_dispatch_guard_requires_regular_cases_and_the_separate_measurement(self):
         for options, success in [({}, True), ({"compiled_group": False}, False),
                                  ({"ignored_group": False}, False), ({"dispatcher_count": 11}, False),
