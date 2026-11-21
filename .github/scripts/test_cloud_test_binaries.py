@@ -431,7 +431,8 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         lanes = [lane for lane in WORKFLOW["jobs"]["test"]["strategy"]["matrix"]["include"]
                  if lane.get("cache_group")]
         self.assertEqual({lane["cache_group"] for lane in lanes},
-                         {"worker", "search", "members", "directory-self-host", "ai"})
+                         {"worker", "search", "members", "directory-self-host", "ai",
+                          "legacy-client-smoke"})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             # The member lane delegates to the same checked-in CI helper in both phases.
@@ -463,6 +464,11 @@ class SharedBuildWorkflowTest(unittest.TestCase):
                                                  "AI_TEST_HAS_FULL_PROVIDERS": "false"},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    if lane["cache_group"] == "legacy-client-smoke":
+                        # Its crate is a workspace of its own and runs in a dedicated step.
+                        self.assertNotIn("-p\n", result.stdout)
+                        self.assertNotIn("test\n", result.stdout)
+                        continue
                     if lane["cache_group"] == "directory-self-host":
                         self.assertIn("Older Cloud source: no self-host directory status contract", result.stdout)
                         self.assertNotIn("--test-threads=1", result.stdout)
