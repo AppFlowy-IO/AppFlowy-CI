@@ -206,8 +206,11 @@ if [[ "$mode" == prepare ]]; then
   RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked "${member_packages[@]}" --no-run
 else
   echo '==> Testing workspace member packages'
-  RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked \
-    "${member_packages[@]}" -- --test-threads=1
+  # One failing test binary must not stop the binaries after it, or the suites below: their
+  # results would be missing from CI. The lane still fails with the member run's exit status.
+  member_status=0
+  RUST_LOG="info" DISABLE_CI_TEST_LOG="true" cargo test --locked --no-fail-fast \
+    "${member_packages[@]}" -- --test-threads=1 || member_status=$?
   if (( ${#pg_cases[@]} )); then
     # Libtest exits successfully on an empty exact selection. Require every result.
     pg_results=$(mktemp)
@@ -229,4 +232,5 @@ else
       INTEGRATIONS_TEST_REDIS_URL="${APPFLOWY_TEST_REDIS_URL:?member Redis is required}" \
       "${provider_tests[@]}" -- --include-ignored "${receipt_args[@]}" --test-threads=1
   fi
+  exit "$member_status"
 fi
