@@ -910,11 +910,9 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     self.assertEqual(old_source, "AI_ON_OLLAMA=false")
     self.assertIn("predates", output)
 
-    # The rerun wrapper comes from the CI tools checkout, which Ollama lanes always make.
+    # The Ollama rerun wrapper comes from the same tools checkout as the other lanes.
     tools = steps[names.index("Checkout CI tools")]
-    self.assertEqual(tools["if"],
-                     "env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true' || "
-                     "matrix.test_service == 'appflowy_cloud_member_packages'")
+    self.assertNotIn("if", tools)
     self.assertLess(names.index("Decide where AI calls go"), names.index("Checkout CI tools"))
 
     # On Ollama, every test that calls a provider and the package's grader use Ollama, and the

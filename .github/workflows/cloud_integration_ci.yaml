@@ -633,12 +633,8 @@ jobs:
         if: env.AI_ON_OLLAMA == 'true'
         run: timeout 120 bash -c 'until curl -fsS --max-time 10 "$CI_OLLAMA_BASE_URL/models" >/dev/null; do sleep 5; done'
 
-      - &cloud_ci_tools
-        name: Checkout CI tools
-        # Root archives, Ollama retries and member preparation use source-pinned CI helpers.
-        if: >-
-          env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true' ||
-          matrix.test_service == 'appflowy_cloud_member_packages'
+      # Both prebuilt test archives and crates compiled on the runner use pinned CI scripts.
+      - name: Checkout CI tools
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
