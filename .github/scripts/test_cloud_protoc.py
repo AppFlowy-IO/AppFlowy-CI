@@ -61,3 +61,10 @@ class CloudProtocTests(unittest.TestCase):
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0]["if"], "env.CLOUD_COMPILE_TESTS == 'true'")
         self.assertEqual(steps[0]["run"], "python3 -B ci-tools/.github/scripts/cloud_protoc.py")
+
+        matrix_steps = jobs["test"]["steps"]
+        checkout = next(step for step in matrix_steps if step.get("name") == "Checkout CI tools")
+        self.assertNotIn("if", checkout, "package-only compilers also need the CI helper")
+        self.assertLess(matrix_steps.index(checkout), matrix_steps.index(steps[0]))
+        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["with"]["path"], "ci-tools")

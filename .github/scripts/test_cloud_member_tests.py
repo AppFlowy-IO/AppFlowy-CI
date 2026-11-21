@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -231,30 +230,16 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         self.assertFalse(member.get("ollama", False))
         env = {"CLOUD_RUN_ROOT": "false", "AI_ON_OLLAMA": "false"}
 
-        def should_checkout(condition):
-            results = []
-            for term in condition.split("||"):
-                match = re.fullmatch(r"\s*(env|matrix)\.(\w+) == '([^']+)'\s*", term)
-                self.assertIsNotNone(match, f"Unsupported checkout condition: {term}")
-                scope, key, value = match.groups()
-                results.append((env if scope == "env" else member).get(key) == value)
-            return any(results)
-
-        self.assertTrue(should_checkout(checkout["if"]))
-        self.assertFalse(should_checkout(
-            "env.CLOUD_RUN_ROOT == 'true' || env.AI_ON_OLLAMA == 'true'"))
+        self.assertNotIn("if", checkout)
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(checkout["with"]["path"], "ci-tools")
         self.assertLess(steps.index(checkout), steps.index(prepare))
-        # Materialize tools only when the real workflow would perform its checkout. This
-        # prevents unconditional fixture symlinks from concealing a skipped checkout.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.assertFalse((root / "ci-tools").exists())
-            if should_checkout(checkout["if"]):
-                tools = root / checkout["with"]["path"] / ".github/scripts"
-                tools.mkdir(parents=True)
-                shutil.copy2(HELPER, tools / HELPER.name)
+            tools = root / checkout["with"]["path"] / ".github/scripts"
+            tools.mkdir(parents=True)
+            shutil.copy2(HELPER, tools / HELPER.name)
             cargo = root / "cargo"
             cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             cargo.chmod(0o755)
