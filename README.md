@@ -303,8 +303,10 @@ or unfiltered test/doc-test coverage. Each feature graph runs once and owns a se
 these member binaries compile on their runner and do not use the root Cloud binary archive.
 The hosted Shared libraries lane has a separate 45-minute preparation step for its ordinary and
 ignored library inventories, required coverage checks, and a full-target `cargo test --no-run`.
-Its unfiltered Cargo execution (including doctests) has a separate 90-minute deadline. One helper
-owns both phases' complete package selection, preserving Cargo feature unification. Only this lane
+Its unfiltered Cargo execution (including doctests) has a separate 90-minute deadline and uses
+`--no-fail-fast`: a failing test binary does not hide the binaries and PostgreSQL/provider suites
+after it, and the lane still fails with the member run's exit status. One helper owns both
+phases' complete package selection, preserving Cargo feature unification. Only this lane
 overrides the default 50-minute execution limit and has a 145-minute overall job budget for
 preparation, execution, setup and cleanup. In job `124147400988`, cold preparation took about
 28 minutes and passing serial tests were still running when the combined step reached 50 minutes;
