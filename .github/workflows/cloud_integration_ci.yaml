@@ -364,8 +364,7 @@ jobs:
       always() && !cancelled() &&
       needs.image_source.result == 'success' &&
       needs.build_self_hosted.result == 'success'
-    # SQL execution shares its job budget with a bounded 35-minute artifact transfer.
-    # Retain the 50-minute Run Tests deadline while allowing setup and cleanup to finish.
+    # Keep each lane's execution deadline separate from its bounded preparation and transfer.
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     env:
       MINIO_DATA_DIR: /tmp/minio-data
@@ -522,9 +521,10 @@ jobs:
               test_pg_pool
           - test_service: "appflowy_cloud_member_packages"
             topic: "Shared libraries"
-            # Cold preparation took 28 minutes before unfiltered package tests started.
-            # Preserve the execution deadline and give compilation its own bounded step.
-            timeout_minutes: 105
+            # Serial package suites outgrew the 50-minute execution deadline even after
+            # preparation moved out. Keep both phases bounded without dropping coverage.
+            timeout_minutes: 145
+            test_timeout_minutes: 90
             test_modules: ""
             cache_group: members
             cache_writer: true
@@ -1106,7 +1106,7 @@ jobs:
         run: bash ci-tools/.github/scripts/cloud_member_tests.sh prepare
 
       - name: Run Tests
-        timeout-minutes: 50
+        timeout-minutes: ${{ matrix.test_timeout_minutes || 50 }}
         env:
           RUN_ROOT_UNIT_TESTS: ${{ matrix.test_root_unit == true }}
           TEST_SKIPS: ${{ matrix.test_skips }}
