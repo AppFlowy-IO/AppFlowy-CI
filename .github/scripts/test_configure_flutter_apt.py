@@ -10,6 +10,11 @@ from unittest.mock import patch
 
 from configure_flutter_apt import ARCHIVES, configure_apt, restore_archives
 
+FALLBACK_LINES = (
+    "https://mirrors.edge.kernel.org/ubuntu/\tpriority:20\n"
+    "https://ftp.osuosl.org/pub/ubuntu/\tpriority:21\n"
+)
+
 
 class FlutterAptConfigurationTest(unittest.TestCase):
     def test_runner_mirrorlist_uses_primary_archive_without_changing_sources(self):
@@ -51,7 +56,7 @@ class FlutterAptConfigurationTest(unittest.TestCase):
                     mirrorlist.replace(
                         "http://azure.archive.ubuntu.com/",
                         "https://archive.ubuntu.com/",
-                    ),
+                    ) + FALLBACK_LINES,
                 )
                 self.assertEqual(backup.read_text(), mirrorlist)
                 self.assertEqual(configure_apt(root), 0)
@@ -68,9 +73,29 @@ class FlutterAptConfigurationTest(unittest.TestCase):
             mirrors.write_text(f"{mirror}\tpriority:1\n{others}")
             self.assertEqual(configure_apt(root), 1)
             self.assertEqual(
-                mirrors.read_text(), f"https://archive.ubuntu.com/ubuntu/\tpriority:1\n{others}"
+                mirrors.read_text(), f"https://archive.ubuntu.com/ubuntu/\tpriority:1\n{others}" + FALLBACK_LINES
             )
             self.assertEqual(configure_apt(root), 0)
+
+    def test_existing_mirror_and_its_priority_are_preserved_without_duplication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            original = ("https://archive.ubuntu.com/ubuntu/\tpriority:1\n"
+                        "https://ftp.osuosl.org/pub/ubuntu\tpriority:7")
+            mirrors.write_text(original)
+            self.assertEqual(configure_apt(root), 1)
+            self.assertEqual(mirrors.read_text(), original + "\n" + FALLBACK_LINES.splitlines(keepends=True)[0])
+            self.assertEqual(configure_apt(root), 0)
+
+    def test_third_party_only_mirror_file_is_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mirrors = root / "apt-mirrors.txt"
+            original = "https://packages.example.invalid/ubuntu/\tpriority:1\n"
+            mirrors.write_text(original)
+            self.assertEqual(configure_apt(root), 0)
+            self.assertEqual(mirrors.read_text(), original)
 
     def test_legacy_and_deb822_sources_preserve_security_and_vendor_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,7 +144,7 @@ class FlutterAptConfigurationTest(unittest.TestCase):
             mirrors = root / "apt-mirrors.txt"
             mirrors.write_text("http://azure.archive.ubuntu.com/ubuntu\n")
             self.assertEqual(configure_apt(root, keep_archives=False), 1)
-            self.assertEqual(mirrors.read_text(), "https://archive.ubuntu.com/ubuntu\n")
+            self.assertEqual(mirrors.read_text(), "https://archive.ubuntu.com/ubuntu\n" + FALLBACK_LINES)
             config = (root / "apt.conf.d/99zz-appflowy-network").read_text()
             self.assertIn('Acquire::Retries "1"', config)
             self.assertIn('Acquire::https::Timeout "20"', config)

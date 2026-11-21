@@ -12,6 +12,10 @@ from tempfile import NamedTemporaryFile
 SLOW_RUNNER_ARCHIVE = re.compile(
     r"https?://(?:azure|us-east-2\.ec2)\.archive\.ubuntu\.com(?=/ubuntu(?:/|\s|$))"
 )
+FALLBACK_MIRRORS = (
+    ("https://mirrors.edge.kernel.org/ubuntu/", 20),
+    ("https://ftp.osuosl.org/pub/ubuntu/", 21),
+)
 # Use a dedicated archive directory so image cleanup hooks for the system
 # cache cannot discard the packages before the preparation job uploads them.
 ARCHIVES = Path("/var/cache/appflowy-flutter-apt")
@@ -38,6 +42,17 @@ def configure_apt(apt_root: Path, *, keep_archives: bool = True) -> int:
             continue
         original = source.read_text()
         updated = SLOW_RUNNER_ARCHIVE.sub("https://archive.ubuntu.com", original)
+        if source.name == "apt-mirrors.txt":
+            urls = {line.split()[0].rstrip("/") for line in updated.splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")}
+            if any(re.fullmatch(r"https?://(?:archive|security)\.ubuntu\.com/ubuntu", url)
+                   for url in urls):
+                # APT tries the next mirror on missing packages and connection errors. Keep the
+                # image's existing preferences and let APT verify Ubuntu's signatures and hashes.
+                missing = [f"{url}\tpriority:{priority}\n" for url, priority in FALLBACK_MIRRORS
+                           if url.rstrip("/") not in urls]
+                if missing:
+                    updated = updated.rstrip("\n") + "\n" + "".join(missing)
         if updated != original:
             source.write_text(updated)
             changed += 1
@@ -114,6 +129,6 @@ if __name__ == "__main__":
         ARCHIVES.mkdir(mode=0o755, parents=True, exist_ok=True)
     if args.restore is None:
         changed = configure_apt(Path("/etc/apt"), keep_archives=not args.network_only)
-        print(f"Configured APT downloads and switched {changed} source files to Ubuntu's primary archive")
+        print(f"Configured APT downloads and updated {changed} Ubuntu source files")
     else:
         print(f"Reused {restore_archives(args.restore, ARCHIVES)} verified Ubuntu packages")

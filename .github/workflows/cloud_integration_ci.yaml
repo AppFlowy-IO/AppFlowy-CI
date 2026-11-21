@@ -1060,14 +1060,9 @@ jobs:
           # Cloud and Search read the registry on this interval; the AI service applies it at once.
           sleep $((APPFLOWY_AI_PROVIDER_REFRESH_INTERVAL_SECS + 5))
 
-      - name: Install prerequisites
+      - name: Select the Cloud protobuf compiler
         if: env.CLOUD_COMPILE_TESTS == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          df -h
+        run: python3 -B ci-tools/.github/scripts/cloud_protoc.py
 
       - name: Configure deterministic AI web-search proof when available
         if: matrix.test_package_ai == true
