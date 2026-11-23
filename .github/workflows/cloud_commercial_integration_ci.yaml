@@ -50,6 +50,9 @@ jobs:
   setup:
     name: Setup Environment and Build Images
     runs-on: ubuntu-latest
+    outputs:
+      test_services: ${{ steps.shards.outputs.services }}
+      cloud_sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Validate manual Cloud revision
         if: github.event_name == 'workflow_dispatch'
@@ -67,7 +70,25 @@ jobs:
           ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - name: Record Cloud test source
-        run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+        id: source
+        run: |
+          sha=$(git rev-parse HEAD)
+          printf 'AF_TEST_SOURCE_SHA=%s\n' "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Select commercial CI shards for this Cloud revision
+        id: shards
+        shell: bash
+        run: |
+          services='["appflowy_cloud_commercial","appflowy_cloud_whitelist"]'
+          if [[ -e script/ci/license_outage_fixture.py || -e tests/commercial_test/billing_outage.rs || -e script/ci/run_license_outage_ci.py ]]; then
+            test -f script/ci/license_outage_fixture.py && test -f tests/commercial_test/billing_outage.rs && test -f script/ci/run_license_outage_ci.py || {
+              echo "::error::Cloud's billing outage contract is incomplete"
+              exit 1
+            }
+            services='["appflowy_cloud_commercial","appflowy_cloud_whitelist","appflowy_cloud_license_outage"]'
+          fi
+          echo "services=$services" >> "$GITHUB_OUTPUT"
 
       - name: Install prerequisites
         run: |
@@ -116,12 +137,14 @@ jobs:
 
   test:
     name: Integration Tests (${{ matrix.test_service }})
-    runs-on: ubuntu-latest
+    # The outage shard runs the Cloud binary copied from its Ubuntu 24.04 image.
+    runs-on: ${{ matrix.test_service == 'appflowy_cloud_license_outage' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     needs: setup
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.test_service == 'appflowy_cloud_license_outage' && 90 || 60 }}
     strategy:
       fail-fast: false
       matrix:
+        test_service: ${{ fromJSON(needs.setup.outputs.test_services) }}
         include:
           # Commercial tests (billing, self-host)
           - test_service: "appflowy_cloud_commercial"
@@ -135,7 +158,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
+          ref: ${{ needs.setup.outputs.cloud_sha }}
 
       - name: Record Cloud test source
         run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
@@ -193,8 +216,14 @@ jobs:
           name: docker-images
 
       - name: Load Docker Images
+        env:
+          TEST_SERVICE: ${{ matrix.test_service }}
         run: |
           for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
+            if [[ "$TEST_SERVICE" == appflowy_cloud_license_outage && "$service" != appflowy_cloud ]]; then
+              rm -- "${service}.tar.gz"
+              continue
+            fi
             docker load < "${service}.tar.gz"
             docker tag "appflowyinc/${service}_premium:latest" "appflowyinc/${service}_premium:${{ env.CLOUD_VERSION }}"
             # The loaded image is sufficient; release its consumed download before compilation.
@@ -283,6 +312,7 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Run Docker-Compose
+        if: matrix.test_service != 'appflowy_cloud_license_outage'
         run: |
           export APPFLOWY_CLOUD_VERSION=${{ env.CLOUD_VERSION }}
           export APPFLOWY_WORKER_VERSION=${{ env.CLOUD_VERSION }}
@@ -297,6 +327,7 @@ jobs:
           docker compose -f docker-compose-ci.yml up -d
 
       - name: Wait for services to be ready
+        if: matrix.test_service != 'appflowy_cloud_license_outage'
         run: |
           echo "Waiting for services to be ready..."
           timeout 300 bash -c 'until curl -f http://localhost/api/health 2>/dev/null; do sleep 5; done' || echo "Health check timeout - proceeding anyway"
@@ -312,6 +343,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+
+      - name: Verify paid access through a Billing outage and Cloud restart
+        if: matrix.test_service == 'appflowy_cloud_license_outage'
+        env:
+          APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
+          COMMERCIAL_LICENSE_OUTAGE_SHARD: "1"
+        run: python3 -B script/ci/run_license_outage_ci.py
 
       - name: Run real self-host presentation contracts
         if: matrix.test_service == 'appflowy_cloud_commercial'
@@ -329,6 +367,7 @@ jobs:
         run: bash ci-tools/.github/scripts/commercial_automation_gate.sh
 
       - name: Run Tests
+        if: matrix.test_service != 'appflowy_cloud_license_outage'
         env:
           APPFLOWY_MCP_TEST_BASE_URL: http://localhost:8002
         run: |
@@ -379,7 +418,7 @@ jobs:
         run: sccache --show-stats || true
 
       - name: appflowy cloud Logs
-        if: failure()
+        if: failure() && matrix.test_service != 'appflowy_cloud_license_outage'
         run: |
           docker ps -a
           docker compose -f docker-compose-ci.yml logs appflowy_cloud

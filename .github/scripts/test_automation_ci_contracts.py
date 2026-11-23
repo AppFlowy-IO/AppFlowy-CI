@@ -170,6 +170,7 @@ elif '--include-ignored' in args or '--ignored' in args:
         auto = event_context(workflow, event="repository_dispatch",
                              payload={"event_type": "pr_sync", "pr_ref": sha, "pr_number": "123"})
         for context in (manual, auto):
+            context["needs"] = {"setup": {"outputs": {"cloud_sha": sha}}}
             self.assertIn("pr=123 ", render_expression(workflow["run-name"], context))
             for job in workflow["jobs"].values():
                 checkout = next(step for step in job["steps"] if step.get("name") == "Checkout Private Repo")
