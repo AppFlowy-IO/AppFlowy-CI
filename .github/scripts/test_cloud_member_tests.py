@@ -84,6 +84,7 @@ with open("calls.jsonl", "a") as output:
 if "--ignored" in args and "--exact" in args:
     assert os.environ["NOTIFICATION_TEST_DATABASE_URL"] == os.environ["DATABASE_URL"]
     print(pathlib.Path("postgres-results").read_text(), end="")
+    sys.exit(0)
 if "--list" in args:
     print(pathlib.Path("ignored" if "--ignored" in args else "all").read_text(), end="")
     sys.exit(int(os.environ["INVENTORY_EXIT"]))
@@ -147,11 +148,21 @@ sys.exit(int(os.environ["TEST_EXIT"]))
         self.assertEqual(result.returncode, 43, result.stdout + result.stderr)
         package_args = [part for package in PACKAGES for part in ("-p", package)]
         self.assertEqual(calls, [{
-            "args": ["test", "--locked", *package_args, "--", "--test-threads=1"],
+            "args": ["test", "--locked", "--no-fail-fast", *package_args, "--", "--test-threads=1"],
             "RUST_LOG": "info", "DISABLE_CI_TEST_LOG": "true",
         }])
         for selector in ("--lib", "--bins", "--tests", "--doc", "--ignore", "--skip"):
             self.assertNotIn(selector, calls[0]["args"])
+
+    def test_a_failed_member_binary_still_runs_the_postgres_measurements(self):
+        passed = "".join(f"test {name} ... ok\n" for name in (
+            "a_pool_free_recorder_records_what_the_service_records",
+            "dispatcher::checkout_measurement::measure_dispatch_checkout_and_connection_hold"))
+        result, calls = self.invoke("run", test_exit=43, automation_results=passed)
+        self.assertEqual(result.returncode, 43, result.stdout + result.stderr)
+        self.assertEqual(len(calls), 2, "the measurements ran after the failed member run")
+        self.assertIn("--no-fail-fast", calls[0]["args"])
+        self.assertIn("--ignored", calls[1]["args"])
 
     def test_automation_requires_both_disposable_postgres_cases_to_execute(self):
         recorder = "a_pool_free_recorder_records_what_the_service_records"
@@ -165,7 +176,8 @@ sys.exit(int(os.environ["TEST_EXIT"]))
                 self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
                 self.assertEqual(len(calls), 2)
                 args = calls[1]["args"]
-                self.assertEqual(args[:args.index("--lib")], calls[0]["args"][:-2])
+                member = [arg for arg in calls[0]["args"][:-2] if arg != "--no-fail-fast"]
+                self.assertEqual(args[:args.index("--lib")], member)
                 self.assertEqual(args[args.index("--lib"):],
                                  ["--lib", "--test", "delivery", "--", "--exact", "--ignored",
                                   recorder, dispatch, "--test-threads=1", "--show-output"])

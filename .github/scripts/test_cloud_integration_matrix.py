@@ -318,7 +318,9 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
     result, commands = self.run_member_packages()
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     self.assertEqual(len(commands), 4)
-    packages = commands[3][2:-2]
+    # A failing binary must not stop the rest, so execution alone adds --no-fail-fast.
+    self.assertEqual(commands[3][2], "--no-fail-fast")
+    packages = commands[3][3:-2]
     self.assertEqual(commands[3][-2:], ["--", "--test-threads=1"])
     self.assertEqual(commands[0][2:-3], packages)
     self.assertEqual(commands[1][2:-4], packages)

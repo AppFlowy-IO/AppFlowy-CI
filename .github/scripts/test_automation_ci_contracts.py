@@ -71,6 +71,8 @@ if '--list' in args:
     print(os.environ.get('IGNORED_INVENTORY', os.environ['INVENTORY']) if '--ignored' in args else os.environ['INVENTORY'])
 elif '--include-ignored' in args or '--ignored' in args:
     sys.exit(int(os.environ.get('FIXTURE_EXIT','0')))
+elif '--no-fail-fast' in args:
+    sys.exit(int(os.environ.get('MEMBER_EXIT','0')))
 """)
             cargo.chmod(0o755)
             env = dict(os.environ, PATH=f"{cwd}:{os.environ['PATH']}",
@@ -125,6 +127,10 @@ elif '--include-ignored' in args or '--ignored' in args:
             [MEMBERS, "run"], [OUTBOUND], environment={"APPFLOWY_TEST_REDIS_URL": ""})
         self.assertNotEqual(unavailable.returncode, 0)
         self.assertEqual(len(calls), 1, "only the ordinary member packages ran")
+        member_failed, calls = self.run_script(
+            [MEMBERS, "run"], [OUTBOUND], environment={"MEMBER_EXIT": "7"})
+        self.assertEqual(member_failed.returncode, 7, "the lane keeps the member run's failure")
+        self.assertIn("--include-ignored", calls[-1][0], "the provider suite still ran")
         old, calls = self.run_script([MEMBERS, "run"])
         self.assertEqual(old.returncode, 0)
         self.assertFalse(any("appflowy-cloud-integrations" in args for args, _, _ in calls))
