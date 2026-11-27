@@ -110,9 +110,8 @@ int main(int argc, char **argv) {
         self.assertFalse(result["threads"])
 
     def test_restricted_sibling_ptrace_leaves_target_running(self):
-        scope = Path("/proc/sys/kernel/yama/ptrace_scope")
-        if not Path("/usr/bin/gdb").is_file() or os.geteuid() == 0 or not scope.exists() or scope.read_text().strip() == "0":
-            self.skipTest("requires restricted Linux ptrace without root")
+        if not Path("/usr/bin/gdb").is_file() or os.geteuid() == 0:
+            self.skipTest("requires non-root Linux GDB")
         launcher, target = self.start(self.executable, allow_attach=False)
         result = stack_sample(target, self.executable, Path("/usr/bin/gdb"), False)
         self.assertEqual(result["status"], "attach unavailable")
@@ -132,8 +131,7 @@ int main(int argc, char **argv) {
         self.assertIsNone(launcher.poll())
 
     @unittest.skipUnless(os.environ.get("GITHUB_ACTIONS") == "true"
-                         and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-                         and Path("/usr/bin/gdb").is_file(),
+                         and os.environ.get("TEST_HOSTED_VIDEO_PTRACE") == "1",
                          "requires the GitHub-hosted Ubuntu debugger")
     def test_hosted_runner_elevated_attachment_to_test_owned_child(self):
         _, target = self.start(self.executable, allow_attach=False)
