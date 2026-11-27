@@ -125,6 +125,12 @@ primary archive before its next 100 MB download exhausted the setup deadline.
 The configuration script refuses to run outside a GitHub Linux runner; its
 local tests use temporary files without root or network access.
 
+When Linux video shards 15 or 26 are still running after 40 minutes, look for
+`desktop-video-native-stacks-<shard>-<run>` alongside the test events. The JSON
+records kernel wait states and native function names, library basenames and
+file offsets for the step's AppFlowy processes. Missing debugger access leaves
+the wait states available. The step retains its 45-minute timeout.
+
 Cloud integration images and shared Cloud test binaries build on the ARM64 laptop through
 AppFlowy-Cloud-Premium's `build_ci_images_self_hosted.yml`. Ordinary integration tests and coverage
 run on GitHub runners; Backup restore qualification runs nightly in Cloud Premium (see **Backup**).
