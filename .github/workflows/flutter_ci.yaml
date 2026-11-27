@@ -1334,6 +1334,12 @@ jobs:
           sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
         shell: bash
 
+      - name: Ensure GDB is available for video timeout diagnostics
+        if: matrix.test_number == 15 || matrix.test_number == 26
+        continue-on-error: true
+        timeout-minutes: 2
+        run: test -x /usr/bin/gdb || sudo apt-get install -y --no-install-recommends gdb
+
       - name: Enable Flutter Desktop
         run: |
           flutter config --enable-linux-desktop
@@ -1375,6 +1381,12 @@ jobs:
         shell: bash
         run: |
           cd frontend/appflowy_flutter
+          case "${{ matrix.test_number }}" in
+            15|26)
+              python3 "$GITHUB_WORKSPACE/.desktop-ci-tools/.github/scripts/desktop_video_stacks.py" \
+                "$$" "$PWD/build/linux/x64/debug/bundle/AppFlowy" "$RUNNER_TEMP/desktop-video-native-stacks.json" &
+              ;;
+          esac
           flutter pub get
           dart run pdfrx:remove_wasm_modules
           trap 'dart run pdfrx:remove_wasm_modules --revert' EXIT
@@ -1426,4 +1438,15 @@ jobs:
             /tmp/test_output.txt
             /tmp/desktop-test-events.jsonl
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload native video stacks if sampled
+        if: always() && (matrix.test_number == 15 || matrix.test_number == 26)
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-video-native-stacks-${{ matrix.test_number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/desktop-video-native-stacks.json
+          if-no-files-found: ignore
           retention-days: 7
