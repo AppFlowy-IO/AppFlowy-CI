@@ -179,6 +179,7 @@ jobs:
       - name: Checkout CI Repo
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: appflowy-ci
 
       - name: Checkout Private Repo
@@ -635,10 +636,32 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
           ref: ${{ needs.image_source.outputs.sha }}
 
       - name: Record Cloud test source
         run: printf 'AF_TEST_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+
+      - name: Fetch released Cloud revisions for the legacy-client smoke test
+        if: >-
+          matrix.test_service == 'appflowy_cloud_legacy_client_smoke' &&
+          hashFiles('tests/legacy_client_smoke/checkout_legacy.sh') != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          # Read release pins as data. The source-owned smoke script uses these local Git objects.
+          commits=()
+          while IFS= read -r commit; do commits+=("$commit"); done < <(
+            sed -nE 's/.*commit=([0-9a-f]{40})[[:space:]]*;;.*/\1/p' tests/legacy_client_smoke/checkout_legacy.sh | sort -u
+          )
+          depth=--depth=1
+          if (( ${#commits[@]} == 0 )); then
+            # A historical pin format can use the private main history.
+            depth=--unshallow
+            commits=(main)
+          fi
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            fetch --quiet --no-tags "$depth" https://github.com/AppFlowy-IO/AppFlowy-Cloud-Premium.git "${commits[@]}"
 
       - name: Decide where AI calls go
         env:
@@ -1373,8 +1396,8 @@ jobs:
           (cd web && npm ci)
           # One run per released desktop. The script extracts the Cloud commit that release's
           # client libraries were synced from, replacing the previous release's tree and
-          # lockfile. The checkout is shallow, so it fetches that one commit with the checkout's
-          # credentials. A failure with one release does not skip the next.
+          # lockfile. The authenticated fetch already placed those commits in the local repo.
+          # A failure with one release does not skip the next.
           failed=()
           for release in 0.15.1 0.14.11; do
             echo "::group::Desktop $release"
@@ -1618,12 +1641,20 @@ jobs:
           python3 -I -B ci-tools/.github/scripts/published_cloud_images.py
           --lock "$RUNNER_TEMP/private-dependencies/published-images.json"
           appflowy_billing appflowy_gateway gotrue minio gateway_clickhouse
-      - name: Run native source ACL, private S3 and actual Gateway contracts
+      - name: Fetch private Cargo dependencies for historical source fixtures
+        if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
+        working-directory: ${{ runner.temp }}
         env:
           PRESENTATION_CARGO_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+        run: |
+          for manifest in Cargo.toml presentation-service/appflowy-cloud-gateway/Cargo.toml presentation-service/appflowy-cloud-billing/Cargo.toml; do
+            python3 -I -B "$GITHUB_WORKSPACE/ci-tools/.github/scripts/with_private_cargo_auth.py" \
+              cargo fetch --locked --manifest-path "$GITHUB_WORKSPACE/$manifest"
+          done
+      - name: Run native source ACL, private S3 and actual Gateway contracts
+        env:
           PUBLISHED_IMAGE_LOCK: ${{ runner.temp }}/private-dependencies/published-images.json
         run: >-
-          python3 -B ci-tools/.github/scripts/with_private_cargo_auth.py
           python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py
           --source "$GITHUB_WORKSPACE" --service-source "$GITHUB_WORKSPACE/presentation-service"
 
