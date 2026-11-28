@@ -24,6 +24,7 @@ CLOUD_BRIDGE = next(name for name in POLICIES["appflowy-cloud-ai"]["acceptance"]
                     if "gateway_contract" in name)
 NATIVE_TESTS = tuple(name for name in POLICIES["appflowy-cloud-ai"]["acceptance"] if name != CLOUD_BRIDGE)
 GATEWAY_BRIDGE = "api::ai_usage_tests::bridge::presentation_gateway_contract_bridge"
+PUBLISHED_MARKER = "API02 published Gateway ingress -> standalone Cloud HTTP -> durable job reconciliation: PASS"
 
 
 def prerequisites(source, service, revision):
@@ -66,21 +67,28 @@ def run_acceptance(source, service, profile, run):
         raise RuntimeError("Expected one presentation acceptance target")
     exact_ignored(root[0], ROOT_TESTS, run, environment, complete=True)
     cloud = build_artifacts(source, "appflowy-cloud-ai", profile, run, selection=("--lib",))
-    # Service owns a separate workspace without Cloud's custom CI profile. Use Cargo's
-    # built-in test profile without injecting profiles into that reviewed checkout.
-    gateway = build_artifacts(service, "appflowy-cloud-gateway", "test", run,
-                              manifest=service / "appflowy-cloud-gateway/Cargo.toml",
-                              selection=("--bin", "appflowy-cloud-gateway"))
-    if len(cloud) != 1 or len(gateway) != 1:
-        raise RuntimeError("Expected one Cloud AI library and one Gateway binary test executable")
+    if len(cloud) != 1:
+        raise RuntimeError("Expected one Cloud AI library test executable")
     exact_ignored(cloud[0], [*NATIVE_TESTS, CLOUD_BRIDGE], run, environment)
-    exact_ignored(gateway[0], [GATEWAY_BRIDGE], run, environment)
-    # The source-owned runner builds the actual hosted Cloud binary and provisions its own
-    # PostgreSQL, GoTrue, Redis and private MinIO with random ports and history-aware migrations.
-    result = execute([sys.executable, "-B", str(source / "script/test_presentation_acceptance.py"),
-                  "--profile", profile, "--service-root", str(service)], cwd=source,
-                 run=run, environment=environment, timeout=7200)
-    require_passed(result.stdout, 3)  # native permission + root ACL/S3 + root web research
+    published = (source / "script/presentation_service_images.py").is_file()
+    command = [sys.executable, "-B", str(source / "script/test_presentation_acceptance.py"),
+               "--profile", profile]
+    if published:
+        command += ["--published-services", "--root-test-binary", str(root[0].path),
+                    "--cloud-ai-test-binary", str(cloud[0].path)]
+    else:
+        # Historical Cloud refs own a source-based bridge with its own Cargo profile.
+        gateway = build_artifacts(service, "appflowy-cloud-gateway", "test", run,
+                                  manifest=service / "appflowy-cloud-gateway/Cargo.toml",
+                                  selection=("--bin", "appflowy-cloud-gateway"))
+        if len(gateway) != 1:
+            raise RuntimeError("Expected one Gateway binary test executable")
+        exact_ignored(gateway[0], [GATEWAY_BRIDGE], run, environment)
+        command += ["--service-root", str(service)]
+    result = execute(command, cwd=source, run=run, environment=environment, timeout=7200)
+    require_passed(result.stdout, 4 if published else 3)
+    if published and PUBLISHED_MARKER not in result.stdout:
+        raise RuntimeError("The published Gateway contract did not complete")
     # Additional native SQLx cases own empty databases on this lane's explicit PostgreSQL 16
     # service and apply Cloud history themselves. They never run on the ordinary package fixture.
     for name in NATIVE_TESTS:
@@ -89,6 +97,8 @@ def run_acceptance(source, service, profile, run):
         result = execute([str(cloud[0].path), name, "--exact", "--ignored", "--test-threads=1"],
                          run=run, cwd=cloud[0].cwd, environment=environment, timeout=300)
         require_passed(result.stdout, 1)
+    if published:
+        return
     result = execute([sys.executable, "-B", str(source / "script/test_presentation_gateway_contract.py"),
                   "--cloud-test-binary", str(cloud[0].path),
                   "--gateway-test-binary", str(gateway[0].path)], cwd=source,
@@ -105,7 +115,8 @@ def main():
     parser.add_argument("--profile", default="ci")
     args = parser.parse_args()
     source, service = args.source.resolve(), args.service_source.resolve()
-    prerequisites(source, service, os.environ.get("PRESENTATION_SERVICE_SHA"))
+    if not (source / "script/presentation_service_images.py").is_file():
+        prerequisites(source, service, os.environ.get("PRESENTATION_SERVICE_SHA"))
     sys.path.insert(0, str(source / "script"))
     from durable_recovery_runner import run_owned
     run_acceptance(source, service, args.profile, run_owned)

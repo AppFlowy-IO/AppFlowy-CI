@@ -114,6 +114,32 @@ jobs:
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
           fi
 
+  published_images:
+    name: Resolve published dependency images
+    needs: image_source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      lock: ${{ steps.images.outputs.lock }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          ref: ${{ needs.image_source.outputs.sha }}
+          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - id: images
+        run: python3 -B ci-tools/.github/scripts/published_cloud_images.py
+
   build_self_hosted:
     name: Wait for self-hosted images and Cloud test binaries
     needs: image_source
@@ -148,7 +174,11 @@ jobs:
     timeout-minutes: 10
     outputs:
       encoded_cache_available: ${{ steps.encoded_cache.outputs.enabled }}
-      encoded_cache_phases: ${{ steps.encoded_cache.outputs.phases }}
+      run_cache: ${{ steps.plan.outputs.cache }}
+      encoded_cache_phases: ${{ steps.plan.outputs.phases }}
+      share_permission_owners: ${{ steps.plan.outputs.share }}
+      run_presentation: ${{ steps.plan.outputs.presentation }}
+      presentation_images: ${{ steps.presentation.outputs.images }}
       presentation_available: ${{ steps.presentation.outputs.enabled }}
     steps:
       - name: Checkout CI Repo
@@ -163,6 +193,7 @@ jobs:
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
           ref: ${{ needs.image_source.outputs.sha }}
           path: appflowy-cloud-premium
+          persist-credentials: false
 
       - name: Record Cloud test source
         working-directory: appflowy-cloud-premium
@@ -221,10 +252,22 @@ jobs:
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
           elif (( present == ${#files[@]} )); then
             echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            if [[ -f script/presentation_service_images.py ]]; then echo 'images=true' >> "$GITHUB_OUTPUT"; fi
           else
             echo '::error::Incomplete presentation acceptance suite; all owned entrypoints are required.'
             exit 1
           fi
+
+      - name: Select native contracts for the private source changes
+        id: plan
+        working-directory: appflowy-cloud-premium
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          AVAILABLE_PHASES: ${{ steps.encoded_cache.outputs.phases }}
+          SOURCE_EVENT: ${{ github.event.client_payload.event_type }}
+          SOURCE_PR: ${{ github.event.client_payload.pr_number }}
+          SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+        run: python3 -I -B ../appflowy-ci/.github/scripts/native_contract_plan.py
 
       - name: Every test-bearing module must be in a matrix
         run: |
@@ -235,11 +278,10 @@ jobs:
 
   cache-contracts:
     name: ${{ matrix.phase == 'cache' && 'Cache and snapshot recovery' || matrix.phase == 'permission' && 'Permission contracts' || 'Cache, snapshot and permission contracts (all)' }}
-    needs: [verify_test_module_coverage, image_source, image_build_gate]
+    needs: [verify_test_module_coverage, image_source]
     if: >-
-      always() && !cancelled() &&
       needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true' &&
-      needs.image_build_gate.result == 'success'
+      needs.verify_test_module_coverage.outputs.run_cache == 'true'
     runs-on: ubuntu-latest
     # Source-owned phases split cold build cost without changing package feature graphs.
     strategy:
@@ -255,6 +297,7 @@ jobs:
       CARGO_BUILD_JOBS: '2'
       APPFLOWY_CACHE_TEST_THREADS: '4'
       APPFLOWY_CACHE_TEST_PHASE: ${{ matrix.phase }}
+      APPFLOWY_SHARE_PERMISSION_OWNERS: ${{ needs.verify_test_module_coverage.outputs.share_permission_owners }}
       RUST_LOG: warn
       DISABLE_CI_TEST_LOG: 'true'
     services:
@@ -359,11 +402,11 @@ jobs:
   test:
     name: Integration Tests (${{ matrix.topic }})
     runs-on: ubuntu-24.04
-    needs: [image_source, build_self_hosted]
+    needs: [image_source, build_self_hosted, published_images]
     if: >-
       always() && !cancelled() &&
       needs.image_source.result == 'success' &&
-      needs.build_self_hosted.result == 'success'
+      needs.build_self_hosted.result == 'success' && needs.published_images.result == 'success'
     # Keep each lane's execution deadline separate from its bounded preparation and transfer.
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     env:
@@ -935,6 +978,8 @@ jobs:
 
       - name: Run Docker-Compose
         timeout-minutes: 15
+        env:
+          PUBLISHED_IMAGES: ${{ needs.published_images.outputs.lock }}
         run: |
           export APPFLOWY_WORKER_VERSION=latest-amd64
           export APPFLOWY_CLOUD_VERSION=latest-amd64
@@ -959,14 +1004,8 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          # Gateway is a published dependency selected by this Cloud source's Compose file.
-          # Older sources may retain a companion manifest; it no longer requires an archive.
-          if docker compose -f docker-compose-ci.yml config --services | grep -qx appflowy_gateway; then
-            APPFLOWY_CLOUD_GATEWAY_PULL_POLICY=always \
-              docker compose -f docker-compose-ci.yml pull appflowy_gateway
-          fi
-          echo "Starting services (using source-built images and the published Gateway)..."
-          docker compose -f docker-compose-ci.yml up -d --pull=missing
+          printf '%s\n' "$PUBLISHED_IMAGES" > "$RUNNER_TEMP/published-images.json"
+          docker compose -f docker-compose-ci.yml -f "$RUNNER_TEMP/published-images.json" up -d --no-build --pull=missing
           docker ps -a
           docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
           docker compose -f docker-compose-ci.yml logs appflowy_cloud
@@ -1523,10 +1562,10 @@ jobs:
 
   presentation-acceptance:
     name: Presentation acceptance (native stack and Gateway)
-    needs: [verify_test_module_coverage, image_source, image_build_gate]
+    needs: [verify_test_module_coverage, image_source, published_images]
     if: >-
-      !cancelled() && needs.verify_test_module_coverage.outputs.presentation_available == 'true' &&
-      needs.image_build_gate.result == 'success'
+      needs.verify_test_module_coverage.outputs.presentation_available == 'true' &&
+      needs.verify_test_module_coverage.outputs.run_presentation == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     # This target is intentionally excluded from the generic standalone wildcard. Missing
@@ -1552,6 +1591,7 @@ jobs:
       PRESENTATION_SERVICE_SHA: ${{ vars.PRESENTATION_SERVICE_SHA }}
     steps:
       - name: Require pinned Service acceptance prerequisites
+        if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
         shell: bash
         run: |
           if [[ ! "$PRESENTATION_SERVICE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
@@ -1573,10 +1613,12 @@ jobs:
           path: ci-tools
           persist-credentials: false
       - name: Resolve the Service revision for this Cloud bridge protocol
+        if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
         run: >-
           python3 -B ci-tools/.github/scripts/presentation_gateway_protocol.py
           --source "$GITHUB_WORKSPACE" --github-env "$GITHUB_ENV"
       - name: Checkout pinned Billing and Gateway source
+        if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.PRESENTATION_SERVICE_REPOSITORY }}
@@ -1599,10 +1641,17 @@ jobs:
           sudo apt-get install -y protobuf-compiler postgresql-client redis-server ffmpeg poppler-utils locales
           sudo locale-gen en_US.UTF-8
       - name: Install SQLx CLI for the Service-owned migration ledgers
+        if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
         run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
+      - uses: docker/login-action@v3
+        if: needs.verify_test_module_coverage.outputs.presentation_images == 'true'
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       - name: Run native source ACL, private S3 and actual Gateway contracts
         env:
           PRESENTATION_CARGO_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PUBLISHED_IMAGES: ${{ needs.published_images.outputs.lock }}
         run: >-
           python3 -B ci-tools/.github/scripts/with_private_cargo_auth.py
           python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py
@@ -1611,7 +1660,7 @@ jobs:
   notify-webhook:
     name: Notify Webhook
     runs-on: ubuntu-latest
-    needs: [image_source, build_self_hosted, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability, presentation-contracts, presentation-acceptance]
+    needs: [image_source, build_self_hosted, published_images, verify_test_module_coverage, image_build_gate, test, cache-contracts, cache-observability, presentation-contracts, presentation-acceptance]
     # Report failures and skipped dependencies, but let cancelled runs release
     # their PR concurrency slot without waiting for a notification runner.
     if: ${{ !cancelled() }}
@@ -1626,10 +1675,18 @@ jobs:
           import os
           needs = json.loads(os.environ['NEEDS_JSON'])
           results = [job['result'] for job in needs.values()]
+          plan = needs['verify_test_module_coverage'].get('outputs', {})
+          missing = [job for job, capability, selection in (
+              ('cache-contracts', 'encoded_cache_available', 'run_cache'),
+              ('presentation-acceptance', 'presentation_available', 'run_presentation'),
+          ) if plan.get(capability) == plan.get(selection) == 'true' and needs[job]['result'] == 'skipped']
           if 'failure' in results:
               status = 'failure'
           elif 'cancelled' in results:
               status = 'cancelled'
+          elif missing:
+              print('::error::Selected native jobs were skipped: ' + ', '.join(missing))
+              status = 'failure'
           else:
               status = needs['test']['result']
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:

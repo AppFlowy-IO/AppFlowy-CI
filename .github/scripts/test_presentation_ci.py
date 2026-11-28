@@ -289,6 +289,35 @@ fn relative_fixture() { assert_eq!(std::fs::read_to_string("relative-fixture").u
 
 
 class AcceptanceTest(unittest.TestCase):
+
+    def test_published_services_keep_the_exact_cloud_inventory_and_skip_the_service_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "script").mkdir()
+            (source / "script/presentation_service_images.py").touch()
+            def build(_source, package, *_args, **_kwargs):
+                self.assertIn(package, ("appflowy-cloud", "appflowy-cloud-ai"))
+                return [runner.Binary(Path("/" + package), source)]
+            for marker, count in ((True, 4), (False, 4), (True, 3)):
+                def run(args, **_kwargs):
+                    if "--list" in args:
+                        cases = acceptance.ROOT_TESTS if args[0] == "/appflowy-cloud" else (
+                            *acceptance.NATIVE_TESTS, acceptance.CLOUD_BRIDGE)
+                        return completed(args, "\n".join(case + ": test" for case in cases))
+                    if "--published-services" in args:
+                        self.assertNotIn("--service-root", args)
+                        self.assertIn("--cloud-ai-test-binary", args)
+                        return completed(args, f"test result: ok. {count} passed; 0 failed; 0 ignored;\n"
+                                         + (acceptance.PUBLISHED_MARKER if marker else ""))
+                    self.assertEqual(args[0], "/appflowy-cloud-ai")
+                    return completed(args, "test result: ok. 1 passed; 0 failed; 0 ignored;")
+                with self.subTest(marker=marker, count=count), patch.object(acceptance, "build_artifacts", side_effect=build), \
+                        patch.object(acceptance, "check_database"):
+                    if marker and count == 4:
+                        acceptance.run_acceptance(source, None, "ci", run)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            acceptance.run_acceptance(source, None, "ci", run)
     @unittest.skipUnless(shutil.which("cargo") and shutil.which("cc"), "requires Rust and a C compiler")
     def test_gateway_build_uses_its_own_binary_target_and_both_bridge_protocols(self):
         with tempfile.TemporaryDirectory(prefix="presentation-service-profile-") as directory:

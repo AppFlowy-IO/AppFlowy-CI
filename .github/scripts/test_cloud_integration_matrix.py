@@ -1068,88 +1068,31 @@ class PublishedGatewayWorkflowTests(unittest.TestCase):
     self.assertEqual(render(manual=True, branch="ci-import"),
                      render(manual=True, branch="ci-import", source="b" * 40))
 
-  def run_gateway_steps(self, *, manifest, gateway_present=True, pull_exit=0,
-                        gateway_version=None):
-    with tempfile.TemporaryDirectory(prefix="cloud-published-gateway-") as directory:
-      root = Path(directory)
-      calls = root / "calls"
-      if manifest:
-        (root / "ci").mkdir()
-        (root / "ci/gateway-fixture.json").write_text(
-          '{"schema_version":1,"service_sha":"' + "a" * 40 + '"}\n'
-        )
-      # An older checkout may still carry both files. Any attempt to verify a removed companion
-      # artifact must fail rather than silently letting a stale-manifest test pass.
-      (root / "script/ci").mkdir(parents=True)
-      (root / "script/ci/gateway_fixture.py").write_text(
-        "raise SystemExit('legacy companion artifacts must not be required')\n"
-      )
-      command = self.step("Run Docker-Compose")["run"]
-      command = command.replace("${{ matrix.test_service }}", "appflowy_cloud_workspace_core")
-      command = command.replace("${{ matrix.fake_vision == true }}", "false")
-      mocks = r'''
-        sudo() { printf 'sudo:%s\n' "$*" >> "$CALL_LOG"; }
-        docker() {
-          printf 'docker:%s\n' "$*" >> "$CALL_LOG"
-          if [[ "$*" == "compose -f docker-compose-ci.yml config --services" ]]; then
-            printf 'appflowy_cloud\nappflowy_mcp\nai\n'
-            if [[ "$GATEWAY_PRESENT" == true ]]; then
-              printf 'appflowy_gateway\n'
+  def test_compose_starts_with_the_run_lock_and_propagates_registry_failures(self):
+    step = self.step("Run Docker-Compose")
+    self.assertEqual(step["env"]["PUBLISHED_IMAGES"], "${{ needs.published_images.outputs.lock }}")
+    script = step["run"].replace("${{ matrix.test_service }}", "core")
+    script = script.replace("${{ matrix.fake_vision == true }}", "false")
+    for status in (0, 24):
+      with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+        lock = '{"services":{"appflowy_billing":{"image":"billing@sha256:' + "a" * 64 + '"}}}'
+        mocks = """
+          sudo() { :; }
+          docker() {
+            if [[ "$*" == *" up "* ]]; then
+              [[ "$*" == "compose -f docker-compose-ci.yml -f $RUNNER_TEMP/published-images.json up -d --no-build --pull=missing" ]] || return 80
+              [[ "$(cat "$RUNNER_TEMP/published-images.json")" == "$PUBLISHED_IMAGES" ]] || return 81
+              echo "locked startup"
+              return "$PULL_EXIT"
             fi
-          elif [[ "$*" == "compose -f docker-compose-ci.yml pull appflowy_gateway" ]]; then
-            printf 'gateway-version:%s\n' "${APPFLOWY_CLOUD_GATEWAY_VERSION:-compose-default}" >> "$CALL_LOG"
-            printf 'gateway-pull-policy:%s\n' "${APPFLOWY_CLOUD_GATEWAY_PULL_POLICY:-unset}" >> "$CALL_LOG"
-            return "$PULL_EXIT"
-          elif [[ "$*" == "compose -f docker-compose-ci.yml up -d --pull=missing" ]]; then
-            printf 'gateway-start-policy:%s\n' "${APPFLOWY_CLOUD_GATEWAY_PULL_POLICY:-unset}" >> "$CALL_LOG"
-          fi
-        }
-      '''
-      environment = {**os.environ, "CALL_LOG": str(calls), "PULL_EXIT": str(pull_exit),
-                     "GATEWAY_PRESENT": str(gateway_present).lower(),
-                     "AI_ON_OLLAMA": "false", "COMPOSE_PROFILES": "",
-                     "APPFLOWY_CLOUD_GATEWAY_PULL_POLICY": "never"}
-      environment.pop("APPFLOWY_CLOUD_GATEWAY_VERSION", None)
-      if gateway_version is not None:
-        environment["APPFLOWY_CLOUD_GATEWAY_VERSION"] = gateway_version
-      result = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", mocks + command], cwd=root,
-        env=environment,
-        capture_output=True, text=True, timeout=5,
-      )
-      return result, calls.read_text().splitlines() if calls.exists() else []
-
-  def test_published_gateway_is_pulled_before_startup_with_or_without_a_legacy_pin(self):
-    for manifest in (False, True):
-      with self.subTest(manifest=manifest):
-        result, calls = self.run_gateway_steps(manifest=manifest)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("gateway-version:compose-default", calls)
-        self.assertIn("gateway-pull-policy:always", calls)
-        self.assertIn("gateway-start-policy:never", calls)
-        pull = calls.index("docker:compose -f docker-compose-ci.yml pull appflowy_gateway")
-        startup = calls.index("docker:compose -f docker-compose-ci.yml up -d --pull=missing")
-        self.assertLess(pull, startup)
-        self.assertEqual(sum("pull appflowy_gateway" in call for call in calls), 1)
-
-  def test_gateway_tag_selection_is_left_to_the_source_compose_environment(self):
-    result, calls = self.run_gateway_steps(manifest=True, gateway_version="reviewed-amd64")
-    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertIn("gateway-version:reviewed-amd64", calls)
-    self.assertIn("gateway-pull-policy:always", calls)
-    self.assertIn("gateway-start-policy:never", calls)
-
-  def test_failed_gateway_pull_stops_before_startup_even_with_a_legacy_pin(self):
-    result, calls = self.run_gateway_steps(manifest=True, pull_exit=24)
-    self.assertEqual(result.returncode, 24, result.stdout + result.stderr)
-    self.assertIn("gateway-pull-policy:always", calls)
-    self.assertFalse(any(" up -d" in call for call in calls), calls)
-
-  def test_sources_without_a_gateway_service_do_not_pull_it(self):
-    result, calls = self.run_gateway_steps(manifest=True, gateway_present=False)
-    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertFalse(any("pull appflowy_gateway" in call for call in calls), calls)
-    self.assertIn("docker:compose -f docker-compose-ci.yml up -d --pull=missing", calls)
+          }
+        """
+        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", mocks + script],
+                                cwd=directory, capture_output=True, text=True,
+                                env={**os.environ, "PUBLISHED_IMAGES": lock, "RUNNER_TEMP": directory,
+                                     "PULL_EXIT": str(status), "AI_ON_OLLAMA": "false"})
+        self.assertIn("locked startup", result.stdout)
+        self.assertEqual(result.returncode, status, result.stderr)
 
 
 if __name__ == "__main__":
