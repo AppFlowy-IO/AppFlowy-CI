@@ -46,9 +46,24 @@ def pull_images(images, username, token):
                            stderr=subprocess.DEVNULL, timeout=30, check=False)
 
 
+def compose_tags(services, pinned, configured):
+    # Older outage wrappers read only the source Compose file. Give that fixture's local
+    # daemon the aliases Compose expects, without replacing a different repository's image.
+    tags = []
+    for service, image in zip(services, pinned, strict=True):
+        expected = image.removeprefix("docker.io/").split("@")[0].split(":")[0]
+        tag = configured[service]["image"].removeprefix("docker.io/")
+        if not re.fullmatch(re.escape(expected) + r":[\w.-]+", tag):
+            raise ValueError("Dependency tag and pinned image belong to different repositories")
+        tags.append((image, tag))
+    return tags
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock", type=Path, required=True)
+    parser.add_argument("--compose-tags", action="store_true",
+                        help="Also load the source Compose aliases for a historical outage fixture")
     parser.add_argument("services", nargs="*")
     args = parser.parse_args()
     username = os.environ.pop("REGISTRY_USER")
@@ -66,7 +81,18 @@ def main():
             if not re.fullmatch(r"(?:docker\.io/)?appflowyinc/[a-z0-9_.-]+:0\.13\.2-amd64", image):
                 raise ValueError("Unexpected historical AI release")
             refs.append(image)
+    aliases = []
+    if args.compose_tags:
+        if not args.services:
+            raise ValueError("Compose aliases require an explicit service list")
+        data = subprocess.check_output(["docker", "compose", "--env-file", "deploy.env", "-f",
+                                        "docker-compose-ci.yml", "config", "--no-env-resolution",
+                                        "--format", "json"], stderr=subprocess.DEVNULL)
+        aliases = compose_tags(args.services, refs, json.loads(data)["services"])
     pull_images(refs, username, token)
+    for image, tag in aliases:
+        subprocess.run(["docker", "tag", image, tag], check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
     print(f"Prepared {len(refs)} published dependencies on the ephemeral runner.")
 
 

@@ -41,6 +41,11 @@ IMAGE_REQUEST = re.compile(
     r"CI images ([1-9][0-9]*)-([1-9][0-9]*) \([a-f0-9]{40}\)"
     r"(?: \[PR #[1-9][0-9]*\])?"
 )
+# Commercial builds use brackets so that MCP's source-commit search sees only hosted images.
+COMMERCIAL_IMAGE_REQUEST = re.compile(
+    r"CI images ([1-9][0-9]*)-([1-9][0-9]*) \[[a-f0-9]{40}\]"
+    r"(?: \[PR #[1-9][0-9]*\])?"
+)
 # #42 dispatchers check out default-branch scripts, including on retries. Retain
 # their read-only lookup interface without enrolling these workflows in cleanup.
 CHILD_WORKFLOWS = {
@@ -304,17 +309,20 @@ def cleanup(request=api, *, apply=False):
     for run in list(active_runs(CLOUD_REPO, request)):
         if Path(run["path"]).name != "build_ci_images_self_hosted.yml":
             continue
-        match = IMAGE_REQUEST.fullmatch(run.get("display_title", ""))
+        title = run.get("display_title", "")
+        commercial = COMMERCIAL_IMAGE_REQUEST.fullmatch(title)
+        match = commercial or IMAGE_REQUEST.fullmatch(title)
         if run["event"] != "workflow_dispatch" or not match:
             continue
         parent = tuple(map(int, match.groups()))
         try:
             # Also scope already-finished requesters by workflow. A cancelled
             # client run must never authorize a private image cancellation.
-            if parent not in cancelled:
+            if commercial or parent not in cancelled:
+                workflow = CHILD_WORKFLOWS["commercial"] if commercial else INTEGRATION_WORKFLOW
                 requester = parent_run(*parent)
                 if (
-                    Path(requester["path"]).name != INTEGRATION_WORKFLOW
+                    Path(requester["path"]).name != workflow
                     or requester.get("event") not in {"repository_dispatch", "workflow_dispatch"}
                     or not parent_cancelled(requester)
                 ):

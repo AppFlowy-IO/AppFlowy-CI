@@ -169,7 +169,10 @@ elif '--no-fail-fast' in args:
     def test_manual_commercial_run_pins_source_and_isolates_branch_concurrency(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())
         triggers = workflow.get("on", workflow.get(True))
-        self.assertEqual(set(triggers["workflow_dispatch"]["inputs"]), {"pr_ref", "pr_number"})
+        inputs = triggers["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(inputs), {"pr_ref", "pr_number", "image_workflow_ref"})
+        self.assertEqual(inputs["image_workflow_ref"]["default"], "main")
+        self.assertFalse(inputs["image_workflow_ref"].get("required", False))
         sha = "a" * 40
         manual = event_context(workflow, event="workflow_dispatch", ref="refs/heads/stacked-ci",
                                inputs={"pr_ref": sha, "pr_number": "123"})

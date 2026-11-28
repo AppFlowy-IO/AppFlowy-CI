@@ -21,6 +21,9 @@ on:
         default: 'main'
 
 env:
+  # The smoke job runs images built from the private source on this runner.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  DOCKER_BUILD_SUMMARY: "false"
   REGISTRY: docker.io
   IMAGE_NAME: appflowyinc/appflowy_cloud
 
@@ -50,12 +53,8 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
           ref: ${{ github.event.client_payload.pr_ref || github.event.inputs.pr_ref || 'main' }}
-
-      - name: Configure Git credentials for Docker build
-        run: |
-          git config --global credential.helper store
-          echo "https://${{ secrets.ADMIN_GITHUB_TOKEN }}:x-oauth-basic@github.com" > ~/.git-credentials
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -83,12 +82,11 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }}
+          secrets: |
+            github_token=${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Build Admin Frontend Docker image
         uses: docker/build-push-action@v5
@@ -96,15 +94,16 @@ jobs:
           context: ./admin-frontend
           file: ./admin-frontend/Dockerfile
           push: false
+          load: true
           tags: appflowyinc/admin-frontend:test-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Build Worker Docker image (if exists)
+        env:
+          BUILD_GITHUB_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
         run: |
           if [ -f worker/Dockerfile ]; then
             docker build -t appflowyinc/appflowy_worker:test-${{ github.sha }} \
-              --build-arg GITHUB_TOKEN=${{ secrets.ADMIN_GITHUB_TOKEN }} \
+              --secret id=github_token,env=BUILD_GITHUB_TOKEN \
               worker/
           else
             echo "Worker Dockerfile not found, skipping"
@@ -222,17 +221,3 @@ jobs:
           docker compose down -v || true
           docker image prune -af
           docker volume prune -f
-
-      - name: Push images on success (for main branch only)
-        if: success() && (github.event.client_payload.pr_ref == 'main' || github.event.inputs.pr_ref == 'main')
-        run: |
-          # Push main cloud image
-          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-          docker tag $IMAGE_TAG ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-test
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-test
-          
-          # Push admin frontend
-          docker tag appflowyinc/admin-frontend:test-${{ github.sha }} appflowyinc/admin-frontend:latest-test
-          docker push appflowyinc/admin-frontend:latest-test
-          
-          echo "Test images pushed to Docker Hub"

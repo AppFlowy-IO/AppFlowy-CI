@@ -171,7 +171,7 @@ def find_run(request, title):
 def request_build(source_sha, request_id, request=None, wait=time.sleep,
                   now=time.monotonic, timeout=330 * 60, *, wall_time=time.time, ci_tools_sha=None,
                   test_features=None, test_rust_toolchain=None, pr_number=None,
-                  image_workflow_ref="main", lock_published_images=False):
+                  image_workflow_ref="main", lock_published_images=False, commercial=False):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
@@ -192,6 +192,9 @@ def request_build(source_sha, request_id, request=None, wait=time.sleep,
             raise ValueError("Expected a positive Cloud pull request number")
         inputs["pr_number"] = pr_number
     required_artifacts = set(ARTIFACTS)
+    if commercial:
+        inputs["commercial"] = "true"
+        required_artifacts = {"commercial-cloud-images", "commercial-service-images"}
     if lock_published_images:
         inputs["lock_published_images"] = "true"
         required_artifacts.add(f"private-image-lock-{request_id}")
@@ -228,7 +231,10 @@ def request_build(source_sha, request_id, request=None, wait=time.sleep,
         workflow_sha = revision.get("sha")
         if workflow_sha != source_sha:
             raise ValueError("The image-builder override must identify the tested Cloud commit")
-    title = f"CI images {request_id} ({source_sha})"
+    if commercial and call("GET", f"repos/{REPOSITORY}").get("private") is not True:
+        raise ValueError("Commercial images require a private producer repository")
+    revision_label = f"[{source_sha}]" if commercial else f"({source_sha})"
+    title = f"CI images {request_id} {revision_label}"
     if pr_number:
         title += f" [PR #{pr_number}]"
     run = find_run(call, title)
@@ -256,6 +262,8 @@ def request_build(source_sha, request_id, request=None, wait=time.sleep,
         print(f"Waiting for {url}", flush=True)
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             description = "Images and compiled Cloud tests" if ci_tools_sha else "Images"
+            if commercial:
+                description = "Commercial images"
             pr_label = f" for PR #{pr_number}" if pr_number else ""
             print(f"{description}{pr_label} for {source_sha}: [self-hosted build]({url}).", file=summary)
             print(f"Image-builder workflow: `{image_workflow_ref}` at `{run['head_sha']}`.", file=summary)
@@ -288,6 +296,8 @@ def request_build(source_sha, request_id, request=None, wait=time.sleep,
             raise RuntimeError(f"Private build is missing artifacts: {sorted(required_artifacts - available)}")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             print(f"run_id={run_id}", file=output)
+            if lock_published_images:
+                print(f"lock_artifact=private-image-lock-{request_id}", file=output)
             print(f"image_workflow_ref={image_workflow_ref}", file=output)
             print(f"image_workflow_sha={run['head_sha']}", file=output)
         return run_id
@@ -328,6 +338,7 @@ def main():
         pr_number=os.environ.get("PR_NUMBER") or None,
         image_workflow_ref=os.environ.get("IMAGE_WORKFLOW_REF") or "main",
         lock_published_images=os.environ.get("LOCK_PUBLISHED_IMAGES") == "true",
+        commercial=os.environ.get("COMMERCIAL_IMAGES") == "true",
     )
 
 

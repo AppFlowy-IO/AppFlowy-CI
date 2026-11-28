@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+import yaml
+
 import native_contract_plan as plan
 import published_cloud_images as images
 import private_image_lock as private_lock
@@ -99,6 +101,31 @@ class PublishedImageTests(unittest.TestCase):
                 self.assertEqual([c[0][3] for c in calls], ["login","pull","logout"])
                 self.assertEqual(calls[0][1]["input"], "private\n")
                 self.assertFalse(Path(calls[0][0][2]).exists())
+
+    def test_private_source_smoke_builds_load_on_the_runner(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / "workflows/cloud_docker_ci.yaml").read_text())
+        self.assertEqual(workflow["env"]["DOCKER_BUILD_RECORD_UPLOAD"], "false")
+        builds = []
+        for step in workflow["jobs"]["docker-build-and-test"]["steps"]:
+            self.assertNotIn("docker push", step.get("run", ""))
+            self.assertNotIn("upload-artifact", step.get("uses", ""))
+            if step.get("uses", "").startswith("docker/build-push-action@"):
+                builds.append(step["with"])
+        self.assertEqual(len(builds), 2)
+        for build in builds:
+            self.assertIs(build["push"], False)
+            self.assertIs(build["load"], True)
+            self.assertNotIn("cache-to", build)
+
+    def test_outage_aliases_must_match_the_pinned_repository(self):
+        pinned = "docker.io/appflowyinc/example@sha256:" + "b" * 64
+        tags = {"billing": {"image": "appflowyinc/example:stable"}}
+        self.assertEqual(images.compose_tags(["billing"], [pinned], tags),
+                         [(pinned, "appflowyinc/example:stable")])
+        for tag in ["another/example:stable", "appflowyinc/example", "appflowyinc/example@sha256:1"]:
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                images.compose_tags(["billing"], [pinned], {"billing": {"image": tag}})
 
     def test_only_a_correlated_private_artifact_can_be_selected(self):
         sha = "1" * 40
