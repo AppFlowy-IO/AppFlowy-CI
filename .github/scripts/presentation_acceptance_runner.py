@@ -74,6 +74,7 @@ def run_acceptance(source, service, profile, run):
     command = [sys.executable, "-B", str(source / "script/test_presentation_acceptance.py"),
                "--profile", profile]
     if published:
+        environment["PUBLISHED_IMAGES"] = Path(environment["PUBLISHED_IMAGE_LOCK"]).read_text()
         command += ["--published-services", "--root-test-binary", str(root[0].path),
                     "--cloud-ai-test-binary", str(cloud[0].path)]
     else:

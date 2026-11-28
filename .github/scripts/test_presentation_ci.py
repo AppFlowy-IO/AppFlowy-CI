@@ -295,6 +295,8 @@ class AcceptanceTest(unittest.TestCase):
             source = Path(directory)
             (source / "script").mkdir()
             (source / "script/presentation_service_images.py").touch()
+            lock = source / "images.json"
+            lock.write_text('{"services": {}}')
             def build(_source, package, *_args, **_kwargs):
                 self.assertIn(package, ("appflowy-cloud", "appflowy-cloud-ai"))
                 return [runner.Binary(Path("/" + package), source)]
@@ -312,7 +314,8 @@ class AcceptanceTest(unittest.TestCase):
                     self.assertEqual(args[0], "/appflowy-cloud-ai")
                     return completed(args, "test result: ok. 1 passed; 0 failed; 0 ignored;")
                 with self.subTest(marker=marker, count=count), patch.object(acceptance, "build_artifacts", side_effect=build), \
-                        patch.object(acceptance, "check_database"):
+                        patch.object(acceptance, "check_database"), \
+                        patch.dict(os.environ, PUBLISHED_IMAGE_LOCK=str(lock)):
                     if marker and count == 4:
                         acceptance.run_acceptance(source, None, "ci", run)
                     else:

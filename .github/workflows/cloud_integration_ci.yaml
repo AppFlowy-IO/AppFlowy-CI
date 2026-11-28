@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      lock: ${{ steps.images.outputs.lock }}
+      digests: ${{ steps.images.outputs.digests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -976,10 +976,14 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+      - &cloud_published_image_lock
+        name: Prepare published images from the source Compose file and run digests
+        env:
+          PUBLISHED_IMAGE_DIGESTS: ${{ needs.published_images.outputs.digests }}
+        run: python3 -B ci-tools/.github/scripts/published_cloud_images.py --override "$RUNNER_TEMP/published-images.json"
+
       - name: Run Docker-Compose
         timeout-minutes: 15
-        env:
-          PUBLISHED_IMAGES: ${{ needs.published_images.outputs.lock }}
         run: |
           export APPFLOWY_WORKER_VERSION=latest-amd64
           export APPFLOWY_CLOUD_VERSION=latest-amd64
@@ -1004,7 +1008,6 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          printf '%s\n' "$PUBLISHED_IMAGES" > "$RUNNER_TEMP/published-images.json"
           docker compose -f docker-compose-ci.yml -f "$RUNNER_TEMP/published-images.json" up -d --no-build --pull=missing
           docker ps -a
           docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
@@ -1648,10 +1651,11 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - *cloud_published_image_lock
       - name: Run native source ACL, private S3 and actual Gateway contracts
         env:
           PRESENTATION_CARGO_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          PUBLISHED_IMAGES: ${{ needs.published_images.outputs.lock }}
+          PUBLISHED_IMAGE_LOCK: ${{ runner.temp }}/published-images.json
         run: >-
           python3 -B ci-tools/.github/scripts/with_private_cargo_auth.py
           python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py

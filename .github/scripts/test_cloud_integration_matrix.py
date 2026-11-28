@@ -1070,12 +1070,14 @@ class PublishedGatewayWorkflowTests(unittest.TestCase):
 
   def test_compose_starts_with_the_run_lock_and_propagates_registry_failures(self):
     step = self.step("Run Docker-Compose")
-    self.assertEqual(step["env"]["PUBLISHED_IMAGES"], "${{ needs.published_images.outputs.lock }}")
+    prepare = self.step("Prepare published images from the source Compose file and run digests")
+    self.assertEqual(prepare["env"]["PUBLISHED_IMAGE_DIGESTS"], "${{ needs.published_images.outputs.digests }}")
     script = step["run"].replace("${{ matrix.test_service }}", "core")
     script = script.replace("${{ matrix.fake_vision == true }}", "false")
     for status in (0, 24):
       with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
         lock = '{"services":{"appflowy_billing":{"image":"billing@sha256:' + "a" * 64 + '"}}}'
+        Path(directory, "published-images.json").write_text(lock)
         mocks = """
           sudo() { :; }
           docker() {

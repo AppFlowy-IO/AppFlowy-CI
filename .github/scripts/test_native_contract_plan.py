@@ -84,7 +84,13 @@ class PublishedImageTests(unittest.TestCase):
         pinned = source["billing"]["image"] + "@sha256:" + "c" * 64
         with patch.object(subprocess, "check_output", return_value=json.dumps({
                 "services": {"billing": {"image": pinned, "networks": {}}}})) as run:
-            self.assertEqual(images.resolve(source), {"billing": {"image": pinned}})
+            digests = images.resolve(source)
+            self.assertEqual(digests, {"billing": "sha256:" + "c" * 64})
+            self.assertNotIn("appflowyinc", json.dumps(digests))
+            self.assertEqual(images.compose_override(source, digests), {"services": {"billing": {"image": pinned}}})
+            for mismatch in ({}, {"billing": "latest"}):
+                with self.assertRaises(ValueError):
+                    images.compose_override(source, mismatch)
             self.assertEqual(json.loads(run.call_args.kwargs["input"]), {"services": source})
         with patch.object(subprocess, "check_output", return_value=json.dumps({"services": source})):
             with self.assertRaises(ValueError):
