@@ -24,6 +24,7 @@ class FakeGitHub:
         self.conclusion = "success"
         self.artifacts = [{"name": name, "expired": False} for name in build.ARTIFACTS]
         self.elapsed = 0
+        self.private = True
         self.override_sha = SHA
         self.dispatched_sha = None
 
@@ -32,9 +33,10 @@ class FakeGitHub:
         if method == "POST" and path.endswith("/dispatches"):
             pr_number = (payload or {}).get("inputs", {}).get("pr_number")
             suffix = f" [PR #{pr_number}]" if pr_number else ""
+            revision = f"[{SHA}]" if (payload or {}).get("inputs", {}).get("commercial") == "true" else f"({SHA})"
             self.run = {
                 "id": 42, "status": "queued", "conclusion": None,
-                "display_title": f"CI images {REQUEST_ID} ({SHA}){suffix}",
+                "display_title": f"CI images {REQUEST_ID} {revision}{suffix}",
                 "head_sha": self.dispatched_sha or (
                     MAIN_WORKFLOW_SHA if (payload or {}).get("ref", "main") == "main" else self.override_sha
                 ),
@@ -50,6 +52,8 @@ class FakeGitHub:
             self.run["status"] = "completed" if self.conclusion else "in_progress"
             self.run["conclusion"] = self.conclusion
             return dict(self.run)
+        elif path == f"repos/{build.REPOSITORY}":
+            return {"private": self.private}
         elif path.startswith(f"repos/{build.REPOSITORY}/commits/"):
             return {"sha": self.override_sha}
         else:
@@ -81,6 +85,22 @@ class RequestTests(unittest.TestCase):
             SHA, REQUEST_ID, request=self.github.request,
             now=lambda: self.github.elapsed, wait=kwargs.pop("wait", self.github.wait), **kwargs,
         )
+
+    def test_commercial_dispatch_requires_private_artifacts_with_distinct_provenance(self):
+        self.github.private = False
+        with self.assertRaisesRegex(ValueError, "private producer"):
+            self.request(commercial=True, lock_published_images=True)
+        self.assertFalse(self.github.writes)
+        self.github.private = True
+        with self.assertRaisesRegex(RuntimeError, "missing artifacts"):
+            self.request(commercial=True, lock_published_images=True)
+        self.github.artifacts = [{"name": n, "expired": False} for n in
+                                 ("commercial-cloud-images", "commercial-service-images",
+                                  f"private-image-lock-{REQUEST_ID}")]
+        self.assertEqual(self.request(commercial=True, lock_published_images=True), 42)
+        self.assertIn(f"[{SHA}]", self.github.run["display_title"])
+        self.assertIn(f"lock_artifact=private-image-lock-{REQUEST_ID}", self.output.read_text())
+        self.assertEqual(len(self.github.writes), 1)
 
     def test_dispatches_pinned_revision_and_ignores_other_requests(self):
         self.assertEqual(self.request(), 42)
@@ -160,6 +180,13 @@ class RequestTests(unittest.TestCase):
         })
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"]).read_text()
         self.assertIn("for PR #1190", summary)
+
+    def test_private_dependency_manifest_is_requested_and_required(self):
+        with self.assertRaisesRegex(RuntimeError, "private-image-lock"):
+            self.request(lock_published_images=True)
+        self.assertEqual(self.github.writes[0][2]["inputs"]["lock_published_images"], "true")
+        self.github.artifacts.append({"name":f"private-image-lock-{REQUEST_ID}", "expired":False})
+        self.assertEqual(self.request(lock_published_images=True), 42)
 
     def test_test_archive_is_required_even_when_all_images_succeed(self):
         for archive in (None, {"name": f"cloud-test-binaries-{SHA}", "expired": True},

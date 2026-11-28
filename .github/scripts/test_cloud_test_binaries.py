@@ -359,7 +359,7 @@ class SharedBuildWorkflowTest(unittest.TestCase):
         for result in ("failure", "skipped", "cancelled"):
             with self.subTest(result=result):
                 self.assertFalse(self.matrix_will_run(build_self_hosted=result))
-        self.assertEqual(jobs["test"]["needs"], ["image_source", "build_self_hosted"])
+        self.assertEqual(jobs["test"]["needs"], ["image_source", "build_self_hosted", "published_images"])
         self.assertIn("needs.build_self_hosted.result == 'success'", jobs["test"]["if"])
         for removed in ("build_test_binaries", "build_cloud", "build_worker", "build_search", "build_mcp"):
             self.assertNotIn(removed, jobs)

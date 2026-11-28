@@ -17,6 +17,10 @@ on:
         description: Private Cloud PR number for run discovery and concurrency
         required: true
         type: string
+      image_workflow_ref:
+        description: Private builder branch for paired manual validation
+        type: string
+        default: main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && format('manual-{0}', github.ref) || github.event.client_payload.event_type == 'push' && 'push' || 'validation' }}-${{ github.event.client_payload.pr_number || inputs.pr_number || github.run_id }}
@@ -48,11 +52,13 @@ env:
 
 jobs:
   setup:
-    name: Setup Environment and Build Images
+    name: Resolve commercial shards and wait for the private image build
     runs-on: ubuntu-latest
     outputs:
       test_services: ${{ steps.shards.outputs.services }}
       cloud_sha: ${{ steps.source.outputs.sha }}
+      image_run_id: ${{ steps.images.outputs.run_id }}
+      lock_artifact: ${{ steps.images.outputs.lock_artifact }}
     steps:
       - name: Validate manual Cloud revision
         if: github.event_name == 'workflow_dispatch'
@@ -67,6 +73,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
           ref: ${{ github.event.client_payload.pr_ref || inputs.pr_ref }}
 
       - name: Record Cloud test source
@@ -90,50 +97,23 @@ jobs:
           fi
           echo "services=$services" >> "$GITHUB_OUTPUT"
 
-      - name: Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install protobuf-compiler
-          sudo update-ca-certificates
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Check out CI image request tools
+        uses: actions/checkout@v4
         with:
-          driver-opts: network=host
-
-      - name: Build Docker Images
-        run: |
-          export DOCKER_DEFAULT_PLATFORM=linux/amd64
-          cp deploy.env .env
-          docker compose build \
-            --parallel \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            --build-arg PROFILE=debug \
-            --build-arg FEATURES="self-host-af, commercial-ci, test-mailer, ci-test" \
-            appflowy_cloud
-          # Each writer owns its deployment feature; a shared-crate feature cannot select it.
-          export APPFLOWY_WORKER_VERSION=latest APPFLOWY_SEARCH_VERSION=latest APPFLOWY_MCP_VERSION=latest APPFLOWY_AI_VERSION=latest
-          docker compose -f docker-compose-ci.yml build --parallel \
-            --build-arg BUILDKIT_INLINE_CACHE=1 --build-arg PROFILE=debug \
-            --build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp ai
-
-      - name: Save Docker Images
-        run: |
-          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
-            docker save "appflowyinc/${service}_premium:latest" | gzip > "${service}.tar.gz"
-          done
-
-      - name: Upload Docker Images as Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-images
-          path: |
-            appflowy_cloud.tar.gz
-            appflowy_worker.tar.gz
-            appflowy_search.tar.gz
-            appflowy_mcp.tar.gz
-            appflowy_ai.tar.gz
-          retention-days: 1
+          repository: ${{ github.repository }}
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          persist-credentials: false
+      - name: Request the private commercial image build
+        id: images
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
+          IMAGE_WORKFLOW_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.image_workflow_ref || 'main' }}
+          COMMERCIAL_IMAGES: 'true'
+          LOCK_PUBLISHED_IMAGES: 'true'
+        run: python3 -I -B ci-tools/.github/scripts/request_image_build.py
 
   test:
     name: Integration Tests (${{ matrix.test_service }})
@@ -158,6 +138,7 @@ jobs:
         with:
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          persist-credentials: false
           ref: ${{ needs.setup.outputs.cloud_sha }}
 
       - name: Record Cloud test source
@@ -169,6 +150,7 @@ jobs:
           repository: AppFlowy-IO/AppFlowy-CI
           ref: ${{ github.workflow_sha }}
           path: ci-tools
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -210,25 +192,42 @@ jobs:
         with:
           workspaces: "AppFlowy-Cloud"
 
-      - name: Download Docker Images
+      - name: Download private images for this shard
         uses: actions/download-artifact@v4
         with:
-          name: docker-images
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.setup.outputs.image_run_id }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          pattern: ${{ matrix.test_service == 'appflowy_cloud_license_outage' && 'commercial-cloud-images' || 'commercial-*-images' }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/private-commercial-images
 
-      - name: Load Docker Images
+      - name: Load the local images
         env:
           TEST_SERVICE: ${{ matrix.test_service }}
+        working-directory: ${{ runner.temp }}/private-commercial-images
         run: |
-          for service in appflowy_cloud appflowy_worker appflowy_search appflowy_mcp appflowy_ai; do
-            if [[ "$TEST_SERVICE" == appflowy_cloud_license_outage && "$service" != appflowy_cloud ]]; then
-              rm -- "${service}.tar.gz"
-              continue
-            fi
-            docker load < "${service}.tar.gz"
-            docker tag "appflowyinc/${service}_premium:latest" "appflowyinc/${service}_premium:${{ env.CLOUD_VERSION }}"
-            # The loaded image is sufficient; release its consumed download before compilation.
-            rm -- "${service}.tar.gz"
+          services=(appflowy_cloud)
+          if [[ "$TEST_SERVICE" != appflowy_cloud_license_outage ]]; then
+            services+=(appflowy_worker appflowy_search appflowy_mcp appflowy_ai)
+          fi
+          for service in "${services[@]}"; do
+            gzip -dc "$service.tar.gz" | docker load --quiet >/dev/null 2>&1
+            rm -- "$service.tar.gz"
           done
+
+      - name: Remove downloaded image archives
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/private-commercial-images"
+
+      - name: Download the private dependency manifest
+        uses: actions/download-artifact@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.setup.outputs.image_run_id }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          name: ${{ needs.setup.outputs.lock_artifact }}
+          path: ${{ runner.temp }}/private-dependencies
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -305,11 +304,21 @@ jobs:
         # the wasm-pack headless tests will run on random ports, so we need to allow all origins
         run: sed -i 's/http:\/\/127\.0\.0\.1:8000/http:\/\/127.0.0.1/g' nginx/nginx.conf
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Prepare published services with temporary registry credentials
+        env:
+          REGISTRY_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+          TEST_SERVICE: ${{ matrix.test_service }}
+        run: |
+          services=()
+          if [[ "$TEST_SERVICE" == appflowy_cloud_license_outage ]]; then
+            services=(gotrue minio appflowy_billing)
+            if ! grep -Fq APPFLOWY_CI_DEPENDENCY_LOCK script/ci/run_license_outage_ci.py; then
+              services=(--compose-tags "${services[@]}")
+            fi
+          fi
+          python3 -I -B ci-tools/.github/scripts/published_cloud_images.py \
+            --lock "$RUNNER_TEMP/private-dependencies/published-images.json" "${services[@]}"
 
       - name: Run Docker-Compose
         if: matrix.test_service != 'appflowy_cloud_license_outage'
@@ -323,8 +332,9 @@ jobs:
           if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
             export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}authentik"
           fi
-          docker compose -f docker-compose-ci.yml down
-          docker compose -f docker-compose-ci.yml up -d
+          compose=(docker compose -f docker-compose-ci.yml -f "$RUNNER_TEMP/private-dependencies/published-images.json")
+          "${compose[@]}" down >/dev/null 2>&1
+          "${compose[@]}" up --no-build -d >/dev/null 2>&1
 
       - name: Wait for services to be ready
         if: matrix.test_service != 'appflowy_cloud_license_outage'
@@ -349,6 +359,8 @@ jobs:
         env:
           APPFLOWY_CLOUD_VERSION: ${{ env.CLOUD_VERSION }}
           COMMERCIAL_LICENSE_OUTAGE_SHARD: "1"
+          APPFLOWY_CI_DEPENDENCY_LOCK: ${{ runner.temp }}/private-dependencies/published-images.json
+          COMPOSE_PROGRESS: quiet
         run: python3 -B script/ci/run_license_outage_ci.py
 
       - name: Run real self-host presentation contracts
@@ -417,18 +429,6 @@ jobs:
         if: always() && steps.sccache-config.outputs.sccache_enabled == 'true'
         run: sccache --show-stats || true
 
-      - name: appflowy cloud Logs
+      - name: Report commercial container status
         if: failure() && matrix.test_service != 'appflowy_cloud_license_outage'
-        run: |
-          docker ps -a
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
-          # GoTrue answers a failed admin user delete with a generic
-          # `500 Database error deleting user` and keeps the actual PostgreSQL
-          # error (constraint name, SQLSTATE, offending row) only in its own log.
-          # Without this, a delete blocked by a schema constraint is undiagnosable
-          # from CI alone.
-          docker compose -f docker-compose-ci.yml logs gotrue || true
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_commercial" ]; then
-            docker compose -f docker-compose-ci.yml --profile authentik \
-              logs authentik-db authentik-server authentik-worker || true
-          fi
+        run: docker ps -a --format '{{.Names}} {{.Status}}'

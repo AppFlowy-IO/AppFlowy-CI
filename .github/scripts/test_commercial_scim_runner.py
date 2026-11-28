@@ -1,7 +1,6 @@
 from contextlib import redirect_stdout
 import io
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import unittest
@@ -12,20 +11,12 @@ import commercial_scim_runner as runner
 
 
 class CommercialScimTest(unittest.TestCase):
-    def test_cloud_completion_audit_keeps_self_host_license_features(self):
+    def test_commercial_shards_request_the_private_self_host_build(self):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())
-        build = next(step["run"] for step in workflow["jobs"]["setup"]["steps"]
-                     if step.get("name") == "Build Docker Images")
-        feature_args = re.findall(r'--build-arg FEATURES=(?:"([^"]+)"|(\S+))', build)
-        features = [{flag.strip() for flag in (quoted or bare).split(",")}
-                    for quoted, bare in feature_args]
-        self.assertEqual(features, [
-            {"self-host-af", "commercial-ci", "test-mailer", "ci-test"},
-            {"self-host-af"},
-        ])
-        self.assertRegex(build, r'FEATURES="[^"]+"\s*\\\s*appflowy_cloud\b')
-        self.assertIn("FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp ai", build)
+        request = next(step for step in workflow["jobs"]["setup"]["steps"] if step.get("id") == "images")
+        self.assertEqual(request["env"]["COMMERCIAL_IMAGES"], "true")
+        self.assertEqual(request["env"]["SOURCE_SHA"], "${{ steps.source.outputs.sha }}")
 
     def exercise(self, *, missing=False, ignored=False, passed=3, execution_exit=0):
         calls = []

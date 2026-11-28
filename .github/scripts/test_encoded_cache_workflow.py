@@ -26,6 +26,8 @@ REPORTED_JOBS = (
     "verify_test_module_coverage",
     "image_build_gate",
     "test",
+    "published_images",
+    "presentation-acceptance",
     *CACHE_JOBS,
 )
 
@@ -158,7 +160,7 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(
             verification["outputs"]["encoded_cache_phases"],
-            "${{ steps.encoded_cache.outputs.phases }}",
+            "${{ steps.plan.outputs.phases }}",
         )
         private_checkout = next(
             step for step in verification["steps"]
@@ -171,12 +173,16 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
                 if isinstance(dependencies, str):
                     dependencies = [dependencies]
                 self.assertIn("verify_test_module_coverage", dependencies)
-                self.assertIn("image_build_gate", dependencies)
                 self.assertIn(
                     "needs.verify_test_module_coverage.outputs.encoded_cache_available == 'true'",
                     job["if"],
                 )
-                self.assertIn("needs.image_build_gate.result == 'success'", job["if"])
+                if name == "cache-observability":
+                    self.assertIn("image_build_gate", dependencies)
+                    self.assertIn("needs.image_build_gate.result == 'success'", job["if"])
+                else:
+                    self.assertNotIn("image_build_gate", dependencies)
+                    self.assertIn("needs.verify_test_module_coverage.outputs.run_cache", job["if"])
                 checkout = next(
                     step for step in job["steps"]
                     if step.get("with", {}).get("repository")
@@ -282,8 +288,9 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
         self.assertIn('"status": "${{ steps.result.outputs.status }}"', payload)
         self.assertNotIn("needs.test.result", payload)
 
-    def aggregate(self, overrides):
+    def aggregate(self, overrides, plan=None):
         needs = {job: {"result": "success"} for job in REPORTED_JOBS}
+        needs["verify_test_module_coverage"]["outputs"] = plan or {}
         for job, result in overrides.items():
             needs[job]["result"] = result
         step = step_by_id(self.jobs["notify-webhook"], "result")
@@ -291,6 +298,13 @@ class EncodedCacheWorkflowTest(unittest.TestCase):
             result, outputs = run_step(step, Path(temporary), NEEDS_JSON=json.dumps(needs))
         self.assertEqual(result.returncode, 0, result.stderr)
         return outputs.get("status")
+
+    def test_selection_distinguishes_intended_and_unexpected_skips(self):
+        for job, capability, selection in (("cache-contracts", "encoded_cache_available", "run_cache"),
+                                           ("presentation-acceptance", "presentation_available", "run_presentation")):
+            for run, status in (("true", "failure"), ("false", "success")):
+                with self.subTest(job=job, run=run):
+                    self.assertEqual(self.aggregate({job: "skipped"}, {capability: "true", selection: run}), status)
 
     def test_each_cache_failure_overrides_successful_integration_tests(self):
         for job in CACHE_JOBS:

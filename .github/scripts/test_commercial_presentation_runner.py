@@ -51,10 +51,8 @@ class CommercialPresentationTest(unittest.TestCase):
     def test_workflow_uses_self_host_image_and_dedicated_guard_before_generic_suite(self):
         repository = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((repository / ".github/workflows/cloud_commercial_integration_ci.yaml").read_text())
-        builds = "\n".join(step.get("run", "") for step in workflow["jobs"]["setup"]["steps"])
-        self.assertIn('FEATURES="self-host-af, commercial-ci, test-mailer, ci-test"', builds)
-        self.assertIn("--build-arg FEATURES=self-host-af appflowy_worker appflowy_search appflowy_mcp ai", builds)
-        self.assertIn("appflowy_mcp appflowy_ai; do", builds)
+        request = next(step for step in workflow["jobs"]["setup"]["steps"] if step.get("id") == "images")
+        self.assertEqual(request["env"]["COMMERCIAL_IMAGES"], "true")
         steps = workflow["jobs"]["test"]["steps"]
         guarded = next(i for i, step in enumerate(steps)
                        if "commercial_presentation_runner.py" in step.get("run", ""))

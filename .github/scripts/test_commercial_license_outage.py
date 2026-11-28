@@ -49,12 +49,22 @@ class LicenseOutageShard(unittest.TestCase):
         self.assertIn("needs.setup.outputs.test_services", job["strategy"]["matrix"]["test_service"])
         self.assertIn("ubuntu-24.04", job["runs-on"])
         steps = {step.get("name"): step for step in job["steps"]}
-        case = [step for step in job["steps"] if FILES[-1] in step.get("run", "")]
+        case = [step for step in job["steps"] if step.get("run", "").strip() == f"python3 -B {FILES[-1]}"]
         self.assertEqual(len(case), 1)
         self.assertEqual(case[0]["if"], f"matrix.test_service == '{LANE}'")
         self.assertEqual(case[0]["env"]["COMMERCIAL_LICENSE_OUTAGE_SHARD"], "1")
-        for name in ("Run Docker-Compose", "Wait for services to be ready", "Run Tests", "appflowy cloud Logs"):
+        for name in ("Run Docker-Compose", "Wait for services to be ready", "Run Tests", "Report commercial container status"):
             self.assertIn(f"matrix.test_service != '{LANE}'", steps[name]["if"])
+        images = steps["Download private images for this shard"]["with"]
+        self.assertIn("commercial-cloud-images", images["pattern"])
+        self.assertIn("commercial-*-images", images["pattern"])
+        self.assertEqual(images["repository"], "AppFlowy-IO/AppFlowy-Cloud-Premium")
+        self.assertEqual(steps["Download the private dependency manifest"]["with"]["repository"],
+                         images["repository"])
+        for job in self.jobs.values():
+            for step in job["steps"]:
+                self.assertNotIn("upload-artifact", step.get("uses", ""))
+                self.assertNotIn("docker save", step.get("run", ""))
         self.assertEqual(steps["Checkout Private Repo"]["with"]["ref"], "${{ needs.setup.outputs.cloud_sha }}")
 
 

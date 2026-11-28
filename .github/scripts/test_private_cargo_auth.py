@@ -76,16 +76,59 @@ class PrivateCargoAuthTest(unittest.TestCase):
         self.assertEqual(result.returncode, 17)
         self.assertEqual(result.stdout + result.stderr, "")
 
-    def test_native_workflow_wraps_the_runner_with_the_private_checkout_token(self):
+    def test_legacy_smoke_prefetches_git_objects_without_executing_its_source_script(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/cloud_integration_ci.yaml").read_text())
-        steps = workflow["jobs"]["presentation-acceptance"]["steps"]
-        step = next(s for s in steps if s.get("name") ==
-                    "Run native source ACL, private S3 and actual Gateway contracts")
-        self.assertEqual(step["env"]["PRESENTATION_CARGO_TOKEN"], "${{ secrets.ADMIN_GITHUB_TOKEN }}")
-        self.assertIn("with_private_cargo_auth.py python3 -B", step["run"])
-        self.assertIn("presentation_acceptance_runner.py", step["run"])
-        self.assertTrue(all(s["with"]["persist-credentials"] is False for s in steps
-                            if s.get("uses") == "actions/checkout@v4"))
+        step = next(s for s in workflow["jobs"]["test"]["steps"] if s.get("name", "").startswith("Fetch released"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / "remote"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(remote)], check=True)
+            commits = []
+            for message in ("first release", "unselected commit", "second release", "current"):
+                subprocess.run(["git", "-c", "user.name=CI", "-c", "user.email=ci@example.invalid",
+                                "-c", "commit.gpgsign=false", "commit", "-qm", message, "--allow-empty"],
+                               cwd=remote, check=True)
+                commits.append(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=remote, text=True).strip())
+            for folder, pins in (("listed", commits[::2]), ("old-format", [])):
+                with self.subTest(folder=folder):
+                    checkout = root / folder
+                    subprocess.run(["git", "clone", "--quiet", "--depth=1", remote.as_uri(), str(checkout)], check=True)
+                    script = checkout / "tests/legacy_client_smoke/checkout_legacy.sh"
+                    script.parent.mkdir(parents=True)
+                    script.write_text("touch should-never-execute\n" + "".join(
+                        f"  0.1.{n}) commit={sha} ;;\n" for n, sha in enumerate(pins)))
+                    subprocess.run(["git", "config", f"url.{remote.as_uri()}.insteadOf",
+                                    "https://github.com/AppFlowy-IO/AppFlowy-Cloud-Premium.git"], cwd=checkout, check=True)
+                    subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", step["run"]], cwd=checkout, check=True)
+                    for sha in commits[::2]:
+                        subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"], cwd=checkout, check=True)
+                    self.assertFalse((checkout / "should-never-execute").exists())
+                    self.assertNotIn("credential", (checkout / ".git/config").read_text())
+                    shallow = subprocess.check_output(["git", "rev-parse", "--is-shallow-repository"],
+                                                       cwd=checkout, text=True).strip()
+                    self.assertEqual(shallow, "true" if pins else "false")
+
+    def test_source_tests_run_after_authenticated_dependency_fetches(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/cloud_integration_ci.yaml").read_text())
+        jobs = workflow["jobs"]
+        steps = jobs["presentation-acceptance"]["steps"]
+        run = next(s for s in steps if s.get("name") == "Run native source ACL, private S3 and actual Gateway contracts")
+        fetch = next(s for s in steps if "PRESENTATION_CARGO_TOKEN" in s.get("env", {}))
+        self.assertLess(steps.index(fetch), steps.index(run))
+        self.assertIn("presentation_images != 'true'", fetch["if"])
+        self.assertIn("cargo fetch --locked", fetch["run"])
+        self.assertEqual(fetch["working-directory"], "${{ runner.temp }}")
+        self.assertNotIn("PRESENTATION_CARGO_TOKEN", run["env"])
+        self.assertNotIn("with_private_cargo_auth", run["run"])
+        self.assertIn("presentation_acceptance_runner.py", run["run"])
+        for job in jobs.values():
+            for step in job.get("steps", []):
+                if step.get("uses", "").startswith("actions/checkout@") and "token" in step.get("with", {}):
+                    self.assertIs(step["with"].get("persist-credentials"), False)
+        legacy = next(s for s in jobs["test"]["steps"] if s.get("name", "").startswith("Fetch released Cloud revisions"))
+        self.assertIn("appflowy_cloud_legacy_client_smoke", legacy["if"])
+        self.assertIn("gh auth git-credential", legacy["run"])
+
 
 
 if __name__ == "__main__":

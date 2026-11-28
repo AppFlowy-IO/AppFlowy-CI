@@ -319,6 +319,16 @@ class CleanupTests(unittest.TestCase):
         self.api.runs[lifecycle.CLOUD_REPO] = [image(10, 9)]
         self.assertEqual(self.cleanup(), [(lifecycle.CLOUD_REPO, 10)])
 
+    def test_commercial_images_only_follow_their_commercial_parent(self):
+        private = image(10, 9)
+        private["display_title"] = private["display_title"].replace("(", "[").replace(")", "]")
+        self.api.runs[lifecycle.CLOUD_REPO] = [private]
+        for workflow in ["cloud_integration_ci.yaml", "cloud_commercial_integration_ci.yaml"]:
+            self.api.parents[(9, 1)] = dict(run(9, workflow=workflow, status="completed"),
+                                             conclusion="cancelled")
+            expected = [] if workflow == "cloud_integration_ci.yaml" else [(lifecycle.CLOUD_REPO, 10)]
+            self.assertEqual(self.cleanup(), expected)
+
     def test_private_image_request_must_belong_to_cloud_integration(self):
         self.api.parents[(9, 1)] = {
             **run(9, source=CLIENT_REPO, workflow="flutter_ci.yaml", status="completed"),
