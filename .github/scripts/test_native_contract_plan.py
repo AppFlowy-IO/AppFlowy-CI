@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import native_contract_plan as plan
 import published_cloud_images as images
+import private_image_lock as private_lock
 
 
 class NativeContractPlanTests(unittest.TestCase):
@@ -66,35 +67,48 @@ class NativeContractPlanTests(unittest.TestCase):
 
 
 class PublishedImageTests(unittest.TestCase):
-    def test_external_owners_and_releases_come_from_compose(self):
-        service = lambda tag: {"image": "appflowyinc/" + tag, "environment": {"SECRET": "private"}}
-        model = {name: service(name + ":latest-amd64") for name in
-                 (*images.SOURCE_SERVICES, "appflowy_gateway", "appflowy_billing", "admin_frontend")}
-        model.update(gotrue=service("gotrue:pinned"), gateway_clickhouse={"image": "clickhouse/server:24"},
-                     redis={"image": "redis"}, future=service("future:release"))
-        external = images.external_services(model)
-        self.assertEqual(set(external), {"gotrue", "future", "appflowy_gateway", "appflowy_billing",
-                                         "admin_frontend", "gateway_clickhouse"})
-        self.assertEqual(external["gotrue"], {"image": "appflowyinc/gotrue:pinned"})
-        self.assertTrue(all(set(entry) == {"image"} for entry in external.values()))
-        self.assertNotIn("appflowy_gateway", images.external_services({"appflowy_cloud": model["appflowy_cloud"]}))
-
-    def test_lock_contains_only_immutable_image_fields_and_fails_on_missing_registry_images(self):
-        source = {"billing": {"image": "appflowyinc/billing:latest"}}
-        pinned = source["billing"]["image"] + "@sha256:" + "c" * 64
-        with patch.object(subprocess, "check_output", return_value=json.dumps({
-                "services": {"billing": {"image": pinned, "networks": {}}}})) as run:
-            digests = images.resolve(source)
-            self.assertEqual(digests, {"billing": "sha256:" + "c" * 64})
-            self.assertNotIn("appflowyinc", json.dumps(digests))
-            self.assertEqual(images.compose_override(source, digests), {"services": {"billing": {"image": pinned}}})
-            for mismatch in ({}, {"billing": "latest"}):
-                with self.assertRaises(ValueError):
-                    images.compose_override(source, mismatch)
-            self.assertEqual(json.loads(run.call_args.kwargs["input"]), {"services": source})
-        with patch.object(subprocess, "check_output", return_value=json.dumps({"services": source})):
+    def test_only_digest_pinned_registry_references_can_be_pulled(self):
+        pinned = "docker.io/appflowyinc/fixture:latest@sha256:" + "c" * 64
+        def lock(image, policy="never"):
+            return {"services": {"fixture": {"image": image, "pull_policy": policy}}}
+        self.assertEqual(images.references(lock(pinned), []), [pinned])
+        for unsafe in (lock(pinned.replace("docker.io", "registry.invalid")), lock("fixture:latest"),
+                       lock(pinned, "always")):
             with self.assertRaises(ValueError):
-                images.resolve(source)
-        with patch.object(subprocess, "check_output", side_effect=subprocess.CalledProcessError(1, "docker")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                images.resolve(source)
+                images.references(unsafe, [])
+        with self.assertRaises(KeyError):
+            images.references(lock(pinned), ["missing"])
+
+    def test_credentials_logs_and_config_are_isolated_on_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, RUNNER_TEMP=tmp, REGISTRY_TOKEN="private"):
+            for failure in (False, True):
+                calls = []
+                def run(cmd, **kwargs):
+                    calls.append((cmd, kwargs))
+                    self.assertNotIn("REGISTRY_TOKEN", kwargs["env"])
+                    self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+                    self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+                    self.assertTrue(Path(cmd[2], "config.json").is_file())
+                    return subprocess.CompletedProcess(cmd, int(failure and "pull" in cmd))
+                with patch.object(images.subprocess, "run", side_effect=run):
+                    if failure:
+                        with self.assertRaises(RuntimeError):
+                            images.pull_images(["pinned-image"], "user", "private")
+                    else:
+                        images.pull_images(["pinned-image"], "user", "private")
+                self.assertEqual([c[0][3] for c in calls], ["login","pull","logout"])
+                self.assertEqual(calls[0][1]["input"], "private\n")
+                self.assertFalse(Path(calls[0][0][2]).exists())
+
+    def test_only_a_correlated_private_artifact_can_be_selected(self):
+        sha = "1" * 40
+        run = {"id": 42, "display_title": f"CI images 123-1 ({sha}) [PR #2]", "status": "in_progress"}
+        artifact = {"name": "private-image-lock-123-1", "expired": False, "workflow_run": {"id": 42}}
+        request = Mock(side_effect=[{"private": True}, {"workflow_runs": [run]}, {"artifacts": [artifact]}])
+        self.assertEqual(private_lock.locate(sha,"123",2,"2",request=request), (42, artifact["name"]))
+        with self.assertRaisesRegex(RuntimeError, "private producer"):
+            private_lock.locate(sha,"123",1,"2",request=Mock(return_value={"private":False}))
+        request = Mock(side_effect=[{"private":True},{"workflow_runs":[dict(run,status="completed")]},
+                                    {"artifacts":[dict(artifact,workflow_run={"id": 99})]}])
+        with self.assertRaisesRegex(RuntimeError, "without its dependency manifest"):
+            private_lock.locate(sha,"123",1,"2",request=request)

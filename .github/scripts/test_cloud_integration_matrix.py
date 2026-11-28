@@ -1019,6 +1019,20 @@ class CloudIntegrationMatrixTest(unittest.TestCase):
 
 
 class PublishedGatewayWorkflowTests(unittest.TestCase):
+  def test_public_image_jobs_have_no_image_export_or_public_artifact_upload(self):
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    for job in ("published_images", "test", "presentation-acceptance"):
+      for step in jobs[job]["steps"]:
+        self.assertNotIn("upload-artifact", step.get("uses", ""))
+        self.assertNotRegex(step.get("run", ""), r"\bdocker\s+(?:image\s+)?(?:save|export|push)\b")
+        if step.get("uses", "").startswith("actions/download-artifact"):
+          self.assertEqual(step["with"]["repository"], "AppFlowy-IO/AppFlowy-Cloud-Premium")
+          self.assertIn("runner.temp", step["with"]["path"])
+        if "cache@" in step.get("uses", ""):
+          paths = str(step.get("with", {}).get("path", ""))
+          self.assertNotRegex(paths, r"\.docker|/var/lib/(docker|containerd)|RUNNER_TEMP|runner\.temp|\.tar")
+    self.assertEqual(set(jobs["published_images"]["outputs"]), {"artifact", "run_id"})
+
   @classmethod
   def setUpClass(cls):
     workflow = yaml.safe_load(WORKFLOW.read_text())
@@ -1070,21 +1084,24 @@ class PublishedGatewayWorkflowTests(unittest.TestCase):
 
   def test_compose_starts_with_the_run_lock_and_propagates_registry_failures(self):
     step = self.step("Run Docker-Compose")
-    prepare = self.step("Prepare published images from the source Compose file and run digests")
-    self.assertEqual(prepare["env"]["PUBLISHED_IMAGE_DIGESTS"], "${{ needs.published_images.outputs.digests }}")
+    prepare = self.step("Download the dependency manifest from the private build")
+    self.assertEqual(prepare["with"]["repository"], "AppFlowy-IO/AppFlowy-Cloud-Premium")
     script = step["run"].replace("${{ matrix.test_service }}", "core")
     script = script.replace("${{ matrix.fake_vision == true }}", "false")
     for status in (0, 24):
       with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
         lock = '{"services":{"appflowy_billing":{"image":"billing@sha256:' + "a" * 64 + '"}}}'
-        Path(directory, "published-images.json").write_text(lock)
+        private = Path(directory, "private-dependencies")
+        private.mkdir()
+        (private / "published-images.json").write_text(lock)
         mocks = """
           sudo() { :; }
           docker() {
             if [[ "$*" == *" up "* ]]; then
-              [[ "$*" == "compose -f docker-compose-ci.yml -f $RUNNER_TEMP/published-images.json up -d --no-build --pull=missing" ]] || return 80
-              [[ "$(cat "$RUNNER_TEMP/published-images.json")" == "$PUBLISHED_IMAGES" ]] || return 81
-              echo "locked startup"
+              [[ "$*" == "compose -f docker-compose-ci.yml -f $RUNNER_TEMP/private-dependencies/published-images.json up -d --no-build --quiet-pull" ]] || return 80
+              [[ "$(cat "$RUNNER_TEMP/private-dependencies/published-images.json")" == "$PUBLISHED_IMAGES" ]] || return 81
+              touch "$RUNNER_TEMP/started"
+              echo "$PUBLISHED_IMAGES" >&2
               return "$PULL_EXIT"
             fi
           }
@@ -1093,7 +1110,8 @@ class PublishedGatewayWorkflowTests(unittest.TestCase):
                                 cwd=directory, capture_output=True, text=True,
                                 env={**os.environ, "PUBLISHED_IMAGES": lock, "RUNNER_TEMP": directory,
                                      "PULL_EXIT": str(status), "AI_ON_OLLAMA": "false"})
-        self.assertIn("locked startup", result.stdout)
+        self.assertTrue(Path(directory, "started").is_file())
+        self.assertNotIn(lock, result.stdout + result.stderr)
         self.assertEqual(result.returncode, status, result.stderr)
 
 

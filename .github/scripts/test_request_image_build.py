@@ -161,6 +161,13 @@ class RequestTests(unittest.TestCase):
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"]).read_text()
         self.assertIn("for PR #1190", summary)
 
+    def test_private_dependency_manifest_is_requested_and_required(self):
+        with self.assertRaisesRegex(RuntimeError, "private-image-lock"):
+            self.request(lock_published_images=True)
+        self.assertEqual(self.github.writes[0][2]["inputs"]["lock_published_images"], "true")
+        self.github.artifacts.append({"name":f"private-image-lock-{REQUEST_ID}", "expired":False})
+        self.assertEqual(self.request(lock_published_images=True), 42)
+
     def test_test_archive_is_required_even_when_all_images_succeed(self):
         for archive in (None, {"name": f"cloud-test-binaries-{SHA}", "expired": True},
                         {"name": f'cloud-test-binaries-{"c" * 40}', "expired": False}):

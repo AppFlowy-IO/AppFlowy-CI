@@ -1,74 +1,77 @@
-"""Resolve the Compose-selected AppFlowy dependency images once for this workflow."""
+"""Pull pinned dependencies on the runner with temporary Docker Hub credentials."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 
-# These names are loaded from the private build's archives, including older Compose files
-# that only declare an image. The legacy standalone AI fallback has its own release tag.
-SOURCE_SERVICES = {"appflowy_cloud", "appflowy_worker", "appflowy_search", "appflowy_mcp",
-                   "appflowy_backup", "ai"}
+def references(lock, selected):
+    services = lock["services"]
+    refs = []
+    for name in selected or services:
+        record = services[name]
+        image = record["image"]
+        if (set(record) != {"image", "pull_policy"} or record["pull_policy"] != "never" or
+                not re.fullmatch(r"(?:docker\.io/)?(?:appflowyinc/[a-z0-9_.-]+|clickhouse/clickhouse-server)"
+                                 r"(?::[\w.-]+)?@sha256:[0-9a-f]{64}", image)):
+            raise ValueError("Unexpected private dependency manifest entry")
+        refs.append(image)
+    return refs
 
 
-def external_services(services):
-    return {name: {"image": service["image"]} for name, service in services.items()
-            if name not in SOURCE_SERVICES and (name == "gateway_clickhouse" or
-            service.get("image", "").removeprefix("docker.io/").startswith("appflowyinc/"))}
-
-
-def resolve(services):
-    if not services:
-        return {}
-    # Pass only image names to Compose. The private source's runtime env, mounts and
-    # build contexts have no place in the lock or in the public workflow's outputs.
-    command = ["docker", "compose", "-p", "ci-published-images", "-f", "-", "config",
-               "--resolve-image-digests", "--format", "json"]
-    model = json.loads(subprocess.check_output(command, text=True,
-                       input=json.dumps({"services": services})))["services"]
-    digests = {}
-    for name in services:
-        image = model[name]["image"]
-        if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
-            raise ValueError(f"No immutable image for {name}")
-        digests[name] = image.split("@")[1]
-        print(f"{name}: {image}", flush=True)
-    return digests
-
-
-def compose_override(services, digests):
-    if services.keys() != digests.keys():
-        raise ValueError("Published service names differ from the resolved source Compose file")
-    locked = {}
-    for name, service in services.items():
-        digest = digests[name]
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-            raise ValueError(f"Invalid registry digest for {name}")
-        image = service["image"].split("@")[0]
-        locked[name] = {"image": f"{image}@{digest}"}
-    return {"services": locked}
+def pull_images(images, username, token):
+    # Docker writes its login to this directory. Only trusted pulls run while it exists.
+    # Child processes receive no registry secret variables. Never log Docker diagnostics
+    # containing registry references, bearer URLs or authentication material.
+    env = {key: os.environ[key] for key in ("HOME", "PATH", "RUNNER_TEMP") if key in os.environ}
+    with tempfile.TemporaryDirectory(prefix="cloud-registry-", dir=env["RUNNER_TEMP"]) as config:
+        docker = ["docker", "--config", config]
+        def invoke(command, stdin=None):
+            result = subprocess.run(docker + command, input=stdin, text=True, env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+            if result.returncode:
+                raise RuntimeError("Authenticated dependency preparation failed")
+        Path(config, "config.json").write_text('{"auths":{"https://index.docker.io/v1/":{}}}')
+        try:
+            invoke(["login", "--username", username, "--password-stdin"], token + "\n")
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                list(pool.map(lambda image: invoke(["pull", "--quiet", image]), images))
+        finally:
+            subprocess.run(docker + ["logout"], env=env, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30, check=False)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--override", type=Path, help="write the Compose override from the run's digests")
+    parser.add_argument("--lock", type=Path, required=True)
+    parser.add_argument("services", nargs="*")
     args = parser.parse_args()
-    command = ["docker", "compose", "--env-file", "deploy.env", "-f", "docker-compose-ci.yml",
-               "config", "--no-env-resolution", "--format", "json"]
-    services = external_services(json.loads(subprocess.check_output(command, text=True))["services"])
-    if args.override:
-        digests = json.loads(os.environ["PUBLISHED_IMAGE_DIGESTS"])
-        args.override.write_text(json.dumps(compose_override(services, digests)))
-    else:
-        # Registry namespaces can match GitHub's masked login username. Only digests
-        # cross job boundaries. Consumers already have the same immutable Compose source.
-        digests = resolve(services)
-        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            print("digests=" + json.dumps(digests, separators=(",", ":")), file=output)
+    username = os.environ.pop("REGISTRY_USER")
+    token = os.environ.pop("REGISTRY_TOKEN")
+    refs = references(json.loads(args.lock.read_text()), args.services)
+    if os.environ.get("AI_IMAGE_FROM_SOURCE") == "false" and not args.services:
+        # Historical sources use a fixed standalone release when the private builder has no AI archive.
+        env = dict(os.environ, APPFLOWY_AI_VERSION="0.13.2-amd64")
+        data = subprocess.check_output(["docker", "compose", "--env-file", "deploy.env", "-f",
+                                       "docker-compose-ci.yml", "config", "--no-env-resolution",
+                                       "--format", "json"], env=env, stderr=subprocess.DEVNULL)
+        ai = json.loads(data)["services"].get("ai")
+        if ai:
+            image = ai["image"]
+            if not re.fullmatch(r"(?:docker\.io/)?appflowyinc/[a-z0-9_.-]+:0\.13\.2-amd64", image):
+                raise ValueError("Unexpected historical AI release")
+            refs.append(image)
+    pull_images(refs, username, token)
+    print(f"Prepared {len(refs)} published dependencies on the ephemeral runner.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError):
+        raise SystemExit("::error::Could not prepare the private dependency images")

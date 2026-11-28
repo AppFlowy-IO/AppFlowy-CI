@@ -171,7 +171,7 @@ def find_run(request, title):
 def request_build(source_sha, request_id, request=None, wait=time.sleep,
                   now=time.monotonic, timeout=330 * 60, *, wall_time=time.time, ci_tools_sha=None,
                   test_features=None, test_rust_toolchain=None, pr_number=None,
-                  image_workflow_ref="main"):
+                  image_workflow_ref="main", lock_published_images=False):
     if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("Expected an immutable 40-character Cloud commit")
     if not re.fullmatch(r"[0-9]+-[0-9]+", request_id):
@@ -192,6 +192,9 @@ def request_build(source_sha, request_id, request=None, wait=time.sleep,
             raise ValueError("Expected a positive Cloud pull request number")
         inputs["pr_number"] = pr_number
     required_artifacts = set(ARTIFACTS)
+    if lock_published_images:
+        inputs["lock_published_images"] = "true"
+        required_artifacts.add(f"private-image-lock-{request_id}")
     if ci_tools_sha:
         if not re.fullmatch(r"[a-f0-9]{40}", ci_tools_sha):
             raise ValueError("Expected an immutable AppFlowy-CI tools commit")
@@ -324,6 +327,7 @@ def main():
         test_rust_toolchain=os.environ.get("RUST_TOOLCHAIN"),
         pr_number=os.environ.get("PR_NUMBER") or None,
         image_workflow_ref=os.environ.get("IMAGE_WORKFLOW_REF") or "main",
+        lock_published_images=os.environ.get("LOCK_PUBLISHED_IMAGES") == "true",
     )
 
 

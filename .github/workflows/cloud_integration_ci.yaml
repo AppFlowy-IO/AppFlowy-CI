@@ -115,30 +115,24 @@ jobs:
           fi
 
   published_images:
-    name: Resolve published dependency images
+    name: Wait for the private dependency manifest
     needs: image_source
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     outputs:
-      digests: ${{ steps.images.outputs.digests }}
+      run_id: ${{ steps.images.outputs.run_id }}
+      artifact: ${{ steps.images.outputs.artifact }}
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
-          ref: ${{ needs.image_source.outputs.sha }}
-          token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
           ref: ${{ github.sha }}
-          path: ci-tools
           persist-credentials: false
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       - id: images
-        run: python3 -B ci-tools/.github/scripts/published_cloud_images.py
+        env:
+          GH_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
+          SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
+        run: python3 -B .github/scripts/private_image_lock.py
 
   build_self_hosted:
     name: Wait for self-hosted images and Cloud test binaries
@@ -159,6 +153,7 @@ jobs:
           SOURCE_SHA: ${{ needs.image_source.outputs.sha }}
           RUST_TOOLCHAIN: ${{ needs.image_source.outputs.rust_toolchain }}
           CI_TOOLS_SHA: ${{ github.sha }}
+          LOCK_PUBLISHED_IMAGES: 'true'
           PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr_number || '' }}
           IMAGE_WORKFLOW_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.image_workflow_ref || 'main' }}
         run: python3 .github/scripts/request_image_build.py
@@ -786,24 +781,25 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: docker-image-*
+          path: ${{ runner.temp }}/private-cloud-images
           merge-multiple: true
           repository: AppFlowy-IO/AppFlowy-Cloud-Premium
           run-id: ${{ needs.build_self_hosted.outputs.run_id }}
           github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
 
       - name: Load Docker Images
+        working-directory: ${{ runner.temp }}/private-cloud-images
         run: |
           set -euo pipefail
-          ls -lh appflowy_*.tar.gz
-          gunzip -c appflowy_cloud.tar.gz | docker load
-          gunzip -c appflowy_worker.tar.gz | docker load
-          gunzip -c appflowy_search.tar.gz | docker load
-          gunzip -c appflowy_mcp.tar.gz | docker load
+          gunzip -c appflowy_cloud.tar.gz | docker load --quiet >/dev/null 2>&1
+          gunzip -c appflowy_worker.tar.gz | docker load --quiet >/dev/null 2>&1
+          gunzip -c appflowy_search.tar.gz | docker load --quiet >/dev/null 2>&1
+          gunzip -c appflowy_mcp.tar.gz | docker load --quiet >/dev/null 2>&1
           # The AI archive exists only when the Cloud image workflow on main builds it for this
           # source. Decide from the artifact rather than the source tree, so a Cloud ref that
           # adds the service before main's workflow builds it still runs with the published image.
           if [[ -f appflowy_ai.tar.gz ]]; then
-            gunzip -c appflowy_ai.tar.gz | docker load
+            gunzip -c appflowy_ai.tar.gz | docker load --quiet >/dev/null 2>&1
             echo 'AI_IMAGE_FROM_SOURCE=true' >> "$GITHUB_ENV"
           else
             echo 'AI_IMAGE_FROM_SOURCE=false' >> "$GITHUB_ENV"
@@ -811,11 +807,10 @@ jobs:
               echo "::warning::This Cloud ref carries services/appflowy-ai but the image build on Cloud main produced no appflowy_ai archive; using the published AI image and skipping the AI package tests."
             fi
           fi
-          echo "==> Loaded images:"
-          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep appflowy || true
 
       - name: Remove downloaded image archives
-        run: rm -f appflowy_cloud.tar.gz appflowy_worker.tar.gz appflowy_search.tar.gz appflowy_mcp.tar.gz appflowy_ai.tar.gz
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/private-cloud-images"
 
       - name: Copy and rename deploy.env to .env
         run: cp deploy.env .env
@@ -825,9 +820,7 @@ jobs:
           # log level
           # appflowy_search + search targets included so the search service's
           # startup decisions (S3 bootstrap, worker spawn/skip reasons) appear
-          # in the "Show appflowy_search startup logs" step — without them a
-          # skipped ensure worker is invisible and search test failures look
-          # like flaky timeouts.
+          # in the service's own runtime.
           sed -i 's|RUST_LOG=.*|RUST_LOG='appflowy_cloud=info,appflowy_worker=debug,appflowy_collaborate=info,indexer=info,appflowy_search=info,search=info,info'|' .env
           # GoTrue has a separate mailer from appflowy_cloud. Keep confirmation enabled so CI
           # exercises production-like repeated-signup behavior, but route all mail to Mailpit.
@@ -970,17 +963,20 @@ jobs:
           echo 'Isolated Search test Redis did not become ready' >&2
           exit 1
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
       - &cloud_published_image_lock
-        name: Prepare published images from the source Compose file and run digests
+        name: Download the dependency manifest from the private build
+        uses: actions/download-artifact@v4
+        with:
+          repository: AppFlowy-IO/AppFlowy-Cloud-Premium
+          run-id: ${{ needs.published_images.outputs.run_id }}
+          name: ${{ needs.published_images.outputs.artifact }}
+          github-token: ${{ secrets.ADMIN_GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/private-dependencies
+      - name: Pull published dependencies with temporary registry credentials
         env:
-          PUBLISHED_IMAGE_DIGESTS: ${{ needs.published_images.outputs.digests }}
-        run: python3 -B ci-tools/.github/scripts/published_cloud_images.py --override "$RUNNER_TEMP/published-images.json"
+          REGISTRY_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        run: python3 -I -B ci-tools/.github/scripts/published_cloud_images.py --lock "$RUNNER_TEMP/private-dependencies/published-images.json"
 
       - name: Run Docker-Compose
         timeout-minutes: 15
@@ -1008,14 +1004,12 @@ jobs:
           fi
 
           sudo rm -rf /tmp/minio-data || true
-          docker compose -f docker-compose-ci.yml -f "$RUNNER_TEMP/published-images.json" up -d --no-build --pull=missing
-          docker ps -a
-          docker compose -f docker-compose-ci.yml logs pg_snapshot_unpack
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud
+          docker compose -f docker-compose-ci.yml -f "$RUNNER_TEMP/private-dependencies/published-images.json" up -d --no-build --quiet-pull >/dev/null 2>&1
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}'
 
-      - name: Show appflowy_search startup logs
+      - name: Show Search container status
         if: matrix.test_service == 'appflowy_cloud_search'
-        run: docker compose -f docker-compose-ci.yml logs appflowy_search
+        run: docker compose -f docker-compose-ci.yml ps --format '{{.Service}} {{.Status}}' appflowy_search
 
       - name: Wait for appflowy cloud to be ready
         run: |
@@ -1089,7 +1083,7 @@ jobs:
             sleep 3
           done
           echo "::warning::MinIO bucket check did not confirm access - dumping MinIO logs"
-          docker compose -f docker-compose-ci.yml logs minio
+          docker compose -f docker-compose-ci.yml ps --format '{{.Service}} {{.Status}}' minio
 
       # Cloud serves the Admin AI API under /ai, which the stack's nginx does not route (it sends
       # /ai to the web frontend), so the script calls Cloud's own port.
@@ -1450,41 +1444,9 @@ jobs:
             docker rm --force --volumes "$SEARCH_ADMISSION_REDIS_CONTAINER"
           fi
 
-      - name: Collect Docker logs
+      - name: Report container status on failure
         if: failure()
-        run: |
-          docker ps -a > docker-ps-output.txt
-          docker compose -f docker-compose-ci.yml logs appflowy_cloud > appflowy_cloud_logs.txt
-          docker compose -f docker-compose-ci.yml logs appflowy_gateway > appflowy_gateway_logs.txt 2>&1 || true
-          docker compose -f docker-compose-ci.yml logs appflowy_mcp > appflowy_mcp_logs.txt
-          docker compose -f docker-compose-ci.yml logs appflowy_worker > appflowy_worker_logs.txt
-          docker compose -f docker-compose-ci.yml logs appflowy_search > appflowy_search_logs.txt 2>&1 || true
-          docker compose -f docker-compose-ci.yml logs ai > appflowy_ai_logs.txt 2>&1 || true
-          docker compose -f docker-compose-ci.yml logs gotrue > gotrue_logs.txt 2>&1 || true
-          if [ "${{ matrix.test_service }}" = "appflowy_cloud_auth" ]; then
-            docker compose -f docker-compose-ci.yml --profile authentik \
-              logs authentik-db authentik-server authentik-worker > authentik_logs.txt 2>&1 || true
-            docker compose -f docker-compose-ci.yml --profile ldap \
-              logs openldap > openldap_logs.txt 2>&1 || true
-          fi
-
-      - name: Upload Logs as Artifact
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: appflowy-cloud-logs-${{ matrix.test_service }}-${{ github.run_id }}
-          path: |
-            docker-ps-output.txt
-            appflowy_cloud_logs.txt
-            appflowy_gateway_logs.txt
-            appflowy_mcp_logs.txt
-            appflowy_worker_logs.txt
-            appflowy_search_logs.txt
-            appflowy_ai_logs.txt
-            gotrue_logs.txt
-            authentik_logs.txt
-            openldap_logs.txt
-          retention-days: 1
+        run: docker ps -a --format 'table {{.Names}}\t{{.Status}}'
 
   presentation-contracts:
     name: Presentation contracts (${{ matrix.package }})
@@ -1646,16 +1608,20 @@ jobs:
       - name: Install SQLx CLI for the Service-owned migration ledgers
         if: needs.verify_test_module_coverage.outputs.presentation_images != 'true'
         run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
-      - uses: docker/login-action@v3
-        if: needs.verify_test_module_coverage.outputs.presentation_images == 'true'
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       - *cloud_published_image_lock
+      - name: Pull the published presentation dependencies
+        if: needs.verify_test_module_coverage.outputs.presentation_images == 'true'
+        env:
+          REGISTRY_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        run: >-
+          python3 -I -B ci-tools/.github/scripts/published_cloud_images.py
+          --lock "$RUNNER_TEMP/private-dependencies/published-images.json"
+          appflowy_billing appflowy_gateway gotrue minio gateway_clickhouse
       - name: Run native source ACL, private S3 and actual Gateway contracts
         env:
           PRESENTATION_CARGO_TOKEN: ${{ secrets.ADMIN_GITHUB_TOKEN }}
-          PUBLISHED_IMAGE_LOCK: ${{ runner.temp }}/published-images.json
+          PUBLISHED_IMAGE_LOCK: ${{ runner.temp }}/private-dependencies/published-images.json
         run: >-
           python3 -B ci-tools/.github/scripts/with_private_cargo_auth.py
           python3 -B ci-tools/.github/scripts/presentation_acceptance_runner.py
